@@ -22,3 +22,4 @@ coverage/
 # ── os noise ─────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+opencode.jsonc
