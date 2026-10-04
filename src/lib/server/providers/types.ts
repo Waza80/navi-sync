@@ -52,10 +52,10 @@ export interface StreamResolution {
 	/** Provider track id — required to derive the decryption key. */
 	decryptTrackId: string | null;
 	/**
-	 * DASH providers (Monochrome): full ordered segment URL list. When present
-	 * the pipeline concatenates segments instead of single-URL download.
+	 * Cloudflare-capped instances: the URL only serves ~512KiB/connection —
+	 * the pipeline must download via parallel Range chunks.
 	 */
-	segmentUrls?: string[];
+	chunked?: boolean;
 }
 
 export interface Provider {

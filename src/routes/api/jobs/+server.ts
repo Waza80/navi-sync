@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
 import { listJobs } from '$lib/server/queue/jobs';
 import { enqueueJob } from '$lib/server/queue/jobs';
+import { getProviderConfig } from '$lib/server/providers/config';
 import type { RequestHandler } from './$types';
 
 const listSchema = z.object({
@@ -33,9 +34,22 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	});
 };
 
+const metaSchema = z.object({
+	title: z.string().min(1).max(300),
+	artist: z.string().min(1).max(300),
+	album: z.string().max(300).nullable().optional(),
+	durationSec: z.number().int().nullable().optional(),
+	isrc: z.string().max(20).nullable().optional(),
+	coverUrl: z.string().url().max(1000).nullable().optional(),
+	year: z.number().int().nullable().optional()
+});
 const enqueueSchema = z.union([
 	z.object({ url: z.string().min(1).max(2048) }),
-	z.object({ provider: z.string().min(1).max(50), trackId: z.string().min(1).max(100) }),
+	z.object({
+		provider: z.string().min(1).max(50),
+		trackId: z.string().min(1).max(100),
+		meta: metaSchema.optional()
+	}),
 ]);
 
 /** POST /api/jobs — enqueue a download (URL or provider+trackId from search). */
@@ -50,17 +64,30 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		);
 
 	if ('trackId' in parsed.data) {
-		// Direct enqueue from search results (provider-tagged).
+		// Direct enqueue from search results — metadata snapshot travels with
+		// the job (required for providers without bare-id metadata lookups).
 		const { getProvider } = await import('$lib/server/providers/registry');
 		const provider = getProvider(parsed.data.provider);
-		const meta = await provider.metadata({
-			provider: provider.id,
-			id: parsed.data.trackId,
-			sourceUrl: undefined,
-		});
+		let sourceUrl = `https://www.deezer.com/track/${parsed.data.trackId}`;
+		try {
+			const resolved = await provider.metadata({
+				provider: provider.id,
+				id: parsed.data.trackId,
+				sourceUrl: undefined,
+			});
+			sourceUrl = resolved.sourceUrl ?? sourceUrl;
+		} catch {
+			// Monochrome et al.: metadata comes from the search snapshot below.
+			const cfg = await getProviderConfig<Record<string, string>>('monochrome');
+			sourceUrl = `${cfg?.instanceUrl ?? 'https://tracks.monochrome.st'}/track/${parsed.data.trackId}`;
+		}
 		const job = await enqueueJob({
 			type: 'download',
-			payload: { url: meta.sourceUrl ?? meta.providerTrackId, provider: provider.id },
+			payload: {
+				url: sourceUrl,
+				provider: provider.id,
+				...(parsed.data.meta ? { meta: parsed.data.meta } : {}),
+			},
 			createdBy: user.id,
 		});
 		return json({ job: { id: job.id, type: job.type, status: job.status } }, { status: 201 });

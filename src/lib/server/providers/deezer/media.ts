@@ -242,15 +242,21 @@ export async function downloadToFile(
 
 	const nodeStream = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
 	const out = createWriteStream(destPath);
+	const MILESTONE = 5 * 1024 * 1024; // streams without content-length: every 5 MB
+	let nextMilestone = MILESTONE;
 	nodeStream.on('data', (chunk: Buffer) => {
 		received += chunk.length;
 		hash.update(chunk);
-		if (total && opts.onProgress) {
-			const fraction = Math.min(1, received / total);
-			const pct = Math.floor(fraction * 100);
-			if (pct !== lastReported) {
-				lastReported = pct;
-				opts.onProgress(fraction);
+		if (opts.onProgress) {
+			if (total) {
+				const pct = Math.floor((received / total) * 100);
+				if (pct !== lastReported) {
+					lastReported = pct;
+					opts.onProgress(received / total);
+				}
+			} else if (received >= nextMilestone) {
+				nextMilestone += MILESTONE;
+				opts.onProgress(-1); // sentinel: unknown total
 			}
 		}
 	});

@@ -91,12 +91,25 @@ export const PUT: RequestHandler = async ({ locals, params, request }) => {
 		};
 		await setProviderConfig('monochrome', cfg);
 		const client = new MonochromeClient(cfg);
-		const probe = await client.search('test');
-		return json({
-			ok: true,
-			tested: true,
-			detail: `Instance reachable — search returned ${probe.length} sample results`,
-		});
+		try {
+			const probe = await client.search('test');
+			return json({
+				ok: true,
+				tested: true,
+				detail: `Instance reachable — search returned ${probe.length} sample results`,
+			});
+		} catch (err) {
+			return json(
+				{
+					ok: false,
+					tested: true,
+					error: `Saved, but instance test failed: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				},
+				{ status: 502 },
+			);
+		}
 	}
 
 	void user;

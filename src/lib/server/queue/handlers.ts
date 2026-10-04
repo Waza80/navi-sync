@@ -75,10 +75,34 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 			'NOT_FOUND',
 		);
 
-	// 2. Metadata.
-	await ctx.report(8, 'fetching metadata');
-	const meta: TrackMeta = await provider.metadata(ref);
-	await ctx.report(15, `metadata: ${meta.artist} — ${meta.title}`);
+	// 2. Metadata. Providers without bare-id metadata (Monochrome) receive the
+	// search snapshot via the job payload.
+	const payloadMeta = job.payload['meta'] as Partial<TrackMeta> | undefined;
+	let meta: TrackMeta;
+	if (payloadMeta && typeof payloadMeta.title === 'string' && typeof payloadMeta.artist === 'string') {
+		meta = {
+			provider: provider.id,
+			providerTrackId: ref.id,
+			title: payloadMeta.title,
+			artist: payloadMeta.artist,
+			album: payloadMeta.album ?? null,
+			albumArtist: payloadMeta.artist,
+			isrc: payloadMeta.isrc ?? null,
+			trackNumber: payloadMeta.trackNumber ?? null,
+			discNumber: null,
+			durationSec: payloadMeta.durationSec ?? null,
+			year: payloadMeta.year ?? null,
+			genre: null,
+			coverUrl: payloadMeta.coverUrl ?? null,
+			sourceUrl: ref.sourceUrl ?? null,
+			streamToken: null
+		};
+		await ctx.report(12, `metadata (from search): ${meta.artist} — ${meta.title}`);
+	} else {
+		await ctx.report(8, 'fetching metadata');
+		meta = await provider.metadata(ref);
+		await ctx.report(15, `metadata: ${meta.artist} — ${meta.title}`);
+	}
 
 	// 3. Guardrails (spec: 24-bit hard stop, no pointless re-downloads).
 	const settings = await getSettings();
@@ -117,25 +141,28 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		allowLowerFallback: settings.allowLowerFallback,
 	});
 
-	// 5. Download to temp (progress 25→65). DASH providers deliver an ordered
-	// segment list; everything else is a single-URL stream.
+	// 5. Download to temp (progress 25→65). Chunked providers (Cloudflare
+	// caps) use parallel Range chunks; everything else is a single stream.
 	const tmpRaw = join(env.MUSIC_TMP_DIR, `job-${job.id}.raw`);
 	await ctx.report(25, 'downloading');
 	try {
-		if (resolution.segmentUrls && resolution.segmentUrls.length > 0) {
-			const { downloadDashSegments } =
-				await import('$lib/server/providers/monochrome/client');
-			await downloadDashSegments(resolution.segmentUrls, tmpRaw, {
+		if (resolution.chunked) {
+			const { downloadChunked } = await import('$lib/server/providers/monochrome/client');
+			let lastPct = 25;
+			await downloadChunked(resolution.url, tmpRaw, {
 				signal: ctx.signal,
-				onProgress: (fraction) => {
-					const pct = 25 + Math.floor(fraction * 40);
-					void updateProgress(
-						job.id,
-						job.type,
-						job.trackId,
-						pct,
-						`downloading segments (${pct}%)`,
-					).catch(() => undefined);
+				onProgress: (received, total) => {
+					const pct = 25 + Math.floor((received / total) * 40); // 25..65
+					if (pct !== lastPct && pct % 5 === 0) {
+						lastPct = pct;
+						void updateProgress(
+							job.id,
+							job.type,
+							job.trackId,
+							pct,
+							`downloading ${meta.title} (${Math.round(received / 1024 / 1024)}MB)`,
+						).catch(() => undefined);
+					}
 				},
 			});
 		} else {
@@ -283,10 +310,15 @@ async function downloadWithProgress(
 	meta: TrackMeta,
 ): Promise<void> {
 	let lastPct = 0;
+	let mb = 0;
 	await downloadToFile(url, dest, {
 		signal: ctx.signal,
 		onProgress: (fraction) => {
-			const pct = 25 + Math.floor(fraction * 40); // 25..65
+			// fraction < 0 = unknown total (byte-milestone sentinel)
+			const pct =
+				fraction < 0
+					? Math.min(64, 25 + Math.floor((mb += 5) / 2))
+					: 25 + Math.floor(fraction * 40); // 25..65
 			if (pct !== lastPct && pct % 5 === 0) {
 				lastPct = pct;
 				void updateProgress(

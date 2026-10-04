@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
+	import { untrack } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { live } from '$lib/stores/events.svelte';
@@ -18,19 +19,22 @@
 	let urlInput = $state('');
 	let message = $state<{ tone: 'ok' | 'error'; text: string } | null>(null);
 	let busy = $state(false);
-	let hydrated = $state(false);
 
 	// ── Live queue (SSE) ────────────────────────────────────────────────────
 	$effect(() => {
-		if (!hydrated) {
-			live.hydrate(data.jobs);
-			hydrated = true;
-		}
-		live.start(() => void invalidateAll());
+		live.start(
+			() => void invalidateAll(),
+			() => void invalidateAll() // resync after SSE reconnect (missed events)
+		);
 	});
+	// Snapshot sync must NOT read live.jobs in the same tracked scope it
+	// writes to — that re-triggers the effect forever (page freeze).
 	$effect(() => {
-		live.hydrate(data.jobs);
-		live.pruneNotIn(data.jobs);
+		const snapshot = data.jobs;
+		untrack(() => {
+			live.hydrate(snapshot);
+			live.pruneNotIn(snapshot);
+		});
 	});
 
 	let queueFilter = $state<'all' | 'active' | 'done' | 'failed'>('all');

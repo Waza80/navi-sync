@@ -95,8 +95,32 @@ export async function claimNextJob(): Promise<JobRow | null> {
 			)
 			RETURNING *`,
 	);
-	const row = result.rows[0] as JobRow | undefined;
-	return row ?? null;
+	const row = result.rows[0] as Record<string, unknown> | undefined;
+	if (!row) return null;
+	// Raw pg rows are snake_case — map to the camelCase JobRow contract.
+	// (A plain `as JobRow` left `maxAttempts` undefined, which silently
+	// dead-lettered every first failure: `1 < undefined` === false.)
+	const job = {
+		id: row['id'],
+		type: row['type'],
+		status: row['status'],
+		priority: row['priority'],
+		payload: row['payload'],
+		progress: row['progress'],
+		stage: row['stage'],
+		result: row['result'],
+		error: row['error'],
+		attempts: row['attempts'],
+		maxAttempts: row['max_attempts'],
+		runAfter: row['run_after'],
+		startedAt: row['started_at'],
+		finishedAt: row['finished_at'],
+		trackId: row['track_id'],
+		createdBy: row['created_by'],
+		createdAt: row['created_at'],
+		updatedAt: row['updated_at']
+	} as unknown as JobRow;
+	return job;
 }
 
 export async function updateProgress(

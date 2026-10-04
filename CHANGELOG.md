@@ -2,6 +2,34 @@
 
 All notable changes to NaviSync. Format: Keep a Changelog; semver.
 
+## [0.2.3] — Phase 2D: tracks.monochrome.st, chunked downloads, UI freeze fix — 2026-10-04
+
+### Fixed
+- **Dashboard freeze / unresponsive UI**: the snapshot-sync effect read and
+  wrote reactive state in the same tracked scope → infinite self-trigger.
+  Snapshot sync now runs `untrack()`. Regression-tested (5 new store tests:
+  unknown-job progress application, whole-entry replacement, stale
+  overwrite, prune, reconnect resync).
+- **Instant dead-letter on first failure**: `claimNextJob` returned raw
+  snake_case rows — `job.maxAttempts` was `undefined`, so `1 < undefined`
+  skipped every retry. Claim rows are now mapped to the camelCase contract.
+  Verified: failed downloads schedule retries (30s/60s/120s) properly.
+- Restart script zombie bug (port-free wait was shorter than the drain
+  window) + `/api/health` now exposes `bootedAt` so stale binaries are
+  always detectable.
+
+### Added
+- **tracks.monochrome.st provider** (verified live end-to-end):
+  `GET /search?q=` (rich results incl. ISRC/duration/artwork) and
+  `GET /track/<id>` serving **raw decrypted FLAC** — no manifests/decryption
+  needed client-side. Metadata travels with search-snapshot job payloads
+  (bare ids have no metadata endpoint).
+- **Parallel chunked downloader**: Cloudflare caps connections at ~512KiB/
+  ~30s on these instances; downloads now use HTTP Range + 8 parallel
+  workers (480KB chunks, per-chunk retry, offset writes, byte progress).
+  Verified: 38.8 MB 24-bit/44.1kHz FLAC + synced LRCLIB lyrics end-to-end.
+- Search-result metadata passthrough in `POST /api/jobs` (`meta` field).
+
 ## [0.2.2] — Phase 2C: Grid UI, album fan-out, ZIP export, forced upgrades, Monochrome auth — 2026-10-04
 
 ### Fixed

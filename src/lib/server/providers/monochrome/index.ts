@@ -1,19 +1,13 @@
-import { MonochromeClient, toTrackMeta, type MonochromeConfig } from './client';
+import { MonochromeClient, type MonochromeConfig } from './client';
 import { parseMonochromeInput } from './parse';
 import { getProviderConfig } from '$lib/server/providers/config';
-import {
-	ProviderError,
-	type Provider,
-	type QualityPreferences,
-	type StreamResolution,
-	type TrackMeta,
-	type TrackRef,
-} from '$lib/server/providers/types';
+import { ProviderError, type Provider, type QualityPreferences, type StreamResolution, type TrackMeta, type TrackRef } from '$lib/server/providers/types';
 
 /**
- * Monochrome provider — self-hosted TIDAL proxy instances.
- * Requires per-provider configuration (instance URL [+ Basic auth]) via the
- * Providers UI; without configuration it reports a clear NOT_CONFIGURED error.
+ * Monochrome provider — tracks.monochrome.st instance.
+ * Requires the instance URL in Providers. The instance serves decrypted
+ * FLAC directly; bare-id metadata is unavailable, so the dashboard always
+ * enqueues from search results (metadata travels in the job payload).
  */
 
 const MISSING_CONFIG = 'Monochrome is not configured. Add your instance URL in Providers.';
@@ -46,10 +40,23 @@ export const monochromeProvider: Provider = {
 		const client = new MonochromeClient(cfg);
 		const items = await client.search(query);
 		const base = cfg.instanceUrl.replace(/\/+$/, '');
-		return items.map((item) => {
-			const meta = toTrackMeta(item, base);
-			return { ...meta, album: meta.album };
-		});
+		return items.map((item) => ({
+			provider: 'monochrome',
+			providerTrackId: item.id,
+			title: item.title,
+			artist: item.artist,
+			album: item.album,
+			albumArtist: item.artist,
+			isrc: item.isrc,
+			trackNumber: null,
+			discNumber: null,
+			durationSec: item.durationSec,
+			year: null,
+			genre: null,
+			coverUrl: item.artworkUrl,
+			sourceUrl: `${base}/track/${item.id}`,
+			streamToken: null
+		}));
 	},
 
 	searchAlbums(_query: string): Promise<
@@ -62,27 +69,31 @@ export const monochromeProvider: Provider = {
 			coverUrl: string | null;
 		}>
 	> {
-		// Album search arrives with instance capability detection.
+		// The tracks API exposes releases via search; album fan-out arrives
+		// when a release-endpoint is confirmed on the instance.
 		return Promise.resolve([]);
 	},
 
 	albumTrackIds(_albumId: string): Promise<string[]> {
-		// Album fan-out for Monochrome lands with capability detection.
 		return Promise.resolve([]);
 	},
 
-	async metadata(ref) {
-		const cfg = await configOrThrow();
-		const client = new MonochromeClient(cfg);
-		const track = await client.getTrackMetadata(ref.id);
-		return toTrackMeta(track, cfg.instanceUrl.replace(/\/+$/, ''));
+	metadata(_ref): Promise<TrackMeta> {
+		// Bare ids have no metadata endpoint — the pipeline carries metadata
+		// from the search snapshot via the job payload (handlers.ts).
+		return Promise.reject(
+			new ProviderError(
+				'Monochrome tracks must be enqueued from search results (metadata travels with the job).',
+				'NOT_FOUND'
+			)
+		);
 	},
 
-	async resolve(meta, prefs: QualityPreferences): Promise<StreamResolution> {
+	async resolve(meta, _prefs: QualityPreferences): Promise<StreamResolution> {
 		const cfg = await configOrThrow();
 		const client = new MonochromeClient(cfg);
-		return client.resolveStream(meta.providerTrackId, prefs);
-	},
+		return client.resolveStream(meta.providerTrackId, _prefs);
+	}
 };
 
 export { MonochromeClient, type MonochromeConfig };

@@ -1,31 +1,46 @@
+import { SvelteMap } from 'svelte/reactivity';
 import { isNaviEvent, type JobDTO, type NaviEvent } from '$lib/shared/types';
 
 /**
- * Live event client (SSE). Backed by Postgres NOTIFY → /api/events — there is
- * no polling anywhere in the UI (spec: real-time without setInterval).
+ * Live event client (SSE). Backed by Postgres NOTIFY → /api/events —
+ * no polling anywhere in the UI.
  *
- * Svelte 5 runes: `Map`/`Set` in `$state` are deeply reactive proxies.
+ * Reactivity contract (keep it boring on purpose):
+ *  - every event application REPLACES the map entry with a fresh object
+ *    (Map.set is the reactive trigger; no reliance on nested mutation);
+ *  - events for unknown jobs create entries (reconnect gaps);
+ *  - reconnects trigger a snapshot resync callback so missed events are
+ *    backfilled from the authoritative load();
+ *  - hydrate() overwrites AND pruneNotIn() removes — the server snapshot is
+ *    always the source of truth.
  */
 class LiveEventClient {
-	jobs = $state<Map<string, JobDTO>>(new Map());
+	jobs = new SvelteMap<string, JobDTO>();
 	connected = $state(false);
 	#source: EventSource | null = null;
+	#everConnected = false;
 	#onTerminal: (() => void) | null = null;
+	#onResync: (() => void) | null = null;
 
 	/** Idempotent. Call once from the dashboard page (browser only). */
-	start(onTerminal?: () => void): void {
+	start(onTerminal?: () => void, onResync?: () => void): void {
 		if (typeof window === 'undefined' || this.#source) return;
 		this.#onTerminal = onTerminal ?? null;
+		this.#onResync = onResync ?? null;
 		const es = new EventSource('/api/events');
 		this.#source = es;
 		es.onopen = () => {
+			const resync = this.#everConnected && !this.connected; // reconnect after a drop
 			this.connected = true;
+			this.#everConnected = true;
+			if (resync) this.#onResync?.();
 		};
 		es.onerror = () => {
 			this.connected = false; // EventSource auto-reconnects
 		};
 		es.addEventListener('hello', () => {
 			this.connected = true;
+			this.#everConnected = true;
 		});
 		es.onmessage = (evt) => {
 			try {
@@ -43,25 +58,22 @@ class LiveEventClient {
 		this.connected = false;
 	}
 
-	/**
-	 * Seed/replace with the authoritative server snapshot. Overwrites (not
-	 * just adds) so missed SSE events during reconnects can never leave a
-	 * stale entry behind.
-	 */
+	/** Replace state with the authoritative server snapshot. */
 	hydrate(jobs: JobDTO[]): void {
-		for (const j of jobs) this.jobs.set(j.id, j);
+		this.jobs.clear();
+		for (const j of jobs) this.jobs.set(j.id, { ...j });
 	}
 
 	/** Drop entries absent from the authoritative snapshot (post-clear). */
 	pruneNotIn(jobs: JobDTO[]): void {
-		const ids = new Set(jobs.map((j) => j.id));
+		const ids = jobs.map((j) => j.id);
 		for (const id of [...this.jobs.keys()]) {
-			if (!ids.has(id)) this.jobs.delete(id);
+			if (!ids.includes(id)) this.jobs.delete(id);
 		}
 	}
 
 	#apply(evt: NaviEvent): void {
-		const current = this.jobs.get(evt.jobId);
+		const prev = this.jobs.get(evt.jobId);
 		switch (evt.type) {
 			case 'job.queued': {
 				this.jobs.set(evt.jobId, {
@@ -76,42 +88,90 @@ class LiveEventClient {
 					maxAttempts: 3,
 					trackId: evt.trackId,
 					createdAt: evt.ts,
-					finishedAt: null,
+					finishedAt: null
 				});
 				break;
 			}
 			case 'job.progress': {
-				if (current) {
-					current.progress = evt.progress;
-					current.stage = evt.stage;
-					current.status = 'running';
-				}
+				// Unknown job (missed the queued event during a reconnect)?
+				// Create it from the event instead of silently dropping progress.
+				this.jobs.set(evt.jobId, {
+					...(prev ?? {
+						id: evt.jobId,
+						type: evt.jobType,
+						priority: 5,
+						error: null,
+						attempts: 1,
+						maxAttempts: 3,
+						trackId: evt.trackId,
+						createdAt: evt.ts,
+						finishedAt: null
+					}),
+					status: 'running',
+					progress: evt.progress,
+					stage: evt.stage
+				});
 				break;
 			}
 			case 'job.completed': {
-				if (current) {
-					current.status = 'succeeded';
-					current.progress = 100;
-					current.stage = 'done';
-					current.finishedAt = evt.ts;
-				}
+				this.jobs.set(evt.jobId, {
+					...(prev ?? {
+						id: evt.jobId,
+						type: evt.jobType,
+						priority: 5,
+						error: null,
+						attempts: 1,
+						maxAttempts: 3,
+						trackId: evt.trackId,
+						createdAt: evt.ts
+					}),
+					status: 'succeeded',
+					progress: 100,
+					stage: 'done',
+					finishedAt: evt.ts
+				});
 				this.#onTerminal?.();
 				break;
 			}
 			case 'job.failed': {
-				if (current) {
-					current.status = evt.willRetry ? 'failed' : 'dead';
-					current.error = evt.error;
-					if (!evt.willRetry) current.finishedAt = evt.ts;
-				}
+				this.jobs.set(evt.jobId, {
+					...(prev ?? {
+						id: evt.jobId,
+						type: evt.jobType,
+						priority: 5,
+						progress: 0,
+						stage: null,
+						error: null,
+						attempts: 1,
+						maxAttempts: 3,
+						trackId: evt.trackId,
+						createdAt: evt.ts,
+						finishedAt: null
+					}),
+					status: evt.willRetry ? 'failed' : 'dead',
+					error: evt.error,
+					finishedAt: evt.willRetry ? (prev?.finishedAt ?? null) : evt.ts
+				});
 				this.#onTerminal?.();
 				break;
 			}
 			case 'job.cancelled': {
-				if (current) {
-					current.status = 'cancelled';
-					current.finishedAt = evt.ts;
-				}
+				this.jobs.set(evt.jobId, {
+					...(prev ?? {
+						id: evt.jobId,
+						type: evt.jobType,
+						priority: 5,
+						progress: 0,
+						stage: null,
+						error: null,
+						attempts: 0,
+						maxAttempts: 3,
+						trackId: null,
+						createdAt: evt.ts
+					}),
+					status: 'cancelled',
+					finishedAt: evt.ts
+				});
 				break;
 			}
 		}
@@ -125,10 +185,9 @@ class LiveEventClient {
 	}
 
 	get activeCount(): number {
-		return [...this.jobs.values()].filter(
-			(j) => j.status === 'queued' || j.status === 'running',
-		).length;
+		return [...this.jobs.values()].filter((j) => j.status === 'queued' || j.status === 'running').length;
 	}
 }
 
 export const live = new LiveEventClient();
+export { LiveEventClient };
