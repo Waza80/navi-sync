@@ -1,4 +1,4 @@
-import { and, count, desc, eq, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { existsSync } from 'node:fs';
 import { jobs } from './schema';
 import { db } from '$lib/server/db';
@@ -438,6 +438,119 @@ export async function listFailedDownloadTracks(
 			),
 		)
 		.orderBy(tracks.updatedAt)
+		.limit(limit);
+}
+
+/**
+ * Metadata-repair candidates: filed rows with at least one gap worth filling —
+ * no album (the "songs with no album" case), or no cover art, or missing
+ * album-artist / genre / year / track number / ISRC.
+ *
+ * Ordered so the worst-off rows come first (no album, no cover), which is what
+ * the user cares about. `limit` keeps each sweep pass bounded.
+ */
+export async function listMetadataRepairCandidates(limit = 25) {
+	return db
+		.select({
+			id: tracks.id,
+			title: tracks.title,
+			artist: tracks.artist,
+			album: tracks.album,
+			albumArtist: tracks.albumArtist,
+			coverPath: tracks.coverPath,
+			genre: tracks.genre,
+			releaseYear: tracks.releaseYear,
+			trackNumber: tracks.trackNumber,
+			discNumber: tracks.discNumber,
+			isrc: tracks.isrc,
+			durationSec: tracks.durationSec,
+			filePath: tracks.filePath,
+		})
+		.from(tracks)
+		.where(
+			and(
+				isNotNull(tracks.filePath),
+				or(
+					sql`${tracks.album} IS NULL OR btrim(${tracks.album}) = ''`,
+					sql`${tracks.coverPath} IS NULL`,
+					sql`${tracks.albumArtist} IS NULL`,
+					sql`${tracks.genre} IS NULL`,
+					sql`${tracks.releaseYear} IS NULL`,
+				),
+			),
+		)
+		.orderBy(
+			// Rows missing an album rank above rows only missing a cover.
+			sql`CASE WHEN ${tracks.album} IS NULL OR btrim(${tracks.album}) = '' THEN 0 ELSE 1 END`,
+			asc(tracks.updatedAt),
+		)
+		.limit(limit);
+}
+
+/**
+ * Apply an enrichment patch to a track row. Only non-empty values are written,
+ * so an existing album/cover can never be blanked by a sparse source answer.
+ * When `moveFile` is set and the album changed, the file is moved to its new
+ * album folder so Navidrome sees the corrected grouping.
+ */
+export async function applyMetadataPatch(
+	id: string,
+	patch: {
+		album?: string | null;
+		albumArtist?: string | null;
+		coverUrl?: string | null;
+		genre?: string | null;
+		year?: number | null;
+		trackNumber?: number | null;
+		discNumber?: number | null;
+		isrc?: string | null;
+	},
+): Promise<boolean> {
+	const set: Partial<typeof tracks.$inferInsert> = { updatedAt: new Date() };
+	if (patch.album != null && patch.album.trim() !== '') set.album = patch.album;
+	if (patch.albumArtist != null && patch.albumArtist.trim() !== '')
+		set.albumArtist = patch.albumArtist;
+	if (patch.genre != null && patch.genre.trim() !== '') set.genre = patch.genre;
+	if (patch.year != null && Number.isFinite(patch.year)) set.releaseYear = patch.year;
+	if (patch.trackNumber != null) set.trackNumber = patch.trackNumber;
+	if (patch.discNumber != null) set.discNumber = patch.discNumber;
+	if (patch.isrc != null && patch.isrc.trim() !== '') set.isrc = patch.isrc;
+	// coverPath is written by the caller once the image is actually on disk.
+	const rows = await db
+		.update(tracks)
+		.set(set)
+		.where(eq(tracks.id, id))
+		.returning({ id: tracks.id });
+	return rows.length > 0;
+}
+
+/** Record the on-disk cover path after a cover image is written. */
+export async function setCoverPath(id: string, coverPath: string | null): Promise<void> {
+	await db.update(tracks).set({ coverPath, updatedAt: new Date() }).where(eq(tracks.id, id));
+}
+
+/**
+ * Point a row at a new on-disk audio file. Used by metadata repair after a
+ * discovered album forces the file into a different album folder.
+ */
+export async function updateTrackFilePath(id: string, filePath: string): Promise<void> {
+	await db.update(tracks).set({ filePath, updatedAt: new Date() }).where(eq(tracks.id, id));
+}
+
+/** Rows whose album cover is missing or points at a file that no longer exists. */
+export async function listBrokenCoverCandidates(limit = 25) {
+	return db
+		.select({
+			id: tracks.id,
+			title: tracks.title,
+			artist: tracks.artist,
+			album: tracks.album,
+			coverPath: tracks.coverPath,
+			filePath: tracks.filePath,
+		})
+		.from(tracks)
+		.where(and(isNotNull(tracks.filePath), sql`${tracks.coverPath} IS NULL`))
+		.orderBy(asc(tracks.updatedAt))
 		.limit(limit);
 }
 

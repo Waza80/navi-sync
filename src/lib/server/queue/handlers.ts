@@ -48,6 +48,8 @@ export async function runJob(job: JobRow, ctx: JobContext): Promise<Record<strin
 			return runNavidromeScan(job);
 		case 'upgrade_check':
 			return runUpgradeCheck(job, ctx);
+		case 'metadata_repair':
+			return runMetadataRepair(job, ctx);
 		default:
 			throw new Error(`No handler for job type: ${job.type}`);
 	}
@@ -125,6 +127,14 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		await ctx.report(8, 'fetching metadata');
 		meta = await provider.metadata(ref);
 		await ctx.report(15, `metadata: ${meta.artist} — ${meta.title}`);
+	}
+
+	// 2b. Provider metadata can lack the album (bare-id lookups, stripped
+	// payloads). Fill it from the catalog sources before the file is written,
+	// so the library folder and tags are correct from the very first download.
+	if (!meta.album || !meta.albumArtist || !meta.coverUrl) {
+		await ctx.report(16, 'filling missing album metadata');
+		meta = { ...(await enrichInline(meta)), streamToken: meta.streamToken };
 	}
 
 	// 3. Guardrails (spec: 24-bit hard stop, no pointless re-downloads).
@@ -503,7 +513,30 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 	let tagsSkipped = 0;
 	let tagsFailed = 0;
 	let coversBackfilled = 0;
+	let metadataRepairEnqueued = 0;
 	if (payload.repair) {
+		// Metadata repair FIRST: fill missing album/genre/year/ISRC and broken
+		// covers from the catalog sources. Enqueued at high priority so it runs
+		// ahead of the retag pass below, and each job force-retags its own file
+		// — so the library converges whether or not the retag pass sees the
+		// corrected rows in time.
+		await updateProgress(job.id, job.type, job.trackId, 15, 'repairing missing metadata');
+		const { listMetadataRepairCandidates } = await import('$lib/server/db/tracks');
+		const { enqueueJob: enqueueRepair } = await import('./jobs');
+		const metadataCandidates = await listMetadataRepairCandidates(200);
+		for (const cand of metadataCandidates) {
+			await enqueueRepair({
+				type: 'metadata_repair',
+				payload: { trackId: cand.id, reason: 'navidrome-repair' },
+				trackId: cand.id,
+				priority: 1,
+			});
+		}
+		metadataRepairEnqueued = metadataCandidates.length;
+		log.info('navidrome repair metadata pass enqueued', {
+			candidates: metadataCandidates.length,
+		});
+
 		// Repair mode: rewrite embedded tags from canonical DB data BEFORE
 		// scanning, so Navidrome indexes real artists/albums instead of
 		// [Unknown]. Store FLACs often carry junk/empty Vorbis comments.
@@ -624,8 +657,242 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		stamped,
 		retagged,
 		coversBackfilled,
+		metadataRepairEnqueued,
 		filesOnDisk: payload.filesOnDisk ?? null,
 		tracksInDb: payload.tracksInDb ?? null,
+	};
+}
+
+/* ── metadata_repair ──────────────────────────────────────────────────────── */
+
+/**
+ * Fill gaps in a not-yet-persisted TrackMeta using the catalog sources. Used
+ * on the download path so a track that lands with no album gets one before the
+ * file is written. Never throws and never changes provider/stream identity.
+ */
+async function enrichInline(meta: TrackMeta): Promise<TrackMeta> {
+	try {
+		const { enrichTrackMetadata } = await import('$lib/server/metadata');
+		const { neededFieldsFor } = await import('$lib/server/metadata/types');
+		const needed = neededFieldsFor({
+			album: meta.album,
+			albumArtist: meta.albumArtist,
+			coverPath: meta.coverUrl,
+			genre: meta.genre,
+			releaseYear: meta.year,
+			trackNumber: meta.trackNumber,
+			discNumber: meta.discNumber,
+			isrc: meta.isrc,
+		});
+		if (needed.length === 0) return meta;
+		const { patch } = await enrichTrackMetadata({
+			trackId: '',
+			title: meta.title,
+			artist: meta.artist,
+			album: meta.album,
+			isrc: meta.isrc,
+			durationSec: meta.durationSec,
+			year: meta.year,
+			needed,
+		});
+		if (Object.keys(patch).length === 0) return meta;
+		return {
+			...meta,
+			album: patch.album ?? meta.album,
+			albumArtist: patch.albumArtist ?? meta.albumArtist,
+			coverUrl: patch.coverUrl ?? meta.coverUrl,
+			genre: patch.genre ?? meta.genre,
+			year: patch.year ?? meta.year,
+			trackNumber: patch.trackNumber ?? meta.trackNumber,
+			discNumber: patch.discNumber ?? meta.discNumber,
+			isrc: patch.isrc ?? meta.isrc,
+		};
+	} catch (err) {
+		log.debug('inline metadata enrichment skipped', { error: String(err) });
+		return meta;
+	}
+}
+
+/**
+ * Fills a track's metadata gaps from the catalog sources (MusicBrainz, Apple
+ * Music, Spotify, TIDAL, Qobuz) and repairs the library files it affects.
+ *
+ * Runs three passes, each independent so one failing source never blocks the
+ * others:
+ *   1. metadata  — missing album / album artist / genre / year / track no. / ISRC
+ *   2. cover     — missing or broken cover art (also re-fetches known-bad ones)
+ *   3. retag     — rewrites embedded tags + moves the file if the album changed
+ *
+ * All three are best-effort: the job succeeds and reports what it fixed.
+ */
+async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<string, unknown>> {
+	const payload = job.payload as { trackId?: string; reason?: string };
+	if (typeof payload.trackId !== 'string') throw new Error('metadata_repair missing trackId');
+	const row = await getTrackById(payload.trackId);
+	if (!row) throw new Error(`Track not found: ${payload.trackId}`);
+	if (!row.filePath) {
+		// Only filed rows are repairable — a failed download has nothing to fix.
+		return { skipped: true, reason: 'no file on disk' };
+	}
+
+	const { enrichTrackMetadata, neededFieldsFor } = await import('$lib/server/metadata');
+	const { fetchFirstImage } = await import('$lib/server/metadata/cover');
+	const { applyMetadataPatch, setCoverPath } = await import('$lib/server/db/tracks');
+	const { coverRelativePath, trackBaseRelativePath } = await import('$lib/server/library/paths');
+
+	const needed = neededFieldsFor({
+		album: row.album,
+		albumArtist: row.albumArtist,
+		coverPath: row.coverPath,
+		genre: row.genre,
+		releaseYear: row.releaseYear,
+		trackNumber: row.trackNumber,
+		discNumber: row.discNumber,
+		isrc: row.isrc,
+	});
+
+	// ── 1. Metadata pass ────────────────────────────────────────────────────
+	let patch: Awaited<ReturnType<typeof enrichTrackMetadata>>['patch'] = {};
+	let filledBy: Record<string, string> = {};
+	let tried: string[] = [];
+	if (needed.length > 0) {
+		await ctx.report(20, 'querying metadata sources');
+		const result = await enrichTrackMetadata({
+			trackId: row.id,
+			title: row.title,
+			artist: row.artist,
+			album: row.album,
+			isrc: row.isrc,
+			durationSec: row.durationSec,
+			year: row.releaseYear,
+			needed,
+		});
+		patch = result.patch;
+		filledBy = result.filledBy;
+		tried = result.tried;
+		if (Object.keys(patch).length > 0) {
+			await applyMetadataPatch(row.id, patch);
+			log.info('metadata repaired', {
+				trackId: row.id,
+				title: row.title,
+				fields: Object.keys(patch).join(','),
+				via: Object.values(filledBy).join(','),
+			});
+		}
+	}
+
+	// Effective metadata = patch wins over the stored row.
+	const album = patch.album ?? row.album;
+	const albumArtist = patch.albumArtist ?? row.albumArtist;
+	const genre = patch.genre ?? row.genre;
+	const year = patch.year ?? row.releaseYear;
+	const trackNumber = patch.trackNumber ?? row.trackNumber;
+	const discNumber = patch.discNumber ?? row.discNumber;
+	const albumChanged = patch.album != null && patch.album !== row.album;
+
+	// ── 2. Cover pass ───────────────────────────────────────────────────────
+	await ctx.report(45, 'repairing cover art');
+	let coverBytes: Buffer | null = null;
+	const wantsCover = !row.coverPath || needed.includes('coverUrl');
+	if (wantsCover) {
+		// Try the source-provided artwork first, then a plain artist/album
+		// search via the existing public Deezer helper.
+		coverBytes = await fetchFirstImage([patch.coverUrl]);
+		if (!coverBytes && album) {
+			const { fetchAlbumArt } = await import('$lib/server/library/coverart');
+			coverBytes = await fetchAlbumArt(row.artist, album);
+		}
+		if (coverBytes) {
+			try {
+				const { mkdir, writeFile } = await import('node:fs/promises');
+				const relPath = coverRelativePath({
+					title: row.title,
+					artist: row.artist,
+					album,
+					trackNumber,
+				});
+				const dest = join(env.MUSIC_LIBRARY_DIR, relPath);
+				await mkdir(join(dest, '..'), { recursive: true });
+				await writeFile(dest, coverBytes);
+				await setCoverPath(row.id, relPath);
+				log.info('cover repaired', {
+					trackId: row.id,
+					path: relPath,
+					bytes: coverBytes.length,
+				});
+			} catch (err) {
+				log.warn('cover write failed', { trackId: row.id, error: String(err) });
+			}
+		}
+	}
+
+	// ── 3. Retag + relocate ─────────────────────────────────────────────────
+	let retagged = false;
+	let movedTo: string | null = null;
+	if (Object.keys(patch).length > 0 || coverBytes) {
+		await ctx.report(70, 'rewriting embedded tags');
+		const { ensureFileTags } = await import('$lib/server/library/tagging');
+		let filePath = row.filePath;
+
+		// An album discovered after the fact means the file sits in the wrong
+		// folder (or "Unknown Album") — move it before tagging.
+		if (albumChanged && album) {
+			try {
+				const { rename } = await import('node:fs/promises');
+				const { existsSync } = await import('node:fs');
+				const destRel = `${trackBaseRelativePath({
+					title: row.title,
+					artist: row.artist,
+					album,
+					trackNumber,
+				})}.${filePath.split('.').pop()}`;
+				const dest = join(env.MUSIC_LIBRARY_DIR, destRel);
+				if (dest !== filePath && !existsSync(dest)) {
+					const { mkdir } = await import('node:fs/promises');
+					await mkdir(join(dest, '..'), { recursive: true });
+					await rename(filePath, dest);
+					const { updateTrackFilePath } = await import('$lib/server/db/tracks');
+					await updateTrackFilePath(row.id, dest);
+					filePath = dest;
+					movedTo = destRel;
+					log.info('track moved to corrected album folder', {
+						trackId: row.id,
+						dest: destRel,
+					});
+				}
+			} catch (err) {
+				log.warn('track relocate failed', { trackId: row.id, error: String(err) });
+			}
+		}
+
+		const outcome = await ensureFileTags(
+			filePath,
+			{
+				title: row.title,
+				artist: row.artist,
+				album,
+				albumArtist,
+				trackNumber,
+				discNumber,
+				year,
+				genre,
+				cover: coverBytes,
+				lyricsPlain: null,
+			},
+			{ force: true },
+		);
+		retagged = outcome === 'ok';
+	}
+
+	return {
+		trackId: row.id,
+		reason: payload.reason ?? 'sweep',
+		tried,
+		filled: Object.keys(patch),
+		filledBy,
+		coverFixed: coverBytes !== null,
+		retagged,
+		movedTo,
 	};
 }
 

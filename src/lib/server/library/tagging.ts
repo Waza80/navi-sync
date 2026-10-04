@@ -157,19 +157,26 @@ export async function tagFlacStream(path: string, tags: TagData): Promise<void> 
  * Ensure a library file carries usable embedded tags, repairing from
  * canonical data when the file's own tags are missing/empty. Returns what
  * happened — the repair flow aggregates these counts.
+ *
+ * `force` rewrites tags even when the file already has a title+artist, which
+ * is what metadata enrichment needs after it discovers a previously unknown
+ * album, genre or track number.
  */
 export async function ensureFileTags(
 	filePath: string,
 	tags: TagData,
+	opts: { force?: boolean } = {},
 ): Promise<'ok' | 'skipped' | 'failed'> {
 	try {
 		const ext = filePath.toLowerCase().endsWith('.flac') ? 'flac' : 'mp3';
-		const info = await parseFile(filePath, { duration: false }).catch(() => null);
-		const c = info?.common;
-		if (c?.title && c?.artist) return 'skipped';
+		if (!opts.force) {
+			const info = await parseFile(filePath, { duration: false }).catch(() => null);
+			const c = info?.common;
+			if (c?.title && c?.artist) return 'skipped';
+		}
 		if (ext === 'flac') await tagFlac(filePath, tags);
 		else tagMp3(filePath, tags);
-		log.info('repaired missing embedded tags', { filePath });
+		log.info('repaired embedded tags', { filePath, force: opts.force ?? false });
 		return 'ok';
 	} catch (err) {
 		log.warn('tag repair failed', { filePath, error: String(err) });

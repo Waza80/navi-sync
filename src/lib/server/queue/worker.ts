@@ -156,17 +156,23 @@ export function ensureWorkerStarted(): void {
 			void claimLoop();
 
 			// Periodic maintenance sweeps: lyrics backfill (5m), failed-download
-			// retries (30m), cross-provider quality upgrades (1h). All are
-			// rate-limited by the jobs table itself.
+			// retries (30m), cross-provider quality upgrades (1h), metadata+cover
+			// repair (1h). All are rate-limited by the jobs table itself.
 			const lyricsSweep = setInterval(() => void lyricsBackfillSweep(), 5 * 60_000);
 			lyricsSweep.unref?.();
 			const retrySweep = setInterval(() => void downloadRetrySweep(), 30 * 60_000);
 			retrySweep.unref?.();
 			const upgradeSweep = setInterval(() => void qualityUpgradeSweep(), 60 * 60_000);
 			upgradeSweep.unref?.();
+			// Metadata repair runs on the SAME cadence as the quality upgrade sweep:
+			// songs with broken covers or a missing album are monitored just as
+			// aggressively as songs awaiting a better master.
+			const metadataSweep = setInterval(() => void metadataRepairSweep(), 60 * 60_000);
+			metadataSweep.unref?.();
 			void lyricsBackfillSweep();
 			void downloadRetrySweep();
 			void qualityUpgradeSweep();
+			void metadataRepairSweep();
 
 			globalForWorker.naviWorkerStop = async () => {
 				shuttingDown = true;
@@ -247,6 +253,50 @@ export function ensureWorkerStarted(): void {
 					}
 				} catch (err) {
 					log.debug('upgrade sweep skipped', { error: String(err) });
+				}
+			}
+
+			/**
+			 * Metadata + cover repair sweep. Runs hourly on the same cadence as the
+			 * quality upgrade sweep: any filed row with a missing album, missing
+			 * cover art, or missing album-artist/genre/year/ISRC gets an enrichment
+			 * job. Each job fills only what is absent, writes the cover, force-retags
+			 * the file and relocates it when a newly-found album changes its folder.
+			 */
+			async function metadataRepairSweep(): Promise<void> {
+				try {
+					const { listMetadataRepairCandidates, listBrokenCoverCandidates } =
+						await import('$lib/server/db/tracks');
+					const { enqueueJob } = await import('./jobs');
+
+					// Metadata gaps (album first, then covers) and rows whose cover
+					// is recorded but whose art may be stale/broken on disk.
+					const candidates = await listMetadataRepairCandidates(25);
+					const covers = await listBrokenCoverCandidates(25);
+					const seen = new Set<string>();
+					let enqueued = 0;
+					for (const c of [...candidates, ...covers]) {
+						if (seen.has(c.id)) continue;
+						seen.add(c.id);
+						await enqueueJob({
+							type: 'metadata_repair',
+							payload: { trackId: c.id, reason: 'sweep' },
+							trackId: c.id,
+							priority: 6,
+						});
+						enqueued++;
+						log.info('metadata repair enqueued', {
+							trackId: c.id,
+							title: c.title,
+							missingAlbum: !c.album,
+							missingCover: !('coverPath' in c) || !c.coverPath,
+						});
+					}
+					if (enqueued > 0) {
+						log.info('metadata repair sweep enqueued batch', { enqueued });
+					}
+				} catch (err) {
+					log.debug('metadata repair sweep skipped', { error: String(err) });
 				}
 			}
 
