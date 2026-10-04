@@ -95,11 +95,15 @@ export const deezerProvider: Provider = {
 	},
 
 	async search(query) {
-		// Phase 2 wires this into the UI; the capability ships with the trait.
-		const body = await callGateway('search.music', { query, filter: 'TRACKS' });
-		const results = body.results as
-			{ TRACKS?: { data?: Array<Record<string, unknown>> } } | undefined;
-		const rows = results?.TRACKS?.data ?? [];
+		// gw-light search.music requires BOTH filter and output; rows come back
+		// directly under results.data (verified live 2026-10).
+		const body = await callGateway('search.music', {
+			query,
+			filter: 'TRACKS',
+			output: 'TRACK',
+		});
+		const results = body.results as { data?: Array<Record<string, unknown>> } | undefined;
+		const rows = results?.data ?? [];
 		return rows.slice(0, 25).map((r) => gatewayRowToMeta(r));
 	},
 

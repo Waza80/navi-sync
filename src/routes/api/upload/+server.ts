@@ -8,7 +8,7 @@ import { logger } from '$lib/server/logger';
 import { cleanupTemp, moveIntoLibrary, sha256File } from '$lib/server/library/files';
 import { probeQuality, tagFlac, tagMp3 } from '$lib/server/library/tagging';
 import { coverRelativePath, trackBaseRelativePath } from '$lib/server/library/paths';
-import { upsertTrack } from '$lib/server/db/tracks';
+import { findLibraryDuplicate, upsertTrack } from '$lib/server/db/tracks';
 import { downloadLyrics } from '$lib/server/lyrics';
 import type { TrackMeta } from '$lib/server/providers/types';
 
@@ -65,6 +65,22 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return badRequest(
 			`Only .mp3 and .flac files can be filed currently (got .${ext}). Convert the file and retry.`,
 			'UNSUPPORTED_TYPE',
+		);
+	}
+
+	// Dedupe: a song already in the library (title+artist) must never appear
+	// twice. Short-circuit politely instead of creating a second row.
+	const duplicate = await findLibraryDuplicate(input.title, input.artist);
+	if (duplicate?.filePath) {
+		await cleanupTemp(tmpPath);
+		log.info('upload rejected as duplicate', { trackId: duplicate.id, title: input.title });
+		return json(
+			{
+				duplicate: true,
+				trackId: duplicate.id,
+				message: 'This song is already in your library.',
+			},
+			{ status: 200 },
 		);
 	}
 

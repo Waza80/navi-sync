@@ -293,3 +293,14 @@ export async function nextRunnableCount(): Promise<number> {
 }
 
 export { asc };
+
+/** Bulk-clear unimportant queue history: succeeded, cancelled and failed
+ * (retryable) jobs. Dead-lettered jobs are kept for manual review. */
+export async function clearCompletedJobs(): Promise<number> {
+	const rows = await db
+		.delete(jobs)
+		.where(inArray(jobs.status, ['succeeded', 'cancelled', 'failed']))
+		.returning({ id: jobs.id });
+	if (rows.length > 0) log.info('cleared completed jobs', { count: rows.length });
+	return rows.length;
+}

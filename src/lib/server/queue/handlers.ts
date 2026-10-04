@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { stat } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import { writeFile } from 'node:fs/promises';
 import { env } from '$lib/server/env';
 import { logger } from '$lib/server/logger';
@@ -10,7 +10,7 @@ import {
 	updateLyricsStatus,
 	upsertTrack,
 } from '$lib/server/db/tracks';
-import { updateProgress, type JobRow } from './jobs';
+import { enqueueJob, updateProgress, type JobRow } from './jobs';
 import { downloadLyrics } from '$lib/server/lyrics';
 import { providers } from '$lib/server/providers/registry';
 import { ProviderError, type StreamResolution, type TrackMeta } from '$lib/server/providers/types';
@@ -217,6 +217,21 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	// 11. Persist track row.
 	await ctx.report(96, 'updating database');
 	const size = await stat(finalPath).then((s) => s.size);
+	const upgradeForTrackId =
+		typeof job.payload['upgradeForTrackId'] === 'string'
+			? job.payload['upgradeForTrackId']
+			: null;
+	if (upgradeForTrackId) {
+		// Upgrade: drop the superseded file (new one passed the guardrail as
+		// strictly better quality).
+		const previous = await getTrackById(upgradeForTrackId);
+		const oldPath = typeof previous?.['filePath'] === 'string' ? previous['filePath'] : null;
+		if (oldPath && oldPath !== finalPath) {
+			await rm(oldPath, { force: true }).catch((err) =>
+				log.warn('old file cleanup failed', { path: oldPath, error: String(err) }),
+			);
+		}
+	}
 	const trackId = await upsertTrack({
 		meta,
 		resolution,
@@ -227,8 +242,13 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		checksumSha256: checksum,
 		lyricsStatus: lyrics.success ? (lyrics.synced ? 'synced' : 'plain') : 'failed',
 	});
-	if (!lyrics.success) {
-		await updateLyricsStatus(trackId, 'failed').catch(() => undefined);
+	if (upgradeForTrackId) {
+		// Refetch lyrics for the surviving row after a quality upgrade.
+		try {
+			await enqueueJob({ type: 'lyrics', payload: { trackId }, trackId });
+		} catch (err) {
+			log.warn('post-upgrade lyrics refetch enqueue failed', { trackId, error: String(err) });
+		}
 	}
 
 	return {
@@ -297,6 +317,7 @@ async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, u
 	const track = await getTrackById(payload.trackId);
 	if (!track) throw new Error(`Track not found: ${payload.trackId}`);
 	const t = track as {
+		filePath: string | null;
 		provider: string;
 		providerTrackId: string | null;
 		title: string;
@@ -332,14 +353,34 @@ async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, u
 	};
 	await ctx.report(50, 'querying lyrics sources');
 	const result = await downloadLyrics(meta);
-	await updateLyricsStatus(
-		t.id,
-		result.success ? (result.synced ? 'synced' : 'plain') : 'failed',
-	);
 	if (!result.success) {
-		// Contained failure: job succeeds but reports the lyrics failure loudly.
+		// "If the lyrics API is down, keep the same": when a sidecar already
+		// exists for this track, keep the current status untouched.
+		const base =
+			typeof t.filePath === 'string' ? t.filePath.replace(/\.(mp3|flac)$/i, '') : null;
+		const hasSidecar = base
+			? await stat(`${base}.lrc`)
+					.then(
+						() => true,
+						() => false,
+					)
+					.then(async (lrc) =>
+						lrc
+							? true
+							: await stat(`${base}.txt`).then(
+									() => true,
+									() => false,
+								),
+					)
+			: false;
+		if (hasSidecar) {
+			log.info('lyrics fetch failed — keeping existing sidecar', { trackId: t.id });
+			return { success: false, kept: true, error: result.error ?? 'all sources failed' };
+		}
+		await updateLyricsStatus(t.id, 'failed');
 		return { success: false, error: result.error ?? 'all sources failed' };
 	}
+	await updateLyricsStatus(t.id, result.synced ? 'synced' : 'plain');
 	return { success: true, synced: result.synced ?? false, path: result.path };
 }
 

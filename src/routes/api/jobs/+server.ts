@@ -26,23 +26,45 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 			attempts: j.attempts,
 			maxAttempts: j.maxAttempts,
 			trackId: j.trackId,
+			result: j.result,
 			createdAt: j.createdAt,
 			finishedAt: j.finishedAt,
 		})),
 	});
 };
 
-const enqueueSchema = z.object({
-	url: z.string().min(1).max(2048),
-});
+const enqueueSchema = z.union([
+	z.object({ url: z.string().min(1).max(2048) }),
+	z.object({ provider: z.string().min(1).max(50), trackId: z.string().min(1).max(100) }),
+]);
 
-/** POST /api/jobs — enqueue a download (alias of POST /api/tracks). */
+/** POST /api/jobs — enqueue a download (URL or provider+trackId from search). */
 export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!locals.user) return unauthorizedResponse();
 	const user = locals.user;
 	const parsed = enqueueSchema.safeParse(await request.json().catch(() => null));
 	if (!parsed.success)
-		return badRequest('Body must be {"url": "<provider track url>"}', 'INVALID_BODY');
+		return badRequest(
+			'Body must be {"url": "..."} or {"provider": "...", "trackId": "..."}',
+			'INVALID_BODY',
+		);
+
+	if ('trackId' in parsed.data) {
+		// Direct enqueue from search results (provider-tagged).
+		const { getProvider } = await import('$lib/server/providers/registry');
+		const provider = getProvider(parsed.data.provider);
+		const meta = await provider.metadata({
+			provider: provider.id,
+			id: parsed.data.trackId,
+			sourceUrl: undefined,
+		});
+		const job = await enqueueJob({
+			type: 'download',
+			payload: { url: meta.sourceUrl ?? meta.providerTrackId, provider: provider.id },
+			createdBy: user.id,
+		});
+		return json({ job: { id: job.id, type: job.type, status: job.status } }, { status: 201 });
+	}
 
 	const { findProviderForUrl, getProvider, providers } =
 		await import('$lib/server/providers/registry');

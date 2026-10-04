@@ -4,12 +4,14 @@
 
 	let {
 		track,
+		playing,
 		ondelete,
-		onrefetch
+		onplay
 	}: {
 		track: TrackDTO;
+		playing?: boolean;
 		ondelete?: (id: string) => void;
-		onrefetch?: (id: string) => void;
+		onplay?: (id: string) => void;
 	} = $props();
 
 	const lyricsBadge = $derived(
@@ -18,16 +20,27 @@
 			: track.lyricsStatus === 'plain'
 				? { text: 'LYRICS PLAIN', cls: 'bg-tertiary-container text-on-tertiary-container' }
 				: track.lyricsStatus === 'failed'
-					? { text: 'LYRICS ✗', cls: 'bg-error-container text-on-error-container' }
+					? { text: 'LYRICS ⏳', cls: 'bg-surface-highest text-on-surface-variant' }
 					: null
 	);
 	const lossless = $derived(track.isLossless || track.format === 'flac');
 </script>
 
 <div
-	class="m3-card flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:gap-4"
+	class="m3-card flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:gap-4 {playing ? 'ring-1 ring-primary' : ''}"
 	data-track-id={track.id}
 >
+	<button
+		type="button"
+		class="flex h-12 w-12 shrink-0 items-center justify-center rounded-full {playing
+			? 'bg-primary text-on-primary'
+			: 'bg-secondary-container text-on-secondary-container'}"
+		title={playing ? 'Playing' : 'Preview'}
+		aria-label="Preview {track.title}"
+		onclick={() => onplay?.(track.id)}
+	>
+		{playing ? '⏸' : '▶'}
+	</button>
 	<div class="min-w-0 flex-1">
 		<p class="truncate text-sm font-medium">{track.title}</p>
 		<p class="truncate text-xs text-on-surface-variant">
@@ -50,13 +63,6 @@
 		</span>
 	</div>
 	<div class="flex gap-1">
-		<button
-			type="button"
-			class="m3-btn m3-btn-text text-xs"
-			title="Refetch lyrics"
-			aria-label="Refetch lyrics for {track.title}"
-			onclick={() => onrefetch?.(track.id)}>Lyrics ↻</button
-		>
 		<button
 			type="button"
 			class="m3-btn m3-btn-text text-error text-xs"

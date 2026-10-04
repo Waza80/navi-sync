@@ -22,20 +22,18 @@
 	let { data }: { data: { providers: ProviderInfo[] } } = $props();
 
 	// Per-provider form state, initialized from the server snapshot.
-	// Read the server snapshot inside a reactive context to avoid capturing a
-	// stale `data` reference at construction (state_referenced_locally).
-	let forms = $state<Record<string, Record<string, string>>>({});
-	let initialized = false;
-	$effect.pre(() => {
-		if (initialized) return;
-		initialized = true;
-		forms = Object.fromEntries(
+	// Forms are initialized synchronously from the server snapshot — this is
+	// intentional initial-only capture (required for SSR; the form is reset by
+	// invalidateAll + reload after saves).
+	// svelte-ignore state_referenced_locally
+	let forms = $state<Record<string, Record<string, string>>>(
+		Object.fromEntries(
 			data.providers.map((p) => [
 				p.id,
 				{ ...Object.fromEntries(p.fields.map((f) => [f.key, ''])), ...p.prefill }
 			])
-		);
-	});
+		)
+	);
 	let status = $state<Record<string, { tone: 'ok' | 'error' | 'info'; text: string } | null>>({});
 	let busy = $state<Record<string, boolean>>({});
 

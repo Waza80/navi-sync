@@ -138,6 +138,15 @@ export function ensureWorkerStarted(): void {
 			poller.unref?.();
 			void claimLoop();
 
+			// Periodic maintenance sweeps (Phase 2): lyrics backfill + quality
+			// upgrades. Both are rate-limited by the jobs table itself.
+			const lyricsSweep = setInterval(() => void lyricsBackfillSweep(), 5 * 60_000);
+			lyricsSweep.unref?.();
+			const upgradeSweep = setInterval(() => void qualityUpgradeSweep(), 60 * 60_000);
+			upgradeSweep.unref?.();
+			void lyricsBackfillSweep();
+			void qualityUpgradeSweep();
+
 			globalForWorker.naviWorkerStop = async () => {
 				shuttingDown = true;
 				const deadline = Date.now() + 30_000;
@@ -148,6 +157,149 @@ export function ensureWorkerStarted(): void {
 					await new Promise((r) => setTimeout(r, 1000));
 				}
 			};
+
+			/* ── maintenance sweeps ─────────────────────────────────────────────────── */
+
+			async function lyricsBackfillSweep(): Promise<void> {
+				try {
+					const { listLyricsBackfillCandidates } = await import('$lib/server/db/tracks');
+					const { enqueueJob } = await import('./jobs');
+					const candidates = await listLyricsBackfillCandidates(5);
+					for (const track of candidates) {
+						await enqueueJob({
+							type: 'lyrics',
+							payload: { trackId: track.id },
+							trackId: track.id,
+						});
+						log.info('lyrics backfill enqueued', {
+							trackId: track.id,
+							title: track.title,
+						});
+					}
+				} catch (err) {
+					log.debug('lyrics backfill sweep skipped', { error: String(err) });
+				}
+			}
+
+			/**
+			 * Quality upgrade sweep: periodically ask each provider whether a better
+			 * stream now exists for tracks below the 24-bit ceiling. On a strictly
+			 * better offer, enqueue an upgrade download (which refetches lyrics after).
+			 * "If the lyrics API is down, keep the same" — the lyrics handler preserves
+			 * existing sidecars on failure.
+			 */
+			async function qualityUpgradeSweep(): Promise<void> {
+				try {
+					const { listUpgradeCandidates } = await import('$lib/server/db/tracks');
+					const { providers } = await import('$lib/server/providers/registry');
+					const { qualityRank } = await import('$lib/shared/quality');
+					const { enqueueJob } = await import('./jobs');
+					const { and, eq, inArray, gte } = await import('drizzle-orm');
+					const { jobs } = await import('$lib/server/db/schema');
+					const settings = await getSettings();
+
+					for (const provider of providers) {
+						const candidates = await listUpgradeCandidates(provider.id, 10);
+						for (const track of candidates) {
+							if (!track.providerTrackId) continue;
+							// Skip tracks with a recent/active download attempt.
+							const active = await db
+								.select({ id: jobs.id })
+								.from(jobs)
+								.where(
+									and(
+										eq(jobs.trackId, track.id),
+										eq(jobs.type, 'download'),
+										inArray(jobs.status, ['queued', 'running']),
+									),
+								)
+								.limit(1);
+							if (active.length > 0) continue;
+							const recent = await db
+								.select({ id: jobs.id })
+								.from(jobs)
+								.where(
+									and(
+										eq(jobs.trackId, track.id),
+										eq(jobs.type, 'download'),
+										gte(
+											jobs.createdAt,
+											new Date(Date.now() - 24 * 3600 * 1000),
+										),
+									),
+								)
+								.limit(1);
+							if (recent.length > 0) continue;
+
+							const meta = {
+								provider: track.provider,
+								providerTrackId: track.providerTrackId,
+								title: track.title,
+								artist: track.artist,
+								album: track.album,
+								albumArtist: track.artist,
+								isrc: track.isrc,
+								trackNumber: null,
+								discNumber: null,
+								durationSec: track.durationSec,
+								year: track.year,
+								genre: track.genre,
+								coverUrl: null,
+								sourceUrl: track.sourceUrl,
+								streamToken: null,
+							};
+							const existingRank = qualityRank({
+								format: track.format,
+								bitrateKbps: track.bitrateKbps,
+								bitDepth: track.bitDepth,
+								isLossless: track.isLossless,
+							});
+							if (existingRank >= 4) continue; // ceiling reached
+
+							try {
+								const resolution = await provider.resolve(meta, {
+									preferLossless: settings.preferLossless,
+									minBitrateKbps: settings.minBitrateKbps,
+									allowLowerFallback: settings.allowLowerFallback,
+								});
+								const incomingRank = qualityRank({
+									format: resolution.format,
+									bitrateKbps: resolution.claimedBitrateKbps,
+									bitDepth: resolution.claimedLossless ? 24 : null,
+									isLossless: resolution.claimedLossless,
+								});
+								if (incomingRank <= existingRank) continue;
+
+								await enqueueJob({
+									type: 'download',
+									payload: {
+										url: meta.sourceUrl ?? meta.providerTrackId,
+										provider: provider.id,
+										upgradeForTrackId: track.id,
+									},
+									trackId: track.id,
+								});
+								log.info('upgrade enqueued', {
+									trackId: track.id,
+									title: track.title,
+									from: existingRank,
+									to: incomingRank,
+								});
+							} catch (err) {
+								// No rights/availability right now — log quietly and skip the
+								// remaining candidates this sweep (next sweep retries).
+								log.debug('upgrade check unavailable', {
+									trackId: track.id,
+									error: String(err),
+								});
+								break;
+							}
+						}
+					}
+				} catch (err) {
+					log.debug('upgrade sweep skipped', { error: String(err) });
+				}
+			}
 
 			process.on('SIGTERM', () => {
 				void (async () => {

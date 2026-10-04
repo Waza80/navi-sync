@@ -2,6 +2,36 @@
 
 All notable changes to NaviSync. Format: Keep a Changelog; semver.
 
+## [0.2.1] — Phase 2B: CSV import, search UI, preview, queue management, sweeps — 2026-10-04
+
+### Added
+- **Playlist/CSV import** (`POST /api/playlist/import`): supports Deezer
+  library exports (exact `Deezer - id` + ISRC — zero guessing) and
+  Spotify-style exports (ISRC → exact Deezer-id resolution via public API;
+  strict title/artist/duration scoring as fallback). Unmatched rows are
+  reported with reasons, never guessed. Handles BOM, quoted fields, both
+  file layouts. Verified live: 37/38 Spotify rows matched (1 correctly
+  refused — ISRC absent from Deezer); Deezer 44-row library import.
+- **Provider search UI**: dashboard search card → `GET /api/search` fans out
+  to every provider (`search.music` params fixed: `filter`+`output`), results
+  tag-and-download in place. Verified live: 25 results for a Daft Punk query.
+- **Song preview**: authenticated streaming endpoint with HTTP Range support
+  (`/api/tracks/:id/audio`, 206 partials, seek-ready) + player bar in the UI.
+- **Queue management**: status filters with live counts (All/Active/Done/
+  Failed), "Clear finished" bulk cleanup, `result` payload in job listings.
+- **Autonomous maintenance sweeps**: lyrics backfill (5 min — tracks without
+  lyrics are retried on a 24h per-track backoff) and quality-upgrade sweep
+  (hourly — asks providers for better streams below the 24-bit ceiling;
+  upgrades refetch lyrics; a downed lyrics API never deletes existing
+  sidecars). Manual "refetch lyrics" button removed per design change.
+- **Upload dedupe**: title+artist library check — a song can never appear
+  twice; duplicate uploads return the existing track.
+
+### Fixed
+- `/providers` page 500 on SSR (forms now initialize synchronously from the
+  server snapshot).
+- Upload card spacing.
+
 ## [0.2.0] — Phase 2A: Providers, Upload, Apple lyrics — 2026-10-04
 
 ### Added

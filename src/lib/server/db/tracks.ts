@@ -174,3 +174,105 @@ export async function updateLyricsStatus(
 		.set({ lyricsStatus: status, updatedAt: new Date() })
 		.where(eq(tracks.id, id));
 }
+
+/**
+ * Duplicate guard for uploads: a song (title+artist, case-insensitive) that
+ * already has a file in the library must never appear twice. Returns the
+ * existing row so the caller can reject/short-circuit the upload.
+ */
+export async function findLibraryDuplicate(
+	title: string,
+	artist: string,
+): Promise<{ id: string; filePath: string | null } | null> {
+	const rows = await db
+		.select({ id: tracks.id, filePath: tracks.filePath })
+		.from(tracks)
+		.where(and(ilike(tracks.title, title), ilike(tracks.artist, artist)))
+		.limit(1);
+	return rows[0] ?? null;
+}
+
+/**
+ * Upgrade-sweep candidates: tracks that (a) have a real file, (b) sit below
+ * the 24-bit ceiling, (c) belong to the given provider.
+ */
+export async function listUpgradeCandidates(providerId: string, limit = 10) {
+	return db
+		.select({
+			id: tracks.id,
+			provider: tracks.provider,
+			providerTrackId: tracks.providerTrackId,
+			title: tracks.title,
+			artist: tracks.artist,
+			album: tracks.album,
+			isrc: tracks.isrc,
+			sourceUrl: tracks.sourceUrl,
+			format: tracks.format,
+			bitrateKbps: tracks.bitrateKbps,
+			bitDepth: tracks.bitDepth,
+			isLossless: tracks.isLossless,
+			durationSec: tracks.durationSec,
+			year: tracks.releaseYear,
+			genre: tracks.genre,
+		})
+		.from(tracks)
+		.where(
+			and(
+				eq(tracks.provider, providerId),
+				sql`(${tracks.isLossless} = false OR ${tracks.bitDepth} IS NULL OR ${tracks.bitDepth} < 24)`,
+			),
+		)
+		.orderBy(desc(tracks.createdAt))
+		.limit(limit);
+}
+
+/**
+ * Lyrics backfill candidates: real files with no usable lyrics and no recent
+ * lyrics attempt (jobs table rate-limits: a track whose last lyrics job
+ * failed/dead-lettered within 24h is skipped).
+ */
+export async function listLyricsBackfillCandidates(limit = 5): Promise<
+	Array<{
+		id: string;
+		title: string;
+		artist: string;
+		album: string | null;
+		provider: string;
+		providerTrackId: string | null;
+		sourceUrl: string | null;
+		durationSec: number | null;
+	}>
+> {
+	return db
+		.select({
+			id: tracks.id,
+			title: tracks.title,
+			artist: tracks.artist,
+			album: tracks.album,
+			provider: tracks.provider,
+			providerTrackId: tracks.providerTrackId,
+			sourceUrl: tracks.sourceUrl,
+			durationSec: tracks.durationSec,
+		})
+		.from(tracks)
+		.where(
+			and(
+				sql`${tracks.filePath} IS NOT NULL`,
+				sql`${tracks.lyricsStatus} IN ('failed','none')`,
+				sql`NOT EXISTS (
+					SELECT 1 FROM jobs j
+					WHERE j.track_id = ${tracks.id}
+					  AND j.type = 'lyrics'
+					  AND j.status IN ('queued','running')
+				)`,
+				sql`NOT EXISTS (
+					SELECT 1 FROM jobs j
+					WHERE j.track_id = ${tracks.id}
+					  AND j.type = 'lyrics'
+					  AND j.status IN ('dead','succeeded')
+					  AND j.created_at > now() - interval '24 hours'
+				)`,
+			),
+		)
+		.limit(limit);
+}

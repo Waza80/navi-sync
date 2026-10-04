@@ -18,7 +18,134 @@
 	let busy = $state(false);
 	let hydrated = $state(false);
 
-	// Upload (manual add) state
+	// ── Live queue (SSE) ────────────────────────────────────────────────────
+	$effect(() => {
+		if (!hydrated) {
+			live.hydrate(data.jobs);
+			hydrated = true;
+		}
+		live.start(() => void invalidateAll());
+	});
+	$effect(() => {
+		for (const j of data.jobs) if (!live.jobs.has(j.id)) live.jobs.set(j.id, j);
+	});
+
+	let queueFilter = $state<'all' | 'active' | 'done' | 'failed'>('all');
+	const queueCounts = $derived({
+		all: live.recentJobs.length,
+		active: live.recentJobs.filter((j) => j.status === 'queued' || j.status === 'running').length,
+		done: live.recentJobs.filter((j) => j.status === 'succeeded' || j.status === 'cancelled').length,
+		failed: live.recentJobs.filter((j) => j.status === 'failed' || j.status === 'dead').length
+	});
+	const visibleJobs = $derived(
+		queueFilter === 'all'
+			? live.recentJobs
+			: live.recentJobs.filter((j) =>
+					queueFilter === 'active'
+						? j.status === 'queued' || j.status === 'running'
+						: queueFilter === 'done'
+							? j.status === 'succeeded' || j.status === 'cancelled'
+							: j.status === 'failed' || j.status === 'dead'
+				)
+	);
+	let clearing = $state(false);
+	async function clearFinished() {
+		clearing = true;
+		try {
+			await fetch('/api/jobs/completed', { method: 'DELETE' });
+			for (const j of live.recentJobs) {
+				if (['succeeded', 'cancelled', 'failed'].includes(j.status)) live.jobs.delete(j.id);
+			}
+		} finally {
+			clearing = false;
+		}
+	}
+
+	// ── Add download ────────────────────────────────────────────────────────
+	async function submitDownload(e: SubmitEvent) {
+		e.preventDefault();
+		message = null;
+		if (urlInput.trim().length === 0) {
+			message = { tone: 'error', text: 'Paste a track URL or ID first.' };
+			return;
+		}
+		busy = true;
+		try {
+			const res = await fetch('/api/tracks', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ url: urlInput.trim() })
+			});
+			const body = (await res.json()) as { job?: { id: string }; error?: { message: string } };
+			if (!res.ok) {
+				message = { tone: 'error', text: body.error?.message ?? `HTTP ${res.status}` };
+				return;
+			}
+			message = { tone: 'ok', text: 'Queued — watch the live progress below.' };
+			urlInput = '';
+			await invalidateAll();
+		} catch {
+			message = { tone: 'error', text: 'Network error while queueing the download.' };
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function cancelJob(id: string) {
+		await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
+	}
+	async function retryJob(id: string) {
+		await fetch(`/api/jobs/${id}/retry`, { method: 'POST' });
+	}
+	async function deleteTrack(id: string) {
+		await fetch(`/api/tracks/${id}`, { method: 'DELETE' });
+		if (nowPlaying?.id === id) nowPlaying = null;
+		await invalidateAll();
+	}
+
+	// ── Search (providers) ──────────────────────────────────────────────────
+	interface SearchResult {
+		provider: string;
+		providerTrackId: string;
+		title: string;
+		artist: string;
+		album: string | null;
+		durationSec: number | null;
+	}
+	let searchInput = $state('');
+	let searchBusy = $state(false);
+	let searchResults = $state<SearchResult[]>([]);
+	let searchMsg = $state<string | null>(null);
+	let queuedSearch = $state<Set<string>>(new Set());
+
+	async function doSearch(e: SubmitEvent) {
+		e.preventDefault();
+		if (searchInput.trim().length < 2) {
+			searchMsg = 'Type at least 2 characters.';
+			return;
+		}
+		searchBusy = true;
+		searchMsg = null;
+		try {
+			const res = await fetch(`/api/search?q=${encodeURIComponent(searchInput.trim())}`);
+			const body = (await res.json()) as { results?: SearchResult[] };
+			searchResults = body.results ?? [];
+			if (searchResults.length === 0) searchMsg = 'No results from the enabled providers.';
+		} finally {
+			searchBusy = false;
+		}
+	}
+	async function downloadResult(r: SearchResult) {
+		const key = `${r.provider}:${r.providerTrackId}`;
+		queuedSearch = new Set([...queuedSearch, key]);
+		await fetch('/api/jobs', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ provider: r.provider, trackId: r.providerTrackId })
+		});
+	}
+
+	// ── Upload (manual add) ─────────────────────────────────────────────────
 	let uploadBusy = $state(false);
 	let uploadMsg = $state<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null);
 	let up = $state<{
@@ -43,8 +170,12 @@
 			fd.append('file', file);
 			const res = await fetch('/api/upload/inspect', { method: 'POST', body: fd });
 			const body = (await res.json()) as {
-				uploadId?: string; ext?: string; embeddedLyrics?: boolean; missing?: string[];
-				detected?: Record<string, unknown>; error?: { message: string };
+				uploadId?: string;
+				ext?: string;
+				embeddedLyrics?: boolean;
+				missing?: string[];
+				detected?: Record<string, unknown>;
+				error?: { message: string };
 			};
 			if (!res.ok || !body.uploadId) {
 				uploadMsg = { tone: 'error', text: body.error?.message ?? `Inspection failed (HTTP ${res.status})` };
@@ -69,7 +200,7 @@
 						? String(body.detected['year'])
 						: typeof body.detected?.['year'] === 'string'
 							? body.detected['year']
-							: '',
+							: ''
 			};
 			const missing = body.missing ?? [];
 			uploadMsg = missing.length
@@ -103,12 +234,20 @@
 					fetchLyrics: !up.embeddedLyrics
 				})
 			});
-			const body = (await res.json()) as { trackId?: string; error?: { message: string } };
+			const body = (await res.json()) as {
+				trackId?: string;
+				duplicate?: boolean;
+				message?: string;
+				error?: { message: string };
+			};
 			if (!res.ok) {
 				uploadMsg = { tone: 'error', text: body.error?.message ?? `HTTP ${res.status}` };
 				return;
 			}
-			uploadMsg = { tone: 'ok', text: 'Saved to library ✓' };
+			uploadMsg = {
+				tone: body.duplicate ? 'info' : 'ok',
+				text: body.duplicate ? (body.message ?? 'Already in library.') : 'Saved to library ✓'
+			};
 			up = null;
 			await invalidateAll();
 		} finally {
@@ -116,61 +255,57 @@
 		}
 	}
 
-	$effect(() => {
-		if (!hydrated) {
-			live.hydrate(data.jobs);
-			hydrated = true;
-		}
-		live.start(() => void invalidateAll());
-	});
-	// Re-hydrate when the server load refreshes (post-invalidation).
-	$effect(() => {
-		for (const j of data.jobs) if (!live.jobs.has(j.id)) live.jobs.set(j.id, j);
-	});
+	// ── Playlist CSV import ─────────────────────────────────────────────────
+	let csvBusy = $state(false);
+	let csvMsg = $state<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null);
+	let csvResult = $state<{ matchedCount: number; unmatched: Array<{ title: string; artist: string; reason: string }> } | null>(null);
 
-	async function submitDownload(e: SubmitEvent) {
-		e.preventDefault();
-		message = null;
-		busy = true;
+	async function importCsv(e: Event) {
+		csvMsg = null;
+		csvResult = null;
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		csvBusy = true;
 		try {
-			const res = await fetch('/api/tracks', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ url: urlInput.trim() })
-			});
-			const body = (await res.json()) as { job?: { id: string }; error?: { message: string } };
+			const fd = new FormData();
+			fd.append('file', file);
+			const res = await fetch('/api/playlist/import', { method: 'POST', body: fd });
+			const body = (await res.json()) as {
+				matchedCount?: number;
+				unmatched?: Array<{ title: string; artist: string; reason: string }>;
+				error?: { message: string };
+			};
 			if (!res.ok) {
-				message = { tone: 'error', text: body.error?.message ?? `HTTP ${res.status}` };
+				csvMsg = { tone: 'error', text: body.error?.message ?? `HTTP ${res.status}` };
 				return;
 			}
-			// (button is never disabled — empty input gives inline feedback)
-			if (urlInput.trim().length === 0) {
-				message = { tone: 'error', text: 'Paste a track URL or ID first.' };
-				return;
-			}
-			message = { tone: 'ok', text: 'Queued — watch the live progress below.' };
-			urlInput = '';
+			csvResult = { matchedCount: body.matchedCount ?? 0, unmatched: body.unmatched ?? [] };
+			csvMsg = {
+				tone: (body.matchedCount ?? 0) > 0 ? 'ok' : 'info',
+				text: `Matched & queued ${body.matchedCount ?? 0} songs · ${(body.unmatched ?? []).length} unmatched.`
+			};
 			await invalidateAll();
-		} catch {
-			message = { tone: 'error', text: 'Network error while queueing the download.' };
 		} finally {
-			busy = false;
+			csvBusy = false;
+			if (input) input.value = '';
 		}
 	}
 
-	async function cancelJob(id: string) {
-		await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
-	}
-	async function retryJob(id: string) {
-		await fetch(`/api/jobs/${id}/retry`, { method: 'POST' });
-	}
-	async function refetchLyrics(id: string) {
-		await fetch(`/api/lyrics/fetch/${id}`, { method: 'POST' });
-		await invalidateAll();
-	}
-	async function deleteTrack(id: string) {
-		await fetch(`/api/tracks/${id}`, { method: 'DELETE' });
-		await invalidateAll();
+	// ── Preview player ──────────────────────────────────────────────────────
+	let nowPlaying = $state<{ id: string; title: string; artist: string } | null>(null);
+	let audioEl: HTMLAudioElement | null = $state(null);
+	function togglePlay(t: TrackDTO) {
+		if (nowPlaying?.id === t.id) {
+			audioEl?.pause();
+			nowPlaying = null;
+			return;
+		}
+		nowPlaying = { id: t.id, title: t.title, artist: t.artist };
+		// src change triggers load; autoplay after metadata is ready
+		queueMicrotask(() => {
+			void audioEl?.play().catch(() => undefined);
+		});
 	}
 </script>
 
@@ -180,7 +315,7 @@
 
 <h1 class="mb-1 text-xl font-semibold">Library</h1>
 <p class="mb-6 text-sm text-on-surface-variant">
-	Paste a Deezer track link — quality, tags, lyrics and Navidrome layout are handled automatically.
+	Download, upload, search and preview — everything files itself into Navidrome layout.
 </p>
 
 <!-- Add download -->
@@ -193,7 +328,6 @@
 			class="m3-input"
 			placeholder="https://www.deezer.com/track/3135556"
 			bind:value={urlInput}
-			required
 		/>
 	</div>
 	<div class="flex items-end">
@@ -214,8 +348,51 @@
 	</p>
 {/if}
 
+<!-- Search providers -->
+<section class="m3-card mb-6 p-4" aria-labelledby="search-h">
+	<h2 id="search-h" class="mb-3 text-base font-medium">Search providers</h2>
+	<form onsubmit={doSearch} class="flex flex-col gap-3 sm:flex-row">
+		<div class="flex-1">
+			<label for="q" class="mb-1 block text-sm text-on-surface-variant">Song or artist</label>
+			<input id="q" type="search" class="m3-input" placeholder="e.g. Daft Punk One More Time" bind:value={searchInput} />
+		</div>
+		<div class="flex items-end">
+			<button type="submit" class="m3-btn m3-btn-tonal w-full sm:w-auto" disabled={searchBusy}>
+				{searchBusy ? 'Searching…' : 'Search'}
+			</button>
+		</div>
+	</form>
+	{#if searchMsg}
+		<p class="mt-3 text-sm text-on-surface-variant" role="status">{searchMsg}</p>
+	{/if}
+	{#if searchResults.length > 0}
+		<div class="mt-3 flex flex-col gap-2">
+			{#each searchResults as r (r.provider + r.providerTrackId)}
+				{@const key = r.provider + ':' + r.providerTrackId}
+				<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2">
+					<span class="m3-chip bg-secondary-container text-on-secondary-container uppercase">{r.provider}</span>
+					<div class="min-w-0 flex-1">
+						<p class="truncate text-sm">{r.title}</p>
+						<p class="truncate text-xs text-on-surface-variant">
+							{r.artist}{#if r.album} · {r.album}{/if}
+						</p>
+					</div>
+					<button
+						type="button"
+						class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm {queuedSearch.has(key) ? 'opacity-50' : ''}"
+						disabled={queuedSearch.has(key)}
+						onclick={() => downloadResult(r)}
+					>
+						{queuedSearch.has(key) ? 'Queued ✓' : 'Download'}
+					</button>
+				</div>
+			{/each}
+		</div>
+	{/if}
+</section>
+
 <!-- Manual upload -->
-<section class="m3-card mb-6 p-4" aria-labelledby="upload-h">
+<section class="m3-card mt-0 mb-6 p-5" aria-labelledby="upload-h">
 	<h2 id="upload-h" class="mb-3 text-base font-medium">Add a local file</h2>
 	<div class="flex flex-col gap-3">
 		<label for="upload-file" class="text-sm text-on-surface-variant">
@@ -267,7 +444,12 @@
 				</div>
 			</div>
 			<div class="flex items-center gap-3">
-				<button type="button" class="m3-btn m3-btn-filled" disabled={uploadBusy || !up.title.trim() || !up.artist.trim() || !up.album.trim()} onclick={finalizeUpload}>
+				<button
+					type="button"
+					class="m3-btn m3-btn-filled"
+					disabled={uploadBusy || up.title.trim().length === 0 || up.artist.trim().length === 0 || up.album.trim().length === 0}
+					onclick={finalizeUpload}
+				>
 					{uploadBusy ? 'Saving…' : 'Save to library'}
 				</button>
 				{#if up.embeddedLyrics}
@@ -276,6 +458,48 @@
 			</div>
 		{/if}
 	</div>
+</section>
+
+<!-- Playlist CSV import -->
+<section class="m3-card mb-6 p-5" aria-labelledby="csv-h">
+	<h2 id="csv-h" class="mb-3 text-base font-medium">Import playlist (CSV)</h2>
+	<p class="mb-3 text-sm text-on-surface-variant">
+		Spotify-style exports (Track Name / Artist Name(s) / Duration) or simple
+		<code>Artist - Title</code> lines. Songs are matched strictly — unsure matches are
+		reported, never guessed.
+	</p>
+	<input
+		id="csv-file"
+		type="file"
+		accept=".csv,text/csv"
+		class="m3-input file:mr-3 file:rounded-full file:border-0 file:bg-secondary-container file:px-4 file:py-2 file:text-on-secondary-container"
+		disabled={csvBusy}
+		onchange={importCsv}
+	/>
+	{#if csvMsg}
+		<p
+			class="mt-3 rounded-lg px-3 py-2 text-sm {csvMsg.tone === 'ok'
+				? 'bg-tertiary-container text-on-tertiary-container'
+				: csvMsg.tone === 'error'
+					? 'bg-error-container text-on-error-container'
+					: 'bg-surface-highest text-on-surface-variant'}"
+			role="status"
+		>
+			{csvMsg.text}
+		</p>
+	{/if}
+	{#if csvResult && csvResult.unmatched.length > 0}
+		<div class="mt-3 rounded-xl bg-surface-low p-3">
+			<p class="mb-2 text-xs font-medium text-on-surface-variant uppercase">Unmatched</p>
+			<ul class="flex flex-col gap-1 text-sm">
+				{#each csvResult.unmatched as u (u.title + u.artist)}
+					<li class="text-on-surface-variant">
+						{u.title} — {u.artist} <span class="text-xs">({u.reason})</span>
+					</li>
+				{/each}
+			</ul>
+		</div>
+	{/if}
 </section>
 
 <!-- Stats -->
@@ -288,12 +512,39 @@
 
 <!-- Live queue -->
 <section class="mb-8" aria-label="Download queue" aria-live="polite">
-	<h2 class="mb-3 text-base font-medium">Queue</h2>
-	{#if live.recentJobs.length === 0}
-		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">No jobs yet.</p>
+	<div class="mb-3 flex flex-wrap items-center gap-2">
+		<h2 class="text-base font-medium">Queue</h2>
+		<div class="ml-auto flex flex-wrap gap-1" role="tablist" aria-label="Queue filter">
+			{#each [['all', `All ${queueCounts.all}`], ['active', `Active ${queueCounts.active}`], ['done', `Done ${queueCounts.done}`], ['failed', `Failed ${queueCounts.failed}`]] as [key, label] (key)}
+				<button
+					type="button"
+					role="tab"
+					aria-selected={queueFilter === key}
+					class="rounded-full px-3 py-1.5 text-xs {queueFilter === key
+						? 'bg-secondary-container text-on-secondary-container'
+						: 'text-on-surface-variant hover:bg-surface-highest'}"
+					onclick={() => (queueFilter = key as typeof queueFilter)}
+				>
+					{label}
+				</button>
+			{/each}
+			<button
+				type="button"
+				class="rounded-full px-3 py-1.5 text-xs text-error hover:bg-error-container/40"
+				disabled={clearing || queueCounts.done + queueCounts.failed === 0}
+				onclick={clearFinished}
+			>
+				{clearing ? 'Clearing…' : 'Clear finished'}
+			</button>
+		</div>
+	</div>
+	{#if visibleJobs.length === 0}
+		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
+			{queueFilter === 'all' ? 'No jobs yet.' : 'Nothing in this filter.'}
+		</p>
 	{:else}
 		<div class="flex flex-col gap-3">
-			{#each live.recentJobs as job (job.id)}
+			{#each visibleJobs as job (job.id)}
 				<JobRow {job} oncancel={cancelJob} onretry={retryJob} />
 			{/each}
 		</div>
@@ -312,8 +563,36 @@
 	{:else}
 		<div class="flex flex-col gap-3">
 			{#each data.tracks as track (track.id)}
-				<TrackCard {track} ondelete={deleteTrack} onrefetch={refetchLyrics} />
+				<TrackCard track={track} playing={nowPlaying?.id === track.id} ondelete={deleteTrack} onplay={(id: string) => { const t = data.tracks.find((x) => x.id === id); if (t) togglePlay(t); }} />
 			{/each}
 		</div>
 	{/if}
 </section>
+
+<!-- Preview player -->
+{#if nowPlaying}
+	<div class="fixed inset-x-0 bottom-14 z-40 border-t border-outline-variant/40 bg-surface-container/95 px-4 py-2 backdrop-blur sm:bottom-0">
+		<div class="mx-auto flex max-w-5xl items-center gap-3">
+			<div class="min-w-0 flex-1">
+				<p class="truncate text-sm font-medium">{nowPlaying.title}</p>
+				<p class="truncate text-xs text-on-surface-variant">{nowPlaying.artist}</p>
+			</div>
+			<audio
+				bind:this={audioEl}
+				src="/api/tracks/{nowPlaying.id}/audio"
+				controls
+				class="h-10 w-full max-w-md"
+				onpause={() => undefined}
+			></audio>
+			<button
+				type="button"
+				class="m3-btn m3-btn-text text-sm"
+				aria-label="Close preview"
+				onclick={() => {
+					audioEl?.pause();
+					nowPlaying = null;
+				}}>✕</button
+			>
+		</div>
+	</div>
+{/if}
