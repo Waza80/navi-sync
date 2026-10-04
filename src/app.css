@@ -1,0 +1,206 @@
+@import 'tailwindcss';
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Material 3 dark color scheme (baseline reference tokens)
+ * Docs: https://m3.material.io/styles/color/system/overview
+ * Anchored to the M3 baseline palette returned by the design-token registry.
+ * ───────────────────────────────────────────────────────────────────────────── */
+:root {
+	color-scheme: dark;
+
+	--md-primary: #d0bcff;
+	--md-on-primary: #381e72;
+	--md-primary-container: #4f378b;
+	--md-on-primary-container: #eaddff;
+	--md-secondary: #ccc2dc;
+	--md-on-secondary: #332d41;
+	--md-secondary-container: #4a4458;
+	--md-on-secondary-container: #e8def8;
+	--md-tertiary: #efb8c8;
+	--md-on-tertiary: #492532;
+	--md-tertiary-container: #633b48;
+	--md-on-tertiary-container: #ffd8e4;
+	--md-error: #f2b8b5;
+	--md-on-error: #601410;
+	--md-error-container: #8c1d18;
+	--md-on-error-container: #f9dedc;
+	--md-surface: #141218;
+	--md-on-surface: #e6e0e9;
+	--md-surface-variant: #49454f;
+	--md-on-surface-variant: #cac4d0;
+	--md-surface-container-lowest: #0f0d13;
+	--md-surface-container-low: #1d1b20;
+	--md-surface-container: #211f26;
+	--md-surface-container-high: #2b2930;
+	--md-surface-container-highest: #36343b;
+	--md-outline: #938f99;
+	--md-outline-variant: #49454f;
+	--md-inverse-surface: #e6e0e9;
+	--md-inverse-on-surface: #322f35;
+	--md-scrim: #000000;
+
+	--md-radius-s: 8px;
+	--md-radius-m: 12px;
+	--md-radius-l: 16px;
+	--md-radius-xl: 28px;
+
+	--md-elev-1: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px 1px rgb(0 0 0 / 0.15);
+	--md-elev-2: 0 1px 2px rgb(0 0 0 / 0.3), 0 2px 6px 2px rgb(0 0 0 / 0.15);
+}
+
+/* Tailwind v4 theme mapping → utility classes (bg-surface, text-on-surface, …) */
+@theme inline {
+	--color-primary: var(--md-primary);
+	--color-on-primary: var(--md-on-primary);
+	--color-primary-container: var(--md-primary-container);
+	--color-on-primary-container: var(--md-on-primary-container);
+	--color-secondary: var(--md-secondary);
+	--color-on-secondary: var(--md-on-secondary);
+	--color-secondary-container: var(--md-secondary-container);
+	--color-on-secondary-container: var(--md-on-secondary-container);
+	--color-tertiary: var(--md-tertiary);
+	--color-on-tertiary: var(--md-on-tertiary);
+	--color-tertiary-container: var(--md-tertiary-container);
+	--color-on-tertiary-container: var(--md-on-tertiary-container);
+	--color-error: var(--md-error);
+	--color-on-error: var(--md-on-error);
+	--color-error-container: var(--md-error-container);
+	--color-on-error-container: var(--md-on-error-container);
+	--color-surface: var(--md-surface);
+	--color-on-surface: var(--md-on-surface);
+	--color-surface-variant: var(--md-surface-variant);
+	--color-on-surface-variant: var(--md-on-surface-variant);
+	--color-surface-lowest: var(--md-surface-container-lowest);
+	--color-surface-low: var(--md-surface-container-low);
+	--color-surface-container: var(--md-surface-container);
+	--color-surface-high: var(--md-surface-container-high);
+	--color-surface-highest: var(--md-surface-container-highest);
+	--color-outline: var(--md-outline);
+	--color-outline-variant: var(--md-outline-variant);
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────────── */
+body {
+	font-family:
+		Roboto,
+		'Segoe UI',
+		system-ui,
+		-apple-system,
+		'Helvetica Neue',
+		Arial,
+		sans-serif;
+	background-color: var(--md-surface);
+	color: var(--md-on-surface);
+	min-height: 100dvh;
+}
+
+/* Visible focus indicators everywhere (WCAG 2.1 AA) */
+:focus-visible {
+	outline: 2px solid var(--md-primary);
+	outline-offset: 2px;
+	border-radius: 4px;
+}
+
+/* ── M3-ish component classes ──────────────────────────────────────────────── */
+.m3-card {
+	background-color: var(--md-surface-container);
+	border-radius: var(--md-radius-l);
+	box-shadow: var(--md-elev-1);
+}
+
+.m3-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5rem;
+	min-height: 48px; /* touch target ≥ 48px (spec) */
+	padding: 0 1.5rem;
+	border-radius: 9999px;
+	font-size: 0.9375rem;
+	font-weight: 500;
+	letter-spacing: 0.01em;
+	cursor: pointer;
+	border: none;
+	transition:
+		filter 120ms ease,
+		background-color 120ms ease;
+	user-select: none;
+}
+.m3-btn:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+.m3-btn-filled {
+	background-color: var(--md-primary);
+	color: var(--md-on-primary);
+}
+.m3-btn-filled:hover:not(:disabled) {
+	filter: brightness(1.12);
+}
+.m3-btn-tonal {
+	background-color: var(--md-secondary-container);
+	color: var(--md-on-secondary-container);
+}
+.m3-btn-tonal:hover:not(:disabled) {
+	filter: brightness(1.15);
+}
+.m3-btn-text {
+	background: transparent;
+	color: var(--md-primary);
+	padding: 0 0.75rem;
+}
+.m3-btn-text:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--md-primary) 12%, transparent);
+}
+
+.m3-input {
+	display: block;
+	width: 100%;
+	min-height: 48px;
+	padding: 0 1rem;
+	background-color: var(--md-surface-container-highest);
+	color: var(--md-on-surface);
+	border: 1px solid var(--md-outline-variant);
+	border-radius: var(--md-radius-s);
+	font-size: 0.9375rem;
+	caret-color: var(--md-primary);
+}
+.m3-input::placeholder {
+	color: var(--md-on-surface-variant);
+	opacity: 0.75;
+}
+.m3-input:focus {
+	border-color: var(--md-primary);
+	outline: none;
+}
+
+.m3-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.375rem;
+	min-height: 28px;
+	padding: 0 0.75rem;
+	border-radius: 9999px;
+	font-size: 0.75rem;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	white-space: nowrap;
+}
+
+/* M3 linear progress */
+.m3-progress {
+	position: relative;
+	height: 6px;
+	width: 100%;
+	overflow: hidden;
+	border-radius: 9999px;
+	background-color: var(--md-surface-container-highest);
+}
+.m3-progress > .bar {
+	position: absolute;
+	inset-block: 0;
+	left: 0;
+	background-color: var(--md-primary);
+	border-radius: 9999px;
+	transition: width 300ms ease;
+}
