@@ -17,6 +17,11 @@ export interface AppSettings {
 	minBitrateKbps: number;
 	preferLossless: boolean;
 	allowLowerFallback: boolean;
+	/**
+	 * Hunt for better masters of tracks we already have. Does NOT govern
+	 * fetching MISSING music — the retry sweep runs regardless of this.
+	 */
+	autoUpgradeQuality: boolean;
 	/** Providers the engine may use. */
 	enabledProviders: string[];
 	concurrentDownloads: number;
@@ -27,7 +32,10 @@ const DEFAULTS = {
 	minBitrateKbps: 320,
 	preferLossless: true,
 	allowLowerFallback: true,
-	enabledProviders: ['deezer', 'monochrome'] as string[],
+	autoUpgradeQuality: true,
+	// Order matters: the registry keeps this order, so Tidal is asked before
+	// Deezer — it reaches 24/192 and Deezer tops out at 24/96.
+	enabledProviders: ['tidal', 'deezer'] as string[],
 	concurrentDownloads: 4,
 };
 
@@ -61,6 +69,7 @@ export async function getSettings(): Promise<AppSettings> {
 		minBitrateKbps: row.minBitrateKbps,
 		preferLossless: row.preferLossless,
 		allowLowerFallback: row.allowLowerFallback,
+		autoUpgradeQuality: row.autoUpgradeQuality,
 		enabledProviders: Array.isArray(row.enabledProviders)
 			? row.enabledProviders
 			: [...DEFAULTS.enabledProviders],
@@ -76,6 +85,7 @@ export interface SettingsPatch {
 	minBitrateKbps?: number;
 	preferLossless?: boolean;
 	allowLowerFallback?: boolean;
+	autoUpgradeQuality?: boolean;
 	enabledProviders?: string[];
 	concurrentDownloads?: number;
 }
@@ -93,6 +103,8 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
 	if (patch.preferLossless !== undefined) values.preferLossless = patch.preferLossless;
 	if (patch.allowLowerFallback !== undefined)
 		values.allowLowerFallback = patch.allowLowerFallback;
+	if (patch.autoUpgradeQuality !== undefined)
+		values.autoUpgradeQuality = patch.autoUpgradeQuality;
 	if (patch.enabledProviders !== undefined) values.enabledProviders = patch.enabledProviders;
 	if (patch.concurrentDownloads !== undefined)
 		values.concurrentDownloads = patch.concurrentDownloads;
@@ -110,6 +122,11 @@ export async function getPublicSettings(): Promise<{
 	minBitrateKbps: number;
 	preferLossless: boolean;
 	allowLowerFallback: boolean;
+	/**
+	 * Hunt for better masters of tracks we already have. Does NOT govern
+	 * fetching MISSING music — the retry sweep runs regardless of this.
+	 */
+	autoUpgradeQuality: boolean;
 	/** Providers the engine may use. */
 	enabledProviders: string[];
 	concurrentDownloads: number;
@@ -123,6 +140,7 @@ export async function getPublicSettings(): Promise<{
 		minBitrateKbps: s.minBitrateKbps,
 		preferLossless: s.preferLossless,
 		allowLowerFallback: s.allowLowerFallback,
+		autoUpgradeQuality: s.autoUpgradeQuality,
 		concurrentDownloads: s.concurrentDownloads,
 		enabledProviders: s.enabledProviders,
 	};

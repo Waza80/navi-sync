@@ -24,7 +24,15 @@ FROM oven/bun:1-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=7158 \
-    HOST=0.0.0.0
+    HOST=0.0.0.0 \
+    # A UTF-8 locale is REQUIRED, not cosmetic. metaflac writes every non-ASCII
+    # byte of a tag value as '#' when LC_CTYPE is "C" — so under the slim image's
+    # default locale every accented/zalgo title was silently stored as hashes
+    # ("Björk" -> "Bj#rk", "#CUT4<zalgo>" -> "#CUT4#####Z###A###"). Verified by
+    # round-tripping a mark-riddled title through metaflac under LC_ALL=C (179
+    # spurious '#') versus C.UTF-8 (1, the real one).
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
 # Runtime: compiled server, production deps only, SQL migrations.
 # flac (metaflac) embeds canonical tags into FLACs so Navidrome indexes
 # real artists/albums instead of [Unknown]. curl serves Coolify's

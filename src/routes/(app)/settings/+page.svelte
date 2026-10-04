@@ -9,6 +9,7 @@
 		minBitrateKbps: number;
 		preferLossless: boolean;
 		allowLowerFallback: boolean;
+		autoUpgradeQuality: boolean;
 		enabledProviders: string[];
 		concurrentDownloads: number;
 	};
@@ -29,6 +30,8 @@
 	let preferLossless = $state(data.settings.preferLossless);
 	// svelte-ignore state_referenced_locally
 	let allowLowerFallback = $state(data.settings.allowLowerFallback);
+	// svelte-ignore state_referenced_locally
+	let autoUpgradeQuality = $state(data.settings.autoUpgradeQuality);
 	// svelte-ignore state_referenced_locally
 	let concurrentDownloads = $state(data.settings.concurrentDownloads);
 
@@ -78,6 +81,7 @@
 				minBitrateKbps,
 				preferLossless,
 				allowLowerFallback,
+				autoUpgradeQuality,
 				enabledProviders: enabled.length > 0 ? enabled : ['deezer'],
 				concurrentDownloads
 			};
@@ -223,7 +227,7 @@
 		<div class="flex flex-col gap-3">
 			{#each [
 				{ id: 'deezer', label: 'Deezer', desc: 'FLAC 16-bit · 320/128 MP3' },
-				{ id: 'monochrome', label: 'Monochrome (tracks.monochrome.st)', desc: 'FLAC up to 24-bit (slow, Cloudflare-chunked)' }
+				{ id: 'tidal', label: 'Tidal (hiFi instance)', desc: 'FLAC up to 24/192 — fastest option, needs your instance URL' }
 			] as prov (prov.id)}
 				<div class="flex min-h-14 items-center gap-3 rounded-xl bg-surface-low px-3">
 					<label class="flex flex-1 cursor-pointer items-center gap-3">
@@ -285,6 +289,19 @@
 			<label class="flex min-h-12 items-center gap-3">
 				<input type="checkbox" class="h-5 w-5 accent-[var(--md-primary)]" bind:checked={allowLowerFallback} />
 				<span class="text-sm">Allow lower-quality fallback when the preferred tier is unavailable for the account</span>
+			</label>
+			<label class="flex min-h-12 items-center gap-3">
+				<input
+					type="checkbox"
+					class="h-5 w-5 accent-[var(--md-primary)]"
+					bind:checked={autoUpgradeQuality}
+				/>
+				<span class="text-sm">
+					Keep hunting for better masters (hourly, up to 24-bit).
+					<span class="text-on-surface-variant">
+						Turning this off stops only the upgrade sweep — missing songs are still fetched.
+					</span>
+				</span>
 			</label>
 		</div>
 	</section>

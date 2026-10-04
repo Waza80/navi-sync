@@ -1,14 +1,14 @@
 import { json, notFound, unauthorizedResponse } from '$lib/server/api';
 import { descriptorFor } from '$lib/server/providers/descriptors';
 import { getDeezerSession, clearInMemorySession } from '$lib/server/providers/deezer/gateway';
-import { MonochromeClient } from '$lib/server/providers/monochrome/client';
+import { TidalClient } from '$lib/server/providers/tidal/client';
 import { getProviderConfig } from '$lib/server/providers/config';
 import type { RequestHandler } from './$types';
 
 /**
  * POST /api/providers/:id/test — live "alive check".
- *   deezer     → validates the encrypted session (auto-relogs if needed)
- *   monochrome → real catalog search probe against the instance
+ *   deezer → validates the encrypted session (auto-relogs if needed)
+ *   tidal  → real catalog search probe against the instance
  */
 export const POST: RequestHandler = async ({ locals, params }) => {
 	if (!locals.user) return unauthorizedResponse();
@@ -28,18 +28,15 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 		}
 	}
 
-	if (id === 'monochrome') {
+	if (id === 'tidal') {
 		const cfg = await getProviderConfig<{
 			instanceUrl: string;
-			sessionCookie?: string;
-			username?: string;
-			password?: string;
 			quality?: 'HI_RES_LOSSLESS' | 'LOSSLESS' | 'LOW';
-		}>('monochrome');
+		}>('tidal');
 		if (!cfg?.instanceUrl) {
 			return json({ ok: false, detail: 'No instance URL configured.' }, { status: 400 });
 		}
-		const client = new MonochromeClient({ ...cfg, instanceUrl: cfg.instanceUrl });
+		const client = new TidalClient({ ...cfg, instanceUrl: cfg.instanceUrl });
 		const ping = await client.ping();
 		if (!ping.ok) {
 			return json({ ok: false, detail: ping.detail ?? 'unreachable' }, { status: 502 });

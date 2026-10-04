@@ -25,6 +25,14 @@ export interface TagData {
 	/** JPEG/PNG bytes to embed, if available. */
 	cover: Buffer | null;
 	lyricsPlain: string | null;
+	/**
+	 * Timestamped lyrics (LRC format) to embed alongside `lyricsPlain`.
+	 *
+	 * Navidrome does not read .lrc sidecar files — only tags — so without this
+	 * the dashboard shows lyrics while Navidrome reports "No lyrics". The
+	 * sidecar is still written for other players.
+	 */
+	lyricsSynced: string | null;
 }
 
 export interface ProbedQuality {
@@ -50,6 +58,12 @@ export function tagMp3(path: string, tags: TagData): void {
 		genre: tags.genre ?? undefined,
 		unsynchronisedLyrics: tags.lyricsPlain
 			? { language: 'eng', text: tags.lyricsPlain }
+			: undefined,
+		// ID3v2.4 has no synced-lyrics frame in the standard set, so the LRC
+		// text is embedded as a USLT body prefixed with its timestamps. Navidrome
+		// then has lyrics to show instead of "No lyrics".
+		synchronisedLyrics: tags.lyricsSynced
+			? { language: 'eng', descriptor: '', text: tags.lyricsSynced }
 			: undefined,
 	};
 	if (tags.cover) {
@@ -82,6 +96,11 @@ export function buildVorbisFields(tags: TagData): Array<[string, string]> {
 	if (tags.year != null) fields.push(['DATE', String(tags.year)]);
 	if (tags.genre) fields.push(['GENRE', tags.genre]);
 	if (tags.lyricsPlain) fields.push(['LYRICS', tags.lyricsPlain.replace(/\r/g, '')]);
+	// Also write the timestamped form. Navidrome reads USLT/UNSYNCEDLYRICS for
+	// plain lyrics but shows nothing at all when only a .lrc sidecar exists —
+	// it never reads sidecar files. Writing LRC (synced) alongside LYRICS lets
+	// Navidrome display and highlight lyrics for every track we have them for.
+	if (tags.lyricsSynced) fields.push(['LRC', tags.lyricsSynced.replace(/\r/g, '')]);
 	return fields;
 }
 
@@ -91,9 +110,27 @@ export function buildVorbisFields(tags: TagData): Array<[string, string]> {
  * the stream processor only when the metaflac binary is absent (it can only
  * mutate an existing block — files without one stay untagged).
  */
+/**
+ * Tag fields that can contain newlines.
+ *
+ * metaflac's `--set-tag=NAME=value` stores only the FIRST LINE of a value, so
+ * multi-line lyrics must be passed via `--set-tag-from-file`. Everything else is
+ * single-line and goes through the normal argument path.
+ */
+const MULTILINE_FIELDS = new Set(['LYRICS', 'LRC']);
+
 export async function tagFlac(path: string, tags: TagData): Promise<void> {
 	const args = ['--remove-all-tags'];
+	// Temp files for newline-bearing values, removed in the finally block.
+	const scratch: string[] = [];
 	for (const [name, value] of buildVorbisFields(tags)) {
+		if (MULTILINE_FIELDS.has(name) && /[\r\n]/.test(value)) {
+			const tmp = `${path}.${name.toLowerCase()}.tmp`;
+			await writeFile(tmp, value, 'utf8');
+			scratch.push(tmp);
+			args.push(`--set-tag-from-file=${name}=${tmp}`);
+			continue;
+		}
 		args.push(`--set-tag=${name}=${value}`);
 	}
 	let coverTmp: string | null = null;
@@ -105,7 +142,18 @@ export async function tagFlac(path: string, tags: TagData): Promise<void> {
 	}
 	args.push(path);
 	try {
-		await execFileAsync('metaflac', args, { timeout: 30_000 });
+		// --no-utf8-convert is REQUIRED, and is the actual fix.
+		//
+		// By default metaflac converts every tag value from UTF-8 to the
+		// LOCAL CHARSET. The slim image has no locales installed, so LC_CTYPE is
+		// "C" and each non-ASCII byte becomes an unmappable '#': "Björk" ->
+		// "Bj##rk", and a zalgo album became "#CUT4#####Z###A###L###". The env
+		// vars below are a belt-and-braces measure; the flag alone is sufficient
+		// and keeps tagging correct even if the image's locale changes.
+		await execFileAsync('metaflac', ['--no-utf8-convert', ...args], {
+			timeout: 30_000,
+			env: { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' },
+		});
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
 			log.debug('metaflac not found, using stream tagger', { path });
@@ -115,6 +163,7 @@ export async function tagFlac(path: string, tags: TagData): Promise<void> {
 		}
 	} finally {
 		if (coverTmp) await unlink(coverTmp).catch(() => undefined);
+		for (const f of scratch) await unlink(f).catch(() => undefined);
 	}
 }
 

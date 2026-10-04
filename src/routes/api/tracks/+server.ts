@@ -40,7 +40,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	// Validate routability BEFORE enqueueing (fail fast, actionable errors).
 	let providerId: string;
-	const byUrl = findProviderForUrl(input);
+	const byUrl = await findProviderForUrl(input);
 	const bareId = /^\d{4,15}$/.test(input) && providers.length > 0;
 	if (byUrl) {
 		providerId = byUrl.id;

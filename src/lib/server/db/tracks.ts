@@ -243,34 +243,55 @@ export async function findLibraryDuplicate(
  * Upgrade-sweep candidates: tracks that (a) have a real file, (b) sit below
  * the 24-bit ceiling, (c) belong to the given provider.
  */
+/**
+ * Tracks below the 24-bit ceiling that are worth an upgrade attempt.
+ *
+ * `providerId` accepts `'*'` to mean EVERY provider — the sweep uses that,
+ * because the point is cross-provider: the current provider may not have a
+ * hi-res master while another does. The filter is applied in SQL (not by
+ * fetching everything and filtering in JS) so the limit applies to real
+ * candidates rather than to whichever rows happened to sort first.
+ *
+ * Only COMPLETED rows are considered: a track still queued or failed is the
+ * retry sweep's business, and offering it an upgrade would duplicate work and
+ * let a superseded file land on disk.
+ */
 export async function listUpgradeCandidates(providerId: string, limit = 10) {
-	return db
-		.select({
-			id: tracks.id,
-			provider: tracks.provider,
-			providerTrackId: tracks.providerTrackId,
-			title: tracks.title,
-			artist: tracks.artist,
-			album: tracks.album,
-			isrc: tracks.isrc,
-			sourceUrl: tracks.sourceUrl,
-			format: tracks.format,
-			bitrateKbps: tracks.bitrateKbps,
-			bitDepth: tracks.bitDepth,
-			isLossless: tracks.isLossless,
-			durationSec: tracks.durationSec,
-			year: tracks.releaseYear,
-			genre: tracks.genre,
-		})
-		.from(tracks)
-		.where(
-			and(
-				eq(tracks.provider, providerId),
-				sql`(${tracks.isLossless} = false OR ${tracks.bitDepth} IS NULL OR ${tracks.bitDepth} < 24)`,
-			),
-		)
-		.orderBy(desc(tracks.createdAt))
-		.limit(limit);
+	return (
+		db
+			.select({
+				id: tracks.id,
+				provider: tracks.provider,
+				providerTrackId: tracks.providerTrackId,
+				title: tracks.title,
+				artist: tracks.artist,
+				album: tracks.album,
+				isrc: tracks.isrc,
+				sourceUrl: tracks.sourceUrl,
+				format: tracks.format,
+				bitrateKbps: tracks.bitrateKbps,
+				bitDepth: tracks.bitDepth,
+				isLossless: tracks.isLossless,
+				durationSec: tracks.durationSec,
+				year: tracks.releaseYear,
+				genre: tracks.genre,
+			})
+			.from(tracks)
+			.where(
+				and(
+					// `'*'` = any provider. Previously this compared the column to the
+					// literal '*', which matched nothing — the sweep silently found zero
+					// candidates and no track was ever upgraded.
+					providerId === '*' ? undefined : eq(tracks.provider, providerId),
+					eq(tracks.downloadStatus, 'completed'),
+					sql`(${tracks.isLossless} = false OR ${tracks.bitDepth} IS NULL OR ${tracks.bitDepth} < 24)`,
+				),
+			)
+			// Oldest-first: a track that has been waiting longest gets its attempt
+			// first, so the sweep makes forward progress through the backlog.
+			.orderBy(asc(tracks.createdAt))
+			.limit(limit)
+	);
 }
 
 /**

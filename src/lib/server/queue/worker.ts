@@ -210,14 +210,25 @@ export function ensureWorkerStarted(): void {
 
 			/**
 			 * Quality upgrade sweep (CROSS-PROVIDER): for every track below the
-			 * 24-bit ceiling, ask ALL configured providers (Deezer AND Monochrome
+			 * 24-bit ceiling, ask ALL configured providers (Tidal AND Deezer
 			 * AND …) for the best available version — ISRC-exact when possible.
 			 * One provider up = it takes precedence; both up = best quality wins.
 			 * Enqueued upgrades refetch lyrics; a downed lyrics API keeps existing
 			 * sidecars (handled by the lyrics job).
+			 *
+			 * Gated by the `autoUpgradeQuality` setting. Turning it off stops
+			 * only THIS sweep: the failed-download retry sweep is independent, so
+			 * missing music is still fetched. Without the gate, a track whose
+			 * best available master is 16-bit would otherwise be re-examined
+			 * every hour forever.
 			 */
 			async function qualityUpgradeSweep(): Promise<void> {
 				try {
+					const { getSettings } = await import('$lib/server/settings');
+					if (!(await getSettings()).autoUpgradeQuality) {
+						log.debug('quality upgrade sweep disabled by settings');
+						return;
+					}
 					const { listUpgradeCandidates } = await import('$lib/server/db/tracks');
 					const { findBestUpgrade } = await import('./upgrades');
 					const { enqueueJob } = await import('./jobs');
@@ -300,28 +311,77 @@ export function ensureWorkerStarted(): void {
 				}
 			}
 
-			/** Failed-download retry sweep: 6h cooldown per track, oldest first. */
+			/**
+			 * Failed-download retry sweep: 6h cooldown per track, oldest first.
+			 *
+			 * Before requeueing on the same (possibly still-broken) provider it
+			 * asks the upgrade engine for the best offer across every enabled
+			 * provider. A track that failed on one source may be available — in
+			 * better quality — on another, which is strictly preferable to
+			 * retrying the same broken source.
+			 */
 			async function downloadRetrySweep(): Promise<void> {
 				try {
-					const { listFailedDownloadTracks, markDownloadStatus } =
+					const { listFailedDownloadTracks, getTrackById, markDownloadStatus } =
 						await import('$lib/server/db/tracks');
+					const { findBestUpgrade } = await import('./upgrades');
+					const { trackPageUrl } = await import('$lib/server/providers/ids');
 					const { enqueueJob } = await import('./jobs');
 					const rows = await listFailedDownloadTracks(5);
 					for (const row of rows) {
-						await enqueueJob({
-							type: 'download',
-							payload: {
-								url:
-									row.sourceUrl ??
-									`https://www.deezer.com/track/${row.providerTrackId ?? ''}`,
-								provider: row.provider,
-								retryForTrackId: row.id,
-								meta: { title: row.title, artist: row.artist },
-							},
-							trackId: row.id,
-						});
+						const full = await getTrackById(row.id);
+						const own =
+							row.sourceUrl ?? trackPageUrl(row.provider, row.providerTrackId) ?? '';
+						const upgrade = full
+							? await findBestUpgrade(
+									{
+										id: full.id,
+										provider: full.provider,
+										providerTrackId: full.providerTrackId,
+										title: full.title,
+										artist: full.artist,
+										album: full.album,
+										isrc: full.isrc,
+										sourceUrl: full.sourceUrl,
+										durationSec: full.durationSec,
+										year: full.releaseYear,
+										genre: full.genre,
+										format: full.format,
+										bitrateKbps: full.bitrateKbps,
+										bitDepth: full.bitDepth,
+										isLossless: full.isLossless,
+									},
+									{ skipRecentCheck: true },
+								).catch(() => null)
+							: null;
+						const payload = upgrade
+							? {
+									url: upgrade.meta.sourceUrl ?? upgrade.meta.providerTrackId,
+									provider: upgrade.provider,
+									retryForTrackId: row.id,
+									meta: {
+										title: upgrade.meta.title,
+										artist: upgrade.meta.artist,
+										album: upgrade.meta.album,
+										isrc: upgrade.meta.isrc,
+										coverUrl: upgrade.meta.coverUrl,
+										year: upgrade.meta.year,
+									},
+								}
+							: {
+									url: own,
+									provider: row.provider,
+									retryForTrackId: row.id,
+									meta: { title: row.title, artist: row.artist },
+								};
+						if (!payload.url) continue;
+						await enqueueJob({ type: 'download', payload, trackId: row.id });
 						await markDownloadStatus(row.id, 'pending');
-						log.info('failed download requeued', { trackId: row.id, title: row.title });
+						log.info('failed download requeued', {
+							trackId: row.id,
+							title: row.title,
+							via: payload.provider,
+						});
 					}
 				} catch (err) {
 					log.debug('download retry sweep skipped', { error: String(err) });

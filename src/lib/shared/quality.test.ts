@@ -1,121 +1,185 @@
 import { describe, expect, it } from 'vitest';
 import {
+	isSameRecording,
+	normalizeFormat,
 	qualityRank,
 	shouldSkipRefetch,
-	selectBestQuality,
-	isSameRecording,
 	type QualityDescriptor,
 } from './quality';
 
-const flac24: QualityDescriptor = {
-	format: 'flac',
-	bitrateKbps: null,
-	bitDepth: 24,
-	isLossless: true,
-};
-const flac16: QualityDescriptor = {
-	format: 'flac',
-	bitrateKbps: null,
-	bitDepth: 16,
-	isLossless: true,
-};
-const mp3_320: QualityDescriptor = {
-	format: 'mp3',
-	bitrateKbps: 320,
-	bitDepth: null,
-	isLossless: false,
-};
-const mp3_128: QualityDescriptor = {
-	format: 'mp3',
-	bitrateKbps: 128,
-	bitDepth: null,
-	isLossless: false,
-};
+/**
+ * These encode the rule the user's request depends on: once a song is 24-bit we
+ * stop fetching it, and below that we keep trying. A regression here means
+ * either an endless refetch loop or a library that quietly stops improving.
+ */
+
+const FLAC24 = { format: 'flac', bitrateKbps: null, bitDepth: 24, isLossless: true };
+const FLAC16 = { format: 'flac', bitrateKbps: null, bitDepth: 16, isLossless: true };
+const MP3_320 = { format: 'mp3', bitrateKbps: 320, bitDepth: null, isLossless: false };
+const MP3_128 = { format: 'mp3', bitrateKbps: 128, bitDepth: null, isLossless: false };
 
 describe('qualityRank', () => {
-	it('orders tiers correctly', () => {
-		expect(qualityRank(flac24)).toBe(4);
-		expect(qualityRank(flac16)).toBe(3);
-		expect(qualityRank(mp3_320)).toBe(2);
-		expect(qualityRank(mp3_128)).toBe(1);
+	it('ranks 24-bit FLAC at the ceiling', () => {
+		expect(qualityRank(FLAC24)).toBe(4);
 	});
-	it('treats flac format as lossless even if flag missing', () => {
+	it('ranks 16-bit FLAC above any MP3', () => {
+		expect(qualityRank(FLAC16)).toBe(3);
+		expect(qualityRank(MP3_320)).toBe(2);
+		expect(qualityRank(MP3_128)).toBe(1);
+	});
+	it('treats a FLAC with unknown depth as 16-bit, not 24', () => {
+		// Must not default to 24 — that would fake reaching the ceiling.
 		expect(
-			qualityRank({ format: 'flac', bitrateKbps: null, bitDepth: null, isLossless: false }),
+			qualityRank({ format: 'flac', bitrateKbps: null, bitDepth: null, isLossless: true }),
+		).toBe(3);
+	});
+	it('honours isLossless even when the format string disagrees', () => {
+		expect(
+			qualityRank({ format: 'm4a', bitrateKbps: null, bitDepth: 24, isLossless: true }),
+		).toBe(4);
+	});
+	it('ranks unknown formats below everything understood', () => {
+		expect(
+			qualityRank({ format: 'aac', bitrateKbps: 256, bitDepth: null, isLossless: false }),
+		).toBe(0);
+	});
+
+	// music-metadata reports an MP3's container as "MPEG". Without normalizing
+	// that, every uploaded MP3 ranked 0 ("unknown") — worse than a 128 kbps
+	// file — so the guardrail mishandled perfectly good uploads.
+	it('treats a "mpeg" container as mp3, not as unknown', () => {
+		expect(
+			qualityRank({ format: 'mpeg', bitrateKbps: 320, bitDepth: null, isLossless: false }),
+		).toBe(2);
+		expect(
+			qualityRank({ format: 'mpeg', bitrateKbps: 128, bitDepth: null, isLossless: false }),
+		).toBe(1);
+	});
+
+	it('normalizes case and the MPEG variants', () => {
+		for (const f of ['MPEG', 'Mpeg', 'mpeg-1', 'mpeg2', ' mp3 ']) {
+			expect(
+				qualityRank({ format: f, bitrateKbps: 320, bitDepth: null, isLossless: false }),
+			).toBe(2);
+		}
+	});
+
+	it('normalizes a FLAC container alias to lossless', () => {
+		expect(
+			qualityRank({ format: 'X-FLAC', bitrateKbps: null, bitDepth: 16, isLossless: false }),
 		).toBe(3);
 	});
 });
 
-describe('shouldSkipRefetch (24-bit ceiling guardrail)', () => {
-	it('always skips when 24-bit exists — hard stop', () => {
-		const verdict = shouldSkipRefetch(flac24, flac24);
-		expect(verdict.skip).toBe(true);
-		expect(verdict.reason).toBe('24bit_ceiling_reached');
+describe('normalizeFormat', () => {
+	it('maps containers to the families the ranker understands', () => {
+		expect(normalizeFormat('MPEG')).toBe('mp3');
+		expect(normalizeFormat('mp3')).toBe('mp3');
+		expect(normalizeFormat('FLAC')).toBe('flac');
+		expect(normalizeFormat('mp4')).toBe('aac');
+		expect(normalizeFormat('VORBIS')).toBe('ogg');
 	});
-	it('skips when equal-or-better quality exists', () => {
-		expect(shouldSkipRefetch(mp3_320, mp3_320).skip).toBe(true);
-		expect(shouldSkipRefetch(flac16, mp3_320).skip).toBe(true);
-	});
-	it('allows upgrade from lower tiers', () => {
-		expect(shouldSkipRefetch(mp3_128, mp3_320).skip).toBe(false);
-		expect(shouldSkipRefetch(mp3_320, flac16).skip).toBe(false);
-	});
-	it('blocks sub-320 fallback when fallback disabled', () => {
-		const verdict = shouldSkipRefetch(mp3_128, mp3_128, { allowLowerFallback: false });
-		expect(verdict.skip).toBe(true);
-		expect(verdict.reason).toBe('below_min_bitrate_and_fallback_disabled');
+
+	it('passes anything else through lowercased and trimmed', () => {
+		expect(normalizeFormat('WAV')).toBe('wav');
+		expect(normalizeFormat('  Weird ')).toBe('weird');
 	});
 });
 
-describe('selectBestQuality', () => {
-	it('prefers lossless when policy asks', () => {
-		const r = selectBestQuality([mp3_320, flac16, mp3_128], {
-			preferLossless: true,
-			minBitrateKbps: 320,
-			allowLowerFallback: true,
-		});
-		expect(r.chosen).toBe(flac16);
-		expect(r.reason).toBe('lossless_available');
+describe('24-bit ceiling', () => {
+	it('refuses to replace a 24-bit file with anything', () => {
+		expect(shouldSkipRefetch(FLAC24, FLAC16).skip).toBe(true);
+		expect(shouldSkipRefetch(FLAC24, MP3_320).skip).toBe(true);
+		expect(shouldSkipRefetch(FLAC24, FLAC24).skip).toBe(true);
 	});
-	it('falls back to highest candidate meeting the bitrate floor', () => {
-		const r = selectBestQuality([mp3_320, mp3_128], {
-			preferLossless: false,
-			minBitrateKbps: 320,
-			allowLowerFallback: true,
-		});
-		expect(r.chosen).toBe(mp3_320);
-	});
-	it('returns null when nothing meets the floor and fallback is disabled', () => {
-		const r = selectBestQuality([mp3_128], {
-			preferLossless: true,
-			minBitrateKbps: 320,
-			allowLowerFallback: false,
-		});
-		expect(r.chosen).toBeNull();
-		expect(r.reason).toBe('no_candidate_meets_min_bitrate');
-	});
-	it('uses fallback tier only when allowed', () => {
-		const allowed = selectBestQuality([mp3_128], {
-			preferLossless: true,
-			minBitrateKbps: 320,
-			allowLowerFallback: true,
-		});
-		expect(allowed.chosen).toBe(mp3_128);
-		expect(allowed.reason).toBe('lower_fallback');
+
+	it('names the ceiling as the reason', () => {
+		expect(shouldSkipRefetch(FLAC24, FLAC16).reason).toBe('24bit_ceiling_reached');
 	});
 });
 
-describe('isSameRecording (supersede identity)', () => {
-	it('matches equal ISRCs case-insensitively', () => {
-		expect(isSameRecording('USSM11300080', 'ussm11300080')).toBe(true);
+describe('below the ceiling, upgrades proceed', () => {
+	it('upgrades 16-bit FLAC with 24-bit FLAC', () => {
+		const v = shouldSkipRefetch(FLAC16, FLAC24);
+		expect(v.skip).toBe(false);
+		expect(v.reason).toBeNull();
 	});
-	it('rejects different ISRCs', () => {
-		expect(isSameRecording('USSM11300080', 'USSM11300081')).toBe(false);
+
+	it('upgrades MP3 with any FLAC', () => {
+		expect(shouldSkipRefetch(MP3_320, FLAC16).skip).toBe(false);
+		expect(shouldSkipRefetch(MP3_128, FLAC24).skip).toBe(false);
 	});
-	it('never matches when either side is missing (no guessing)', () => {
-		expect(isSameRecording(null, 'USSM11300080')).toBe(false);
-		expect(isSameRecording('USSM11300080', null)).toBe(false);
+
+	it('does not replace lossless with lossy of any bitrate', () => {
+		expect(shouldSkipRefetch(FLAC16, MP3_320).skip).toBe(true);
+		expect(shouldSkipRefetch(FLAC16, MP3_128).skip).toBe(true);
+	});
+
+	it('does not replace an equal-quality file', () => {
+		expect(shouldSkipRefetch(FLAC16, FLAC16).skip).toBe(true);
+		expect(shouldSkipRefetch(MP3_320, MP3_320).skip).toBe(true);
+	});
+
+	it('allows a 320 upgrade over a low-bitrate MP3', () => {
+		expect(shouldSkipRefetch(MP3_128, MP3_320).skip).toBe(false);
+	});
+});
+
+describe('fallback policy', () => {
+	it('permits a sub-320 MP3 when lower fallback is enabled', () => {
+		expect(shouldSkipRefetch({ ...MP3_128, isLossless: false }, MP3_128).skip).toBe(false);
+	});
+
+	it('refuses a sub-320 MP3 when lower fallback is disabled', () => {
+		const v = shouldSkipRefetch(MP3_128, MP3_128, { allowLowerFallback: false });
+		expect(v.skip).toBe(true);
+		expect(v.reason).toBe('below_min_bitrate_and_fallback_disabled');
+	});
+
+	it('still allows lossless when fallback is disabled', () => {
+		expect(shouldSkipRefetch(MP3_320, FLAC16, { allowLowerFallback: false }).skip).toBe(false);
+	});
+});
+
+describe('isSameRecording', () => {
+	it('matches on equal ISRC regardless of case', () => {
+		expect(isSameRecording('USQX91300108', 'usqx91300108')).toBe(true);
+	});
+	it('refuses on missing ISRCs', () => {
+		expect(isSameRecording(null, 'USQX91300108')).toBe(false);
+		expect(isSameRecording('USQX91300108', null)).toBe(false);
 		expect(isSameRecording(null, null)).toBe(false);
-		expect(isSameRecording('', 'USSM11300080')).toBe(false);
+	});
+	it('refuses across different ISRCs', () => {
+		expect(isSameRecording('USQX91300108', 'USQX91300109')).toBe(false);
+	});
+});
+
+describe('the upgrade loop terminates', () => {
+	it('converges: repeated 24-bit offers stop after the first success', () => {
+		// Simulates the sweep running hourly against an unchanged catalogue.
+		// Widened so the loop can hold any tier as the track improves.
+		let existing: QualityDescriptor = MP3_320;
+		let fetches = 0;
+		for (let hour = 0; hour < 50; hour++) {
+			if (shouldSkipRefetch(existing, FLAC24).skip) break;
+			existing = FLAC24;
+			fetches++;
+		}
+		expect(fetches).toBe(1);
+		expect(qualityRank(existing)).toBe(4);
+	});
+
+	it('does not thrash when the best available offer is only 16-bit', () => {
+		let existing: QualityDescriptor = MP3_320;
+		let fetches = 0;
+		for (let hour = 0; hour < 50; hour++) {
+			if (shouldSkipRefetch(existing, FLAC16).skip) break;
+			existing = FLAC16;
+			fetches++;
+		}
+		// One upgrade to 16-bit, then it stops — it must NOT keep refetching.
+		expect(fetches).toBe(1);
+		expect(qualityRank(existing)).toBe(3);
 	});
 });

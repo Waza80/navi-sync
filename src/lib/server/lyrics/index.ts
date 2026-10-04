@@ -40,6 +40,26 @@ export interface ExistingSidecar {
  * the song misses lyrics (no sidecar) or was just upgraded. An optional root
  * keeps unit tests off the real library.
  */
+/**
+ * Strip `[mm:ss.xx]` timestamps from LRC text to get the plain lyrics.
+ *
+ * Players want BOTH forms: the timestamped text for synchronised display, and
+ * the bare words for search, karaoke-less players and anything that does not
+ * understand LRC. Exported so the embed step derives one from the other rather
+ * than re-fetching.
+ */
+export function stripLrcTimestamps(lrc: string): string {
+	return (
+		lrc
+			.split(/\r?\n/)
+			// Keep metadata lines out of the plain lyrics ([ar:], [ti:], [length:]…).
+			.filter((line) => !/^\[[a-z]+:/i.test(line.trim()))
+			.map((line) => line.replace(/\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]/g, ''))
+			.filter((line) => line.trim().length > 0)
+			.join('\n')
+	);
+}
+
 export async function lyricsSidecar(
 	meta: TrackMeta,
 	root: string = env.MUSIC_LIBRARY_DIR,

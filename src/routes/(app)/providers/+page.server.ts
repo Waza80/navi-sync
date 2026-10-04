@@ -32,7 +32,7 @@ export const load: PageServerLoad = async () => {
 									(via === 'env' ? env.DEEZER_EMAIL : '') ??
 									'',
 							}
-						: d.id === 'monochrome'
+						: d.id === 'tidal'
 							? {
 									instanceUrl:
 										(cfg as { instanceUrl?: string } | null)?.instanceUrl ?? '',

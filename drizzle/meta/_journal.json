@@ -22,6 +22,20 @@
       "when": 1791089278813,
       "tag": "0002_left_romulus",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791148464613,
+      "tag": "0003_rename_monochrome_to_tidal",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791153191997,
+      "tag": "0004_auto_upgrade_quality",
+      "breakpoints": true
     }
   ]
 }

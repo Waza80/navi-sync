@@ -39,7 +39,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			continue;
 		}
 		// Hunt the best version across EVERY enabled provider (Deezer AND
-		// Monochrome) — one up takes precedence, both up means best wins.
+		// Tidal) — one up takes precedence, both up means best wins.
 		const upgrade = await findBestUpgrade(
 			{
 				id: full.id,

@@ -91,6 +91,64 @@ export interface ScanStatusResult {
  * scanStatus { scanning, count }). Used by the indexation-repair flow to
  * wait until a triggered scan actually finishes.
  */
+/* ── catalogue reads (diagnostics / repair) ─────────────────────────────── */
+
+/** One album plus its track list, as Navidrome indexed it. */
+export interface NavidromeAlbumDetail {
+	id: string;
+	name: string | null;
+	artist: string | null;
+	songCount: number;
+	songs: Array<Record<string, unknown>>;
+}
+
+/**
+ * Fetch one album by Navidrome id.
+ *
+ * Used by repair diagnostics: comparing the name Navidrome indexed against the
+ * canonical DB metadata is how a tag-encoding problem (every non-ASCII byte
+ * written as '#') becomes visible.
+ */
+export async function getAlbum(
+	baseUrl: string,
+	username: string,
+	password: string,
+	id: string,
+): Promise<NavidromeAlbumDetail | null> {
+	// getAlbum returns the full payload rather than the ping-shaped result the
+	// shared helper yields, so query it directly.
+	const res = await fetch(
+		`${normalizeBaseUrl(baseUrl)}/rest/getAlbum?${authParams(username, password)}&id=${encodeURIComponent(id)}`,
+		{ headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(TIMEOUT_MS) },
+	);
+	if (!res.ok) throw new Error(`HTTP ${res.status}`);
+	const body = (await res.json()) as {
+		'subsonic-response'?: { status?: string; album?: Record<string, unknown>; error?: unknown };
+	};
+	const sr = body['subsonic-response'];
+	if (!sr || sr.status !== 'ok') {
+		throw new Error('Subsonic error: album unavailable');
+	}
+	try {
+		const album = sr.album;
+		if (!album) return null;
+		const songs = Array.isArray(album['song'])
+			? (album['song'] as Array<Record<string, unknown>>)
+			: [];
+		const albumId = album['id'];
+		return {
+			id: typeof albumId === 'string' || typeof albumId === 'number' ? String(albumId) : id,
+			name: (album['name'] as string) ?? null,
+			artist: (album['artist'] as string) ?? null,
+			songCount: Number(album['songCount'] ?? songs.length),
+			songs,
+		};
+	} catch (err) {
+		log.debug('getAlbum failed', { id, error: String(err) });
+		return null;
+	}
+}
+
 export async function getScanStatus(
 	baseUrl: string,
 	username: string,

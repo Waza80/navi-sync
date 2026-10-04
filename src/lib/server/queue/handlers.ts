@@ -1,6 +1,5 @@
 import { join } from 'node:path';
-import { rm, stat } from 'node:fs/promises';
-import { writeFile } from 'node:fs/promises';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { env } from '$lib/server/env';
 import { logger } from '$lib/server/logger';
 import { getSettings } from '$lib/server/settings';
@@ -15,8 +14,13 @@ import {
 } from '$lib/server/db/tracks';
 import { isSameRecording } from '$lib/shared/quality';
 import { enqueueJob, updateProgress, type JobRow } from './jobs';
-import { downloadLyrics, lyricsSidecar, type DownloadLyricsResult } from '$lib/server/lyrics';
-import { providers } from '$lib/server/providers/registry';
+import {
+	downloadLyrics,
+	lyricsSidecar,
+	stripLrcTimestamps,
+	type DownloadLyricsResult,
+} from '$lib/server/lyrics';
+import { findProviderForUrl, providers } from '$lib/server/providers/registry';
 import { ProviderError, type StreamResolution, type TrackMeta } from '$lib/server/providers/types';
 import { shouldSkipRefetch } from '$lib/shared/quality';
 import { cleanupTemp, moveIntoLibrary, sha256File } from '$lib/server/library/files';
@@ -67,7 +71,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	// 1. Route to a provider (registry order = graceful degradation order).
 	const provider = payload.provider
 		? providers.find((p) => p.id === payload.provider)
-		: providers.find((p) => p.matches(input.trim()));
+		: await findProviderForUrl(input.trim());
 	if (!provider) {
 		throw new ProviderError(
 			`No provider supports: ${input.slice(0, 100)}`,
@@ -81,7 +85,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 			'NOT_FOUND',
 		);
 
-	// 2. Metadata. Providers without bare-id metadata (Monochrome) receive the
+	// 2. Metadata. Providers without bare-id metadata receive the
 	// search snapshot via the job payload — but stream grants (TRACK_TOKEN)
 	// expire, so always refresh from the provider when possible.
 	const payloadMeta = job.payload['meta'] as Partial<TrackMeta> | undefined;
@@ -114,7 +118,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 			meta = { ...meta, ...fresh, streamToken: fresh.streamToken ?? null };
 			await ctx.report(15, `metadata: ${meta.artist} — ${meta.title}`);
 		} catch (err) {
-			// Providers without bare-id metadata (Monochrome) keep the search
+			// Providers without bare-id metadata keep the search
 			// snapshot — their streams need no per-track grant.
 			log.debug('fresh metadata unavailable, using search snapshot', {
 				jobId: job.id,
@@ -174,17 +178,21 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		allowLowerFallback: settings.allowLowerFallback,
 	});
 
-	// 5. Download to temp (progress 25→65). Chunked providers (Cloudflare
-	// caps) use parallel Range chunks; everything else is a single stream.
+	// 5. Download to temp (progress 25→65). Tidal arrives as a list of
+	// fragmented-MP4 segments that must be concatenated and demuxed to FLAC;
+	// every other provider serves a single URL.
 	const tmpRaw = join(env.MUSIC_TMP_DIR, `job-${job.id}.raw`);
 	await ctx.report(25, 'downloading');
 	try {
-		if (resolution.chunked) {
-			const { downloadChunked } = await import('$lib/server/providers/monochrome/client');
+		if (resolution.segments) {
+			const { downloadTidalFlac } = await import('$lib/server/providers/tidal/download');
+			const plan = resolution.segments;
 			let lastPct = 25;
-			await downloadChunked(resolution.url, tmpRaw, {
+			const result = await downloadTidalFlac(plan, tmpRaw, {
 				signal: ctx.signal,
+				concurrency: Math.min(8, Math.max(2, settings.concurrentDownloads)),
 				onProgress: (received, total) => {
+					if (!total || total <= 0) return;
 					const pct = 25 + Math.floor((received / total) * 40); // 25..65
 					if (pct !== lastPct && pct % 5 === 0) {
 						lastPct = pct;
@@ -197,6 +205,26 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 						).catch(() => undefined);
 					}
 				},
+			});
+			// Compare the demuxed file's own STREAMINFO against the catalog
+			// duration before anything is tagged or filed. This is what catches a
+			// preview being served in place of a full-length track.
+			const { verifyFlacIntegrity } = await import('$lib/server/library/integrity');
+			const verdict = await verifyFlacIntegrity(tmpRaw, meta.durationSec);
+			if (!verdict.ok) {
+				await cleanupTemp(tmpRaw);
+				throw new Error(`Downloaded audio failed integrity check — ${verdict.reason}`);
+			}
+			log.info('tidal segments assembled', {
+				jobId: job.id,
+				segments: plan.mediaUrls.length,
+				bytes: result.bytes,
+				bitDepth: result.streamInfo.bitDepth,
+				sampleRateHz: result.streamInfo.sampleRateHz,
+				actualSec:
+					verdict.actualDurationSec != null
+						? Number(verdict.actualDurationSec.toFixed(1))
+						: null,
 			});
 		} else {
 			await downloadWithProgress(resolution.url, tmpRaw, ctx, job, meta);
@@ -245,6 +273,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		genre: meta.genre,
 		cover,
 		lyricsPlain: null,
+		lyricsSynced: null,
 	};
 	try {
 		if (resolution.ext === 'flac') await tagFlac(finalTmp, tags);
@@ -284,6 +313,33 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	const audioRel = `${trackBaseRelativePath(meta)}.${resolution.ext}`;
 	const finalPath = await moveIntoLibrary(finalTmp, audioRel);
 	await cleanupTemp(finalTmp);
+
+	// 10b. Embed the lyrics we just fetched (or found) INTO the file.
+	//
+	// The sidecar alone is invisible to Navidrome: it reads tags, not .lrc files,
+	// so the dashboard showed lyrics while the player reported "No lyrics".
+	// Re-tagging after the move is safe because the library path is already
+	// final — the file no longer moves again, so writing it cannot desync the
+	// DB row from disk. Best-effort: a failure here must not fail the download.
+	if (lyrics.path) {
+		try {
+			const sidecarText = await readFile(lyrics.path, 'utf8');
+			const withLyrics = {
+				...tags,
+				lyricsPlain: lyrics.synced ? stripLrcTimestamps(sidecarText) : sidecarText,
+				lyricsSynced: lyrics.synced ? sidecarText : null,
+			};
+			if (resolution.ext === 'flac') await tagFlac(finalPath, withLyrics);
+			else tagMp3(finalPath, withLyrics);
+			log.info('lyrics embedded in file', {
+				jobId: job.id,
+				synced: lyrics.synced,
+				bytes: sidecarText.length,
+			});
+		} catch (err) {
+			log.warn('lyrics embedding failed, sidecar still present', { error: String(err) });
+		}
+	}
 
 	let coverPath: string | null = null;
 	if (cover) {
@@ -545,14 +601,18 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		const { readFile } = await import('node:fs/promises');
 		for (const t of await listFiledTracks()) {
 			if (!t.filePath) continue;
+			// Prefer the .lrc: Navidrome reads no sidecars, so the lyrics only
+			// become visible once embedded in the file's own tags.
 			let lyricsPlain: string | null = null;
+			let lyricsSynced: string | null = null;
 			const base = t.filePath.replace(/\.(mp3|flac)$/i, '');
-			for (const ext of ['lrc', 'txt']) {
-				const sidecar = await readFile(`${base}.${ext}`, 'utf8').catch(() => null);
-				if (sidecar) {
-					lyricsPlain = sidecar;
-					break;
-				}
+			const lrc = await readFile(`${base}.lrc`, 'utf8').catch(() => null);
+			if (lrc) {
+				lyricsSynced = lrc;
+				lyricsPlain = stripLrcTimestamps(lrc);
+			} else {
+				const txt = await readFile(`${base}.txt`, 'utf8').catch(() => null);
+				if (txt) lyricsPlain = txt;
 			}
 			const outcome = await ensureFileTags(t.filePath, {
 				title: t.title,
@@ -565,6 +625,7 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 				genre: t.genre,
 				cover: null,
 				lyricsPlain,
+				lyricsSynced,
 			});
 			if (outcome === 'ok') retagged++;
 			else if (outcome === 'skipped') tagsSkipped++;
@@ -878,6 +939,7 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 				genre,
 				cover: coverBytes,
 				lyricsPlain: null,
+				lyricsSynced: null,
 			},
 			{ force: true },
 		);

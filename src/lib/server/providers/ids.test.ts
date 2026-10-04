@@ -20,8 +20,8 @@ describe('canonicalTrackId', () => {
 		expect(canonicalTrackId('deezer', null)).toBeNull();
 		expect(canonicalTrackId('deezer', '  ')).toBeNull();
 	});
-	it('leaves non-deezer ids untouched (monochrome ids exceed 15 digits)', () => {
-		expect(canonicalTrackId('monochrome', '154014286732070912')).toBe('154014286732070912');
+	it('leaves non-deezer ids untouched (tidal ids exceed 15 digits)', () => {
+		expect(canonicalTrackId('tidal', '154014286732070912')).toBe('154014286732070912');
 	});
 });
 
@@ -42,9 +42,9 @@ describe('trackPageUrl', () => {
 			),
 		).toBe('https://www.deezer.com/track/1176975382');
 	});
-	it('builds monochrome page URLs', () => {
-		expect(trackPageUrl('monochrome', '154014286732070912')).toBe(
-			'https://tracks.monochrome.st/track/154014286732070912',
+	it('builds tidal page URLs', () => {
+		expect(trackPageUrl('tidal', '154014286732070912')).toBe(
+			'https://tidal.com/track/154014286732070912',
 		);
 	});
 	it('returns null when there is no id', () => {

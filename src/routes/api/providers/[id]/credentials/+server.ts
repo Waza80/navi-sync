@@ -7,7 +7,7 @@ import {
 	getProviderConfig,
 } from '$lib/server/providers/config';
 import { getDeezerSession, clearInMemorySession } from '$lib/server/providers/deezer/gateway';
-import { MonochromeClient } from '$lib/server/providers/monochrome/client';
+import { TidalClient } from '$lib/server/providers/tidal/client';
 import { env } from '$lib/server/env';
 import type { RequestHandler } from './$types';
 
@@ -21,10 +21,8 @@ const schemas = {
 		.refine((v) => v.arl || (v.email && v.password), {
 			message: 'Provide an ARL, or email + password.',
 		}),
-	monochrome: z.object({
+	tidal: z.object({
 		instanceUrl: z.string().url().max(300),
-		username: z.string().max(200).optional(),
-		password: z.string().max(200).optional(),
 		quality: z.enum(['HI_RES_LOSSLESS', 'LOSSLESS', 'LOW']).optional(),
 	}),
 } as const;
@@ -74,29 +72,23 @@ export const PUT: RequestHandler = async ({ locals, params, request }) => {
 		}
 	}
 
-	if (id === 'monochrome') {
+	if (id === 'tidal') {
 		const data = parsed.data as {
 			instanceUrl: string;
-			sessionCookie?: string;
-			username?: string;
-			password?: string;
 			quality?: 'HI_RES_LOSSLESS' | 'LOSSLESS' | 'LOW';
 		};
 		const cfg = {
 			instanceUrl: data.instanceUrl,
-			sessionCookie: data.sessionCookie,
-			username: data.username,
-			password: data.password,
 			quality: data.quality ?? 'HI_RES_LOSSLESS',
 		};
-		await setProviderConfig('monochrome', cfg);
-		const client = new MonochromeClient(cfg);
+		await setProviderConfig('tidal', cfg);
+		const client = new TidalClient(cfg);
 		try {
 			const probe = await client.search('test');
 			return json({
 				ok: true,
 				tested: true,
-				detail: `Instance reachable — search returned ${probe.length} sample results`,
+				detail: `Instance reachable — search returned ${probe.length} results`,
 			});
 		} catch (err) {
 			return json(

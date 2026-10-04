@@ -15,7 +15,7 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 	const providerId = track.provider ?? 'deezer';
 
 	// Hunt the best version across EVERY enabled provider (Deezer AND
-	// Monochrome) — one up takes precedence, both up means best wins.
+	// Tidal) — one up takes precedence, both up means best wins.
 	const { findBestUpgrade } = await import('$lib/server/queue/upgrades');
 	const upgrade = await findBestUpgrade(
 		{

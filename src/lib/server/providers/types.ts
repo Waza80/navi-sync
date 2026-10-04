@@ -25,6 +25,8 @@ export interface TrackMeta {
 	durationSec: number | null;
 	year: number | null;
 	genre: string | null;
+	/** Provider-native album id, when the provider exposes one (album fan-out). */
+	albumId?: string | null;
 	/** Highest-res cover art URL (jpg), if the provider exposes one. */
 	coverUrl: string | null;
 	sourceUrl: string | null;
@@ -52,17 +54,29 @@ export interface StreamResolution {
 	/** Provider track id — required to derive the decryption key. */
 	decryptTrackId: string | null;
 	/**
-	 * Cloudflare-capped instances: the URL only serves ~512KiB/connection —
-	 * the pipeline must download via parallel Range chunks.
+	 * Tidal serves lossless FLAC as fragmented MP4: independent CDN objects that
+	 * must be fetched and concatenated, not byte ranges of one stream. The
+	 * pipeline runs the segment downloader when this is present.
 	 */
-	chunked?: boolean;
+	segments?: {
+		initUrl: string;
+		mediaUrls: string[];
+		/** Size hint for progress reporting only. */
+		expectedBytes?: number | null;
+	};
 }
 
 export interface Provider {
 	id: string;
 	displayName: string;
-	/** Cheap sync check whether this provider can handle the URL. */
-	matches(url: string): boolean;
+	/**
+	 * Cheap check whether this provider can handle the URL.
+	 *
+	 * May be async: a provider configured with an instance URL must consult its
+	 * own config to know which hosts are "mine", and a shape-only match would
+	 * make it claim other providers' links.
+	 */
+	matches(url: string): boolean | Promise<boolean>;
 	/** Parse a user-supplied URL/id into a canonical ref. Null = unsupported. */
 	parseRef(input: string): Promise<TrackRef | null>;
 	/** Search (dashboard UI) — providers may return an empty list. */
@@ -87,6 +101,19 @@ export interface Provider {
 	playlistTrackIds?(playlistId: string, max?: number): Promise<string[]>;
 	/** Exact catalog lookup by ISRC — enables cross-provider best-quality. */
 	findByIsrc?(isrc: string): Promise<TrackMeta | null>;
+	/**
+	 * ISRC lookup with the caller's album context.
+	 *
+	 * Optional refinement of `findByIsrc`: some catalogues reuse one ISRC across
+	 * an original release and its compilations, so an album hint is what makes
+	 * the match unambiguous. Providers that cannot disambiguate may omit this.
+	 */
+	findByIsrcInAlbum?(
+		isrc: string,
+		artist: string,
+		title: string,
+		album: string | null,
+	): Promise<TrackMeta | null>;
 	/** Fetch full metadata incl. stream token. */
 	metadata(ref: TrackRef): Promise<TrackMeta>;
 	/** Resolve a downloadable stream honoring the quality policy. */

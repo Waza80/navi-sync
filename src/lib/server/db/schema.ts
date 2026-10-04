@@ -176,11 +176,20 @@ export const settings = pgTable('settings', {
 	preferLossless: boolean('prefer_lossless').notNull().default(true),
 	/** Allow accepting a lower quality when the preferred tier is unavailable */
 	allowLowerFallback: boolean('allow_lower_fallback').notNull().default(true),
-	/** Providers the engine may use (search, downloads, upgrades). */
+	/**
+	 * When false, the cross-provider quality-upgrade sweep stops hunting for
+	 * better masters of tracks it already has. MISSING music is still fetched:
+	 * the failed-download retry sweep is independent of this flag.
+	 */
+	autoUpgradeQuality: boolean('auto_upgrade_quality').notNull().default(true),
+	/**
+	 * Providers the engine may use (search, downloads, upgrades). Tidal first:
+	 * it reaches 24/192 where Deezer's catalogue tops out at 24/96.
+	 */
 	enabledProviders: jsonb('enabled_providers')
 		.$type<string[]>()
 		.notNull()
-		.default(['deezer', 'monochrome']),
+		.default(['tidal', 'deezer']),
 	concurrentDownloads: integer('concurrent_downloads').notNull().default(4),
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

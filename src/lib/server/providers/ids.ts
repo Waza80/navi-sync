@@ -27,7 +27,7 @@ export function trackPageUrl(provider: string, trackId: string | null | undefine
 	const id = canonicalTrackId(provider, trackId);
 	if (!id) return null;
 	if (/^https?:\/\//i.test(id)) return id;
-	if (provider === 'monochrome') return `https://tracks.monochrome.st/track/${id}`;
+	if (provider === 'tidal') return `https://tidal.com/track/${id}`;
 	if (provider === 'deezer') return `https://www.deezer.com/track/${id}`;
 	return id;
 }

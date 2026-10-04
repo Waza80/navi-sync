@@ -18,9 +18,29 @@ describe('sanitizeComponent', () => {
 		expect(sanitizeComponent('///')).toBe('Unknown');
 		expect(sanitizeComponent('', 'Unknown Artist')).toBe('Unknown Artist');
 	});
-	it('caps extreme lengths', () => {
+	// The cap is in BYTES (ext4's limit is per byte, not per character).
+	it('caps extreme lengths by bytes, not characters', () => {
 		const out = sanitizeComponent('a'.repeat(500));
-		expect(out.length).toBeLessThanOrEqual(120);
+		expect(out.length).toBeLessThanOrEqual(220);
+		expect(Buffer.byteLength(out)).toBeLessThanOrEqual(220);
+	});
+
+	it('keeps a multi-byte title under the filesystem limit', () => {
+		// 120 CJK characters are 360 bytes — over ext4's 255-byte cap.
+		const cjk = sanitizeComponent('封'.repeat(120));
+		expect(Buffer.byteLength(cjk)).toBeLessThanOrEqual(255);
+	});
+
+	it('never splits a grapheme cluster when truncating', () => {
+		// 'é' as e + combining acute must never be cut between base and mark.
+		const out = sanitizeComponent('é'.repeat(400));
+		expect(out).not.toContain('́');
+		expect(out.endsWith('é')).toBe(true);
+	});
+
+	it('preserves zalgo decoration whole', () => {
+		const zalgo = `#CUT4${'̟'.repeat(12)}ZALGO`;
+		expect(sanitizeComponent(zalgo)).toBe(zalgo);
 	});
 });
 

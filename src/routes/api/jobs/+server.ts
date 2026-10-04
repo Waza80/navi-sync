@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
 import { listJobs } from '$lib/server/queue/jobs';
 import { enqueueJob } from '$lib/server/queue/jobs';
-import { getProviderConfig } from '$lib/server/providers/config';
 import type { RequestHandler } from './$types';
 
 const listSchema = z.object({
@@ -89,9 +88,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			});
 			sourceUrl = resolved.sourceUrl ?? sourceUrl;
 		} catch {
-			// Monochrome et al.: metadata comes from the search snapshot below.
-			const cfg = await getProviderConfig<Record<string, string>>('monochrome');
-			sourceUrl = `${cfg?.instanceUrl ?? 'https://tracks.monochrome.st'}/track/${parsed.data.trackId}`;
+			// Metadata unavailable (e.g. the instance is down): fall back to a
+			// provider-shaped URL so the job can still be routed and retried.
+			if (provider.id === 'tidal') {
+				sourceUrl = `https://tidal.com/track/${parsed.data.trackId}`;
+			}
 		}
 		const job = await enqueueJob({
 			type: 'download',
@@ -108,7 +109,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const { findProviderForUrl, getProvider, providers } =
 		await import('$lib/server/providers/registry');
 	const input = parsed.data.url.trim();
-	const byUrl = findProviderForUrl(input);
+	const byUrl = await findProviderForUrl(input);
 	const providerId =
 		byUrl?.id ?? (/^\d{4,15}$/.test(input) && providers.length > 0 ? providers[0].id : null);
 	if (!providerId) {

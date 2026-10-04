@@ -16,11 +16,32 @@ export interface QualityDescriptor {
 	isLossless: boolean;
 }
 
+/**
+ * Normalise the format names different probes produce.
+ *
+ * music-metadata reports an MP3's CONTAINER as "MPEG", not "mp3", so an
+ * uploaded or downloaded MP3 arrives as `format: 'mpeg'`. Without this, every
+ * MP3 ranked 0 ("unknown") instead of 2 (320 kbps) — which made the guardrail
+ * treat known-good uploads as the worst possible quality and rank them below
+ * even a 128 kbps file.
+ */
+export function normalizeFormat(format: string): string {
+	const f = format.trim().toLowerCase();
+	if (f === 'mpeg' || f === 'mpeg-1' || f === 'mpeg1' || f === 'mpeg-2' || f === 'mpeg2') {
+		return 'mp3';
+	}
+	if (f === 'x-flac' || f === 'flac') return 'flac';
+	if (f === 'mp4' || f === 'm4a' || f === 'aac') return 'aac';
+	if (f === 'vorbis' || f === 'opus') return 'ogg';
+	return f;
+}
+
 export function qualityRank(q: QualityDescriptor): number {
-	if (q.isLossless || q.format === 'flac') {
+	const format = normalizeFormat(q.format);
+	if (q.isLossless || format === 'flac') {
 		return (q.bitDepth ?? 16) >= 24 ? 4 : 3;
 	}
-	if (q.format === 'mp3') {
+	if (format === 'mp3') {
 		return (q.bitrateKbps ?? 0) >= 320 ? 2 : 1;
 	}
 	// Unknown formats rank below everything we understand.

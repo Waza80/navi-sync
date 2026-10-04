@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { authClient } from '$lib/client/auth';
+	import { APP_VERSION_SHORT } from '$lib/version';
 
 	let {
 		children,
@@ -42,6 +43,11 @@
 			<a href={resolve('/dashboard')} class="flex items-center gap-2 font-semibold tracking-tight">
 				<span aria-hidden="true" class="text-xl">🛰️</span>
 				<span>NaviSync</span>
+				<!-- Bump APP_VERSION in src/lib/version.ts on every release. -->
+				<span
+					class="rounded-full bg-surface-highest px-2 py-0.5 font-mono text-[11px] font-medium text-on-surface-variant"
+					title={`NaviSync ${APP_VERSION_SHORT}`}>{APP_VERSION_SHORT}</span
+				>
 			</a>
 			<nav class="ml-6 hidden gap-1 sm:flex" aria-label="Primary">
 				{#each resolvedNav as item (item.href)}

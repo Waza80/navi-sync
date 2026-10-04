@@ -146,6 +146,7 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 			genre: input.genre ?? null,
 			cover: null,
 			lyricsPlain: null,
+			lyricsSynced: null,
 		};
 		try {
 			if (container === 'flac') await tagFlac(tmpPath, tags);

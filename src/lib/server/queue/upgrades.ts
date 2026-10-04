@@ -114,7 +114,7 @@ export async function findBestUpgrade(
 			let meta: TrackMeta = baseMeta;
 			if (provider.id === track.provider) {
 				// Same provider: refresh metadata for a live stream grant
-				// (TRACK_TOKENs expire). Best-effort — Monochrome falls back
+				// (TRACK_TOKENs expire). Best-effort — Tidal falls back
 				// to the stored snapshot when the instance can't resolve it.
 				if (track.providerTrackId) {
 					try {
@@ -131,8 +131,15 @@ export async function findBestUpgrade(
 				// Cross-provider: locate the same recording — ISRC first (exact),
 				// then a STRICT title/artist/duration match (never guess).
 				let found: TrackMeta | null = null;
-				if (track.isrc && provider.findByIsrc) {
-					const byIsrc = await provider.findByIsrc(track.isrc);
+				if (track.isrc && provider.findByIsrcInAlbum) {
+					// Preferred: the album hint disambiguates catalogues that reuse
+					// one ISRC across a release and its compilations.
+					found = await provider
+						.findByIsrcInAlbum(track.isrc, track.artist, track.title, track.album)
+						.catch(() => null);
+				}
+				if (!found && track.isrc && provider.findByIsrc) {
+					const byIsrc = await provider.findByIsrc(track.isrc).catch(() => null);
 					if (byIsrc) found = byIsrc;
 				}
 				if (!found && provider.search) {
@@ -186,6 +193,9 @@ export async function findBestUpgrade(
 	}
 
 	if (candidates.length === 0) return null;
+	// Highest quality wins. `candidates` is in registry order (Tidal first), and
+	// Array#sort is stable, so an exact tie falls to Tidal — which is also the
+	// faster source, making it the better default even when quality matches.
 	candidates.sort((a, b) => b.incomingRank - a.incomingRank);
 	const best = candidates[0];
 	if (!best) return null;

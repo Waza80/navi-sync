@@ -13,6 +13,8 @@ dist/
 
 # ── libraries & temp data (user content) ─────────────────────────────────────
 music/
+# Local dev library (dev instance only; the deployment serves /music)
+.dev-library/
 .tmp/
 logs/
 
