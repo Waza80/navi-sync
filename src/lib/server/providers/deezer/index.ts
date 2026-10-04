@@ -4,6 +4,24 @@ import { isDeezerShortLink, parseDeezerTrackUrl } from './parse';
 import { ProviderError, type Provider, type TrackMeta } from '$lib/server/providers/types';
 import { logger } from '$lib/server/logger';
 
+async function resolveShortLink(input: string): Promise<string | null> {
+	for (const method of ['HEAD', 'GET'] as const) {
+		try {
+			const res = await fetch(input.trim(), {
+				method,
+				redirect: 'follow',
+				signal: AbortSignal.timeout(10_000)
+			});
+			const final = res.url;
+			if (method === 'GET') await res.arrayBuffer();
+			if (final && !/link\.deezer\.com/.test(final)) return final.split('?')[0];
+		} catch {
+			continue;
+		}
+	}
+	return null;
+}
+
 const log = logger;
 
 /**
@@ -17,6 +35,7 @@ interface GatewayTrackData {
 	SNG_TITLE?: string;
 	ART_NAME?: string;
 	ALB_TITLE?: string;
+	ALB_PICTURE?: string;
 	ARTISTS?: Array<{ ART_NAME?: string }>;
 	TRACK_NUMBER?: string | number;
 	DISK_NUMBER?: string | number;
@@ -105,6 +124,42 @@ export const deezerProvider: Provider = {
 		const results = body.results as { data?: Array<Record<string, unknown>> } | undefined;
 		const rows = results?.data ?? [];
 		return rows.slice(0, 25).map((r) => gatewayRowToMeta(r));
+	},
+
+	async resolveLink(
+		input: string
+	): Promise<{ kind: 'track' | 'album' | 'playlist'; id: string } | null> {
+		// Canonicalizes any deezer link (incl. link.deezer.com short links)
+		// into {kind, id}: track, album or playlist.
+		const direct = parseDeezerTrackUrl(input);
+		if (direct) return { kind: 'track', id: direct.id };
+
+		const target = isDeezerShortLink(input) ? await resolveShortLink(input) : input;
+		if (!target) return null;
+		try {
+			const url = new URL(target);
+			if (!/(^|\.)deezer\.com$/.test(url.hostname)) return null;
+			const m = /\/(track|album|playlist)\/(\d+)/.exec(url.pathname);
+			if (!m) return null;
+			return { kind: m[1] as 'track' | 'album' | 'playlist', id: m[2] };
+		} catch {
+			return null;
+		}
+	},
+
+	async playlistTrackIds(playlistId: string, max = 300): Promise<string[]> {
+		// Track list lives at results.SONGS.data of deezer.pagePlaylist
+		// (reference: DeezerPlaylist.loadTracks; verified live 2026-10).
+		const body = await callGateway('deezer.pagePlaylist', {
+			playlist_id: playlistId,
+			lang: 'en',
+			nb: max,
+			tags: false,
+			start: 0
+		});
+		const results = body.results as { SONGS?: { data?: Array<{ SNG_ID?: string | number }> } };
+		const rows = results?.SONGS?.data ?? [];
+		return rows.map((r) => String(r.SNG_ID ?? '')).filter((id) => /^\d+$/.test(id));
 	},
 
 	async metadata(ref) {
@@ -206,7 +261,10 @@ function gatewayRowToMeta(r: Record<string, unknown>): TrackMeta {
 		durationSec: toInt(g.DURATION),
 		year: null,
 		genre: null,
-		coverUrl: null,
+		coverUrl:
+			g.ALB_PICTURE != null && String(g.ALB_PICTURE).length > 0
+				? `https://e-cdns-images.dzcdn.net/images/cover/${String(g.ALB_PICTURE)}/500x500-000000-80-0-0.jpg`
+				: null,
 		sourceUrl: `https://www.deezer.com/track/${g.SNG_ID ?? ''}`,
 		streamToken: g.TRACK_TOKEN ?? null,
 	};

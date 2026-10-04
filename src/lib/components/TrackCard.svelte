@@ -30,7 +30,7 @@
 	const lossless = $derived(track.isLossless || track.format === 'flac');
 </script>
 
-<div class="m3-card group relative flex flex-col overflow-hidden {playing ? 'ring-1 ring-primary' : ''}">
+<div class="m3-card m3-tile group relative flex flex-col overflow-hidden {playing ? 'ring-1 ring-primary' : ''}">
 	<!-- Cover -->
 	<div class="relative aspect-square w-full bg-surface-highest">
 		<img

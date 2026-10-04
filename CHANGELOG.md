@@ -2,6 +2,28 @@
 
 All notable changes to NaviSync. Format: Keep a Changelog; semver.
 
+## [0.3.0] — Phase 3: UI polish, link fan-out, covers, logging, security pass — 2026-10-04
+
+### Added
+- **Album/playlist link support**: `POST /api/tracks` accepts album and
+  playlist links (incl. `link.deezer.com` short links) and fans out one
+  download per track — verified live with 70-track playlist (11-track album).
+- **Cover art everywhere**: search results map album art (Deezer
+  `ALB_PICTURE` → CDN URL; Monochrome proxied artwork) through job payloads
+  → every download now files a `cover.jpg`; search rows and album rows show
+  thumbnails; track grid shows covers.
+- **M3 motion & conventions**: emphasized-easing enter animations, hover
+  lift on grid tiles, snackbar toasts on every action (queued/saved/
+  cleared/errors), `prefers-reduced-motion` respected.
+- **Search UX**: ✕ clear button, clearing the input resets results.
+- **Non-invasive logging**: provider search timing, library-export
+  completion, upload/sweep summaries (all redacted, local-only).
+
+### Security
+- Final pre-commit audit: no secrets in tree (`.env` gitignored + verified),
+  logs redact credentials, DB stores only AES-256-GCM ciphertext, CSP +
+  rate limits + origin checks active. Remote configured; push on request.
+
 ## [0.2.3] — Phase 2D: tracks.monochrome.st, chunked downloads, UI freeze fix — 2026-10-04
 
 ### Fixed

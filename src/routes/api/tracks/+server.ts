@@ -50,6 +50,37 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		);
 	}
 	const provider = getProvider(providerId);
+
+	// Album / playlist links fan out into one download job per track.
+	if (provider.resolveLink) {
+		const link = await provider.resolveLink(input).catch(() => null);
+		if (link && link.kind !== 'track') {
+			const ids =
+				link.kind === 'album'
+					? await provider.albumTrackIds?.(link.id)
+					: await provider.playlistTrackIds?.(link.id, 300);
+			if (!ids || ids.length === 0) {
+				return badRequest(
+					`That ${link.kind} resolved but contains no downloadable tracks.`,
+					'EMPTY_COLLECTION'
+				);
+			}
+			const jobIds: string[] = [];
+			for (const trackId of ids) {
+				const job = await enqueueJob({
+					type: 'download',
+					payload: {
+						url: `https://www.deezer.com/track/${trackId}`,
+						provider: providerId
+					},
+					createdBy: user.id
+				});
+				jobIds.push(job.id);
+			}
+			return json({ kind: link.kind, enqueued: jobIds.length, jobIds }, { status: 202 });
+		}
+	}
+
 	const ref = await provider.parseRef(input);
 	if (!ref)
 		return badRequest(

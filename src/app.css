@@ -46,6 +46,13 @@
 
 	--md-elev-1: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px 1px rgb(0 0 0 / 0.15);
 	--md-elev-2: 0 1px 2px rgb(0 0 0 / 0.3), 0 2px 6px 2px rgb(0 0 0 / 0.15);
+
+	/* M3 motion: emphasized durations + easing */
+	--md-motion-short: 150ms;
+	--md-motion-medium: 250ms;
+	--md-motion-long: 350ms;
+	--md-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+	--md-ease-standard: cubic-bezier(0.2, 0, 0, 1);
 }
 
 /* Tailwind v4 theme mapping → utility classes (bg-surface, text-on-surface, …) */
@@ -185,6 +192,60 @@ body {
 	font-weight: 600;
 	letter-spacing: 0.02em;
 	white-space: nowrap;
+}
+
+/* ── M3 motion conventions ─────────────────────────────────────────────── */
+@keyframes m3-fade-up {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.m3-enter {
+	animation: m3-fade-up var(--md-motion-medium) var(--md-ease-emphasized);
+}
+
+.m3-card {
+	transition:
+		box-shadow var(--md-motion-short) var(--md-ease-standard),
+		transform var(--md-motion-short) var(--md-ease-standard);
+}
+
+/* Grid tiles get a subtle lift on hover (M3 state layer convention) */
+.m3-tile:hover {
+	transform: translateY(-2px);
+	box-shadow: var(--md-elev-2);
+}
+
+/* Snackbar (toast) */
+.m3-toast {
+	min-height: 48px;
+	display: flex;
+	align-items: center;
+	padding: 0 1rem;
+	border-radius: var(--md-radius-s);
+	box-shadow: var(--md-elev-2);
+	font-size: 0.875rem;
+	max-width: 22rem;
+	pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.m3-enter,
+	.m3-toast {
+		animation: none;
+	}
+	.m3-card,
+	.m3-tile,
+	.m3-btn,
+	.m3-progress > .bar {
+		transition: none;
+	}
 }
 
 /* M3 linear progress */

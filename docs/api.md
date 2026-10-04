@@ -64,6 +64,24 @@ data: {"type":"job.cancelled", …}
 Event types: `job.queued · job.progress · job.completed · job.failed ·
 job.cancelled`. Heartbeat every 25s; auto-reconnect (`retry: 3000`).
 
+## Albums (Phase 2)
+
+| Endpoint                        | Method | Notes                                        |
+| ------------------------------- | ------ | -------------------------------------------- |
+| `/api/albums/:id/download`      | POST   | fan-out: enqueue every track of the album (202 `{enqueued, jobIds}`) |
+
+`POST /api/tracks` also accepts **album/playlist links** (incl.
+`link.deezer.com` short links) — response `202 {kind, enqueued, jobIds}`.
+
+## Per-track files (Phase 2)
+
+| Endpoint                    | Method | Notes                                        |
+| --------------------------- | ------ | -------------------------------------------- |
+| `/api/tracks/:id/file`      | GET    | authenticated download (attachment)          |
+| `/api/tracks/:id/cover`     | GET    | album art (jpeg)                             |
+| `/api/tracks/:id/audio`     | GET    | HTTP Range streaming (preview seeking)       |
+| `/api/tracks/:id/upgrade`   | POST   | force quality check now (202 `{job}`)        |
+
 ## Navidrome
 
 | Endpoint              | Method | Body                                                                                                                                   | Notes                                             |

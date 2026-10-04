@@ -20,6 +20,17 @@
 	let message = $state<{ tone: 'ok' | 'error'; text: string } | null>(null);
 	let busy = $state(false);
 
+	// M3 snackbar-style toasts
+	let toasts = $state<Array<{ id: number; tone: 'ok' | 'error' | 'info'; text: string }>>([]);
+	let toastSeq = 0;
+	function toast(tone: 'ok' | 'error' | 'info', text: string): void {
+		const id = ++toastSeq;
+		toasts = [...toasts, { id, tone, text }];
+		setTimeout(() => {
+			toasts = toasts.filter((t) => t.id !== id);
+		}, 4500);
+	}
+
 	// ── Live queue (SSE) ────────────────────────────────────────────────────
 	$effect(() => {
 		live.start(
@@ -60,6 +71,7 @@
 		clearing = true;
 		try {
 			await fetch('/api/jobs/completed', { method: 'DELETE' });
+			toast('info', 'Finished jobs cleared.');
 			await invalidateAll(); // authoritative snapshot prunes the cleared rows
 		} finally {
 			clearing = false;
@@ -81,12 +93,25 @@
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ url: urlInput.trim() })
 			});
-			const body = (await res.json()) as { job?: { id: string }; error?: { message: string } };
+			const body = (await res.json()) as {
+				job?: { id: string };
+				kind?: string;
+				enqueued?: number;
+				error?: { message: string };
+			};
 			if (!res.ok) {
 				message = { tone: 'error', text: body.error?.message ?? `HTTP ${res.status}` };
+				toast('error', message.text);
 				return;
 			}
-			message = { tone: 'ok', text: 'Queued — watch the live progress below.' };
+			message = {
+				tone: 'ok',
+				text:
+					body.kind === 'album' || body.kind === 'playlist'
+						? `Queued ${body.enqueued} tracks from the ${body.kind}.`
+						: 'Queued — watch the live progress below.'
+			};
+			toast('ok', message.text);
 			urlInput = '';
 			await invalidateAll();
 		} catch {
@@ -114,6 +139,7 @@
 			message = res.ok
 				? { tone: 'ok', text: body.message ?? 'Quality check queued — watch the queue.' }
 				: { tone: 'error', text: body.error?.message ?? body.message ?? `HTTP ${res.status}` };
+			toast(message.tone, message.text);
 		} finally {
 			upgrading.delete(id);
 		}
@@ -132,6 +158,7 @@
 		artist: string;
 		album: string | null;
 		durationSec: number | null;
+		coverUrl?: string | null;
 	}
 	interface AlbumResult {
 		provider: string;
@@ -139,6 +166,7 @@
 		title: string;
 		artist: string;
 		year: number | null;
+		coverUrl?: string | null;
 	}
 	let searchInput = $state('');
 	let searchBusy = $state(false);
@@ -147,6 +175,13 @@
 	let albumBusy = new SvelteSet<string>();
 	let searchMsg = $state<string | null>(null);
 	let queuedSearch = new SvelteSet<string>();
+
+	function clearSearch() {
+		searchInput = '';
+		searchResults = [];
+		searchAlbums = [];
+		searchMsg = null;
+	}
 
 	async function doSearch(e: SubmitEvent) {
 		e.preventDefault();
@@ -158,7 +193,10 @@
 		searchMsg = null;
 		try {
 			const res = await fetch(`/api/search?q=${encodeURIComponent(searchInput.trim())}`);
-			const body = (await res.json()) as { results?: SearchResult[]; albums?: AlbumResult[] };
+			const body = (await res.json()) as {
+				results?: SearchResult[];
+				albums?: AlbumResult[];
+			};
 			searchResults = body.results ?? [];
 			searchAlbums = body.albums ?? [];
 			if (searchResults.length === 0) searchMsg = 'No results from the enabled providers.';
@@ -173,10 +211,10 @@
 			const res = await fetch(`/api/albums/${a.albumId}/download`, { method: 'POST' });
 			const body = (await res.json()) as { enqueued?: number; error?: { message: string } };
 			if (res.ok) {
-				searchMsg = `Queued ${body.enqueued} tracks from “${a.title}”.`;
+				toast('ok', `Queued ${body.enqueued} tracks from “${a.title}”`);
 				await invalidateAll();
 			} else {
-				searchMsg = body.error?.message ?? `HTTP ${res.status}`;
+				toast('error', body.error?.message ?? `HTTP ${res.status}`);
 			}
 		} finally {
 			albumBusy.delete(key);
@@ -295,6 +333,7 @@
 				tone: body.duplicate ? 'info' : 'ok',
 				text: body.duplicate ? (body.message ?? 'Already in library.') : 'Saved to library ✓'
 			};
+			toast(body.duplicate ? 'info' : 'ok', uploadMsg.text);
 			up = null;
 			await invalidateAll();
 		} finally {
@@ -332,6 +371,7 @@
 				tone: (body.matchedCount ?? 0) > 0 ? 'ok' : 'info',
 				text: `Matched & queued ${body.matchedCount ?? 0} songs · ${(body.unmatched ?? []).length} unmatched.`
 			};
+			toast('ok', csvMsg.text);
 			await invalidateAll();
 		} finally {
 			csvBusy = false;
@@ -403,10 +443,18 @@
 			<label for="q" class="mb-1 block text-sm text-on-surface-variant">Song or artist</label>
 			<input id="q" type="search" class="m3-input" placeholder="e.g. Daft Punk One More Time" bind:value={searchInput} />
 		</div>
-		<div class="flex items-end">
+		<div class="flex items-end gap-2">
 			<button type="submit" class="m3-btn m3-btn-tonal w-full sm:w-auto" disabled={searchBusy}>
 				{searchBusy ? 'Searching…' : 'Search'}
 			</button>
+			{#if searchInput.length > 0 || searchResults.length > 0 || searchAlbums.length > 0}
+				<button
+					type="button"
+					class="m3-btn m3-btn-text"
+					aria-label="Clear search"
+					onclick={clearSearch}>✕ Clear</button
+				>
+			{/if}
 		</div>
 	</form>
 	{#if searchMsg}
@@ -417,7 +465,12 @@
 		<div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
 			{#each searchAlbums as a (a.provider + a.albumId)}
 				{@const key = a.provider + ':' + a.albumId}
-				<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2">
+				<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2 transition-transform duration-200 hover:translate-x-0.5">
+					{#if a.coverUrl}
+						<img src={a.coverUrl} alt="" loading="lazy" class="h-10 w-10 rounded-md object-cover" />
+					{:else}
+						<div class="h-10 w-10 rounded-md bg-surface-highest"></div>
+					{/if}
 					<div class="min-w-0 flex-1">
 						<p class="truncate text-sm">{a.title}</p>
 						<p class="truncate text-xs text-on-surface-variant">
@@ -441,7 +494,12 @@
 		<div class="mt-3 flex flex-col gap-2">
 			{#each searchResults as r (r.provider + r.providerTrackId)}
 				{@const key = r.provider + ':' + r.providerTrackId}
-				<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2">
+				<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2 transition-transform duration-200 hover:translate-x-0.5">
+					{#if r.coverUrl}
+						<img src={r.coverUrl} alt="" loading="lazy" class="h-10 w-10 rounded-md object-cover" />
+					{:else}
+						<div class="h-10 w-10 rounded-md bg-surface-highest"></div>
+					{/if}
 					<span class="m3-chip bg-secondary-container text-on-secondary-container uppercase">{r.provider}</span>
 					<div class="min-w-0 flex-1">
 						<p class="truncate text-sm">{r.title}</p>
@@ -657,6 +715,22 @@
 		</div>
 	{/if}
 </section>
+
+<!-- Toasts (M3 snackbar) -->
+<div class="pointer-events-none fixed top-16 right-4 z-50 flex flex-col gap-2" aria-live="polite">
+	{#each toasts as t (t.id)}
+		<div
+			class="m3-toast m3-enter {t.tone === 'ok'
+				? 'bg-inverse-surface text-inverse-on-surface'
+				: t.tone === 'error'
+					? 'bg-error-container text-on-error-container'
+					: 'bg-secondary-container text-on-secondary-container'}"
+			role="status"
+		>
+			{t.text}
+		</div>
+	{/each}
+</div>
 
 <!-- Preview player -->
 {#if nowPlaying}

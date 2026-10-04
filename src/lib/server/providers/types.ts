@@ -79,6 +79,12 @@ export interface Provider {
 		}>
 	>;
 	albumTrackIds?(albumId: string): Promise<string[]>;
+	/** Canonicalize any provider link (track/album/playlist) to {kind, id}. */
+	resolveLink?(
+		input: string
+	): Promise<{ kind: 'track' | 'album' | 'playlist'; id: string } | null>;
+	/** Playlist track-id listing for playlist fan-out. */
+	playlistTrackIds?(playlistId: string, max?: number): Promise<string[]>;
 	/** Fetch full metadata incl. stream token. */
 	metadata(ref: TrackRef): Promise<TrackMeta>;
 	/** Resolve a downloadable stream honoring the quality policy. */

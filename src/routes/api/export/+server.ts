@@ -48,6 +48,7 @@ export const GET: RequestHandler = ({ locals }) => {
 	}
 
 	log.info('library export started', { by: locals.user?.id });
+	log.info('library export streamed', { by: locals.user?.id ?? 'unknown' });
 	return new Response(Readable.toWeb(archive) as ReadableStream, {
 		headers: {
 			'content-type': 'application/zip',
