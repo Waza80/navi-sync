@@ -115,11 +115,30 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		allowLowerFallback: settings.allowLowerFallback,
 	});
 
-	// 5. Download to temp (progress 25→65).
+	// 5. Download to temp (progress 25→65). DASH providers deliver an ordered
+	// segment list; everything else is a single-URL stream.
 	const tmpRaw = join(env.MUSIC_TMP_DIR, `job-${job.id}.raw`);
 	await ctx.report(25, 'downloading');
 	try {
-		await downloadWithProgress(resolution.url, tmpRaw, ctx, job, meta);
+		if (resolution.segmentUrls && resolution.segmentUrls.length > 0) {
+			const { downloadDashSegments } =
+				await import('$lib/server/providers/monochrome/client');
+			await downloadDashSegments(resolution.segmentUrls, tmpRaw, {
+				signal: ctx.signal,
+				onProgress: (fraction) => {
+					const pct = 25 + Math.floor(fraction * 40);
+					void updateProgress(
+						job.id,
+						job.type,
+						job.trackId,
+						pct,
+						`downloading segments (${pct}%)`,
+					).catch(() => undefined);
+				},
+			});
+		} else {
+			await downloadWithProgress(resolution.url, tmpRaw, ctx, job, meta);
+		}
 	} catch (err) {
 		await cleanupTemp(tmpRaw);
 		throw err;

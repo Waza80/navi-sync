@@ -4,6 +4,7 @@ import { trackBaseRelativePath } from '$lib/server/library/paths';
 import { logger } from '$lib/server/logger';
 import { env } from '$lib/server/env';
 import { lrclibSource } from './lrclib';
+import { appleMusicSource } from './apple-music';
 import { deezerPipeSource } from './deezer-pipe';
 import type { LyricsQuery, LyricsSource } from './types';
 import type { TrackMeta } from '$lib/server/providers/types';
@@ -19,7 +20,7 @@ import type { TrackMeta } from '$lib/server/providers/types';
 
 const log = logger;
 
-export const lyricsSources: LyricsSource[] = [lrclibSource, deezerPipeSource];
+export const lyricsSources: LyricsSource[] = [lrclibSource, appleMusicSource, deezerPipeSource];
 
 export interface DownloadLyricsResult {
 	success: boolean;

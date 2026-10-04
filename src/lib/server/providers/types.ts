@@ -49,6 +49,11 @@ export interface StreamResolution {
 	cipher: 'NONE' | 'BF_CBC_STRIPE';
 	/** Provider track id — required to derive the decryption key. */
 	decryptTrackId: string | null;
+	/**
+	 * DASH providers (Monochrome): full ordered segment URL list. When present
+	 * the pipeline concatenates segments instead of single-URL download.
+	 */
+	segmentUrls?: string[];
 }
 
 export interface Provider {

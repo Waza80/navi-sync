@@ -2,6 +2,41 @@
 
 All notable changes to NaviSync. Format: Keep a Changelog; semver.
 
+## [0.2.0] — Phase 2A: Providers, Upload, Apple lyrics — 2026-10-04
+
+### Added
+
+- **Providers UI + API** (`/providers`): intuitive per-provider credential
+  cards (select provider → fill fields → Save & verify). Deezer credentials
+  moved from env-only to encrypted DB config (email+password or ARL), with
+  live session test on save; ARL fallback now degrades to password grant.
+  Monochrome (TIDAL proxy) provider: instance URL + Basic auth, quality
+  tokens (HI_RES_LOSSLESS/LOSSLESS/LOW), `/trackManifests` → DASH MPD parsing
+  → segment download/concat with progress (FLAC outputs).
+- **Apple Music lyrics source** (ancientcatz method): web-player JWT scrape →
+  amp-api catalog search → lyrics.paxsenix.org synced lines → LRC. Priority:
+  LRCLIB → Apple Music → Deezer pipe. Verified live (Radiohead — Creep).
+- **Manual upload with smart detection**: `/api/upload/inspect` probes real
+  tags (music-metadata) + filename heuristics, returns detected/missing
+  metadata for a prompted confirmation form; `/api/upload` finalizes —
+  tagging, Navidrome layout filing, embedded-lyrics detection or LRCLIB
+  fallback, track row (`provider='upload'`). `BODY_SIZE_LIMIT=500M`.
+- **Navidrome compatibility verified against a live server** (ping + scan,
+  Subsonic 1.16.1 responses OK).
+- **UX**: sticky always-visible Save bar on Settings; partial-save semantics
+  (blank Navidrome fields no longer wipe stored values); dashboard upload
+  card with prompted metadata completion; explicit "Add to queue"/"Save to
+  library" buttons (no Enter dependency); jobs API exposes `result`.
+
+### Verified live
+
+- Providers: Deezer save+verify (`Signed in as user …`), error path for
+  unreachable Monochrome instances.
+- Upload: inspect→finalize round-trip with prompted metadata (Creep re-filed,
+  989 kbps/16-bit/44.1 kHz probed, synced lyrics).
+- Monochrome DASH parser covered by fixture tests (timeline expansion,
+  $Number%05d$ padding, init template resolution).
+
 ## [0.1.0] — Phase 1: MVP Foundation — 2026-10-04
 
 ### Added

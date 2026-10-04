@@ -15,6 +15,7 @@
 
 	const nav = [
 		{ href: '/dashboard', label: 'Library', icon: '🎵' },
+		{ href: '/providers', label: 'Providers', icon: '🔌' },
 		{ href: '/settings', label: 'Settings', icon: '⚙️' }
 	] as const;
 

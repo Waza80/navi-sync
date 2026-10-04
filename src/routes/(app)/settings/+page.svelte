@@ -46,14 +46,16 @@
 		message = null;
 		busy = true;
 		try {
+			// Partial-save semantics: blank URL/username are ignored (never wipe a
+			// saved value by leaving a field empty); password only when typed.
 			const payload: Record<string, unknown> = {
-				navidromeUrl: navidromeUrl.trim() || null,
-				navidromeUsername: navidromeUsername.trim() || null,
 				minBitrateKbps,
 				preferLossless,
 				allowLowerFallback,
 				concurrentDownloads
 			};
+			if (navidromeUrl.trim().length > 0) payload.navidromeUrl = navidromeUrl.trim();
+			if (navidromeUsername.trim().length > 0) payload.navidromeUsername = navidromeUsername.trim();
 			if (navidromePassword.length > 0) payload.navidromePassword = navidromePassword;
 			const res = await fetch('/api/navidrome', {
 				method: 'PUT',
@@ -216,7 +218,13 @@
 		</p>
 	{/if}
 
-	<button type="submit" class="m3-btn m3-btn-filled self-start" disabled={busy}>
-		{busy ? 'Saving…' : 'Save settings'}
-	</button>
+	<!-- Sticky save bar: always visible, no scrolling, no Enter needed -->
+	<div class="sticky bottom-20 z-30 -mx-1 mt-2 rounded-2xl border border-outline-variant/40 bg-surface-low/95 p-3 backdrop-blur sm:bottom-2">
+		<div class="flex items-center gap-3 px-1">
+			<button type="submit" class="m3-btn m3-btn-filled" disabled={busy}>
+				{busy ? 'Saving…' : 'Save settings'}
+			</button>
+			<span class="text-xs text-on-surface-variant">Changes apply to new downloads immediately.</span>
+		</div>
+	</div>
 </form>

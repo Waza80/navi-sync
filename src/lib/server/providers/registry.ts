@@ -1,13 +1,14 @@
 import { deezerProvider } from './deezer';
+import { monochromeProvider } from './monochrome';
 import { ProviderError, type Provider } from './types';
 
 /**
  * Ordered provider registry. Graceful degradation (spec rule 3): callers
  * traverse this list; when one provider fails the next may still serve the
- * request. Phase 1 ships one provider — the traversal seam is already in
- * place for Phase 2 multi-provider routing.
+ * request. Each provider carries its own credential/config handling via the
+ * Providers UI (Phase 2).
  */
-export const providers: Provider[] = [deezerProvider];
+export const providers: Provider[] = [deezerProvider, monochromeProvider];
 
 export function findProviderForUrl(url: string): Provider | null {
 	for (const p of providers) {

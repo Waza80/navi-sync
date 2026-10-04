@@ -289,7 +289,26 @@ async function refreshUserData(session: DeezerSessionData): Promise<DeezerSessio
 	return { ...s2, apiToken: checkFormStr, userId, licenseToken };
 }
 
-function credentialsFromEnv(): { email: string; password: string } | null {
+/**
+ * Credential resolution order (Phase 2): the Providers UI stores encrypted
+ * config in the DB; .env remains a bootstrap fallback for headless setups.
+ * An ARL pasted by the user short-circuits the password grant entirely.
+ */
+async function credentialsFromConfig(): Promise<{
+	email: string;
+	password: string;
+	arl?: string;
+} | null> {
+	try {
+		const { getProviderConfig } = await import('$lib/server/providers/config');
+		const cfg = await getProviderConfig<{ email?: string; password?: string; arl?: string }>(
+			'deezer',
+		);
+		if (cfg?.arl) return { email: cfg.email ?? '', password: '', arl: cfg.arl };
+		if (cfg?.email && cfg.password) return { email: cfg.email, password: cfg.password };
+	} catch (err) {
+		log.debug('deezer config store unavailable', { error: String(err) });
+	}
 	if (env.DEEZER_EMAIL && env.DEEZER_PASSWORD) {
 		return { email: env.DEEZER_EMAIL, password: env.DEEZER_PASSWORD };
 	}
@@ -297,12 +316,31 @@ function credentialsFromEnv(): { email: string; password: string } | null {
 }
 
 async function loginFull(): Promise<DeezerSessionData> {
-	const creds = credentialsFromEnv();
+	const creds = await credentialsFromConfig();
 	if (!creds) {
 		throw new ProviderError(
-			'Deezer credentials not configured. Set DEEZER_EMAIL and DEEZER_PASSWORD in .env',
+			'Deezer credentials not configured. Add them in Providers (or set DEEZER_EMAIL/DEEZER_PASSWORD).',
 			'NO_CREDENTIALS',
 		);
+	}
+	if (creds.arl) {
+		// ARL provided directly — try it first; on failure fall through to the
+		// password grant (the stored ARL may be stale).
+		try {
+			const session = await refreshUserData({
+				arl: creds.arl,
+				sid: await fetchSid(),
+				apiToken: 'null',
+				userId: '',
+				licenseToken: '',
+			});
+			await persist(session);
+			log.info('deezer session from ARL', { userId: session.userId });
+			return session;
+		} catch (err) {
+			if (!creds.email || !creds.password) throw err;
+			log.warn('stored ARL unusable, falling back to password grant', { error: String(err) });
+		}
 	}
 	// Mirror echo-deezer-extension: up to 3 attempts of the full login chain.
 	let lastError: unknown = null;
