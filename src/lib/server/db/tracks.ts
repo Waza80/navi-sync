@@ -276,3 +276,98 @@ export async function listLyricsBackfillCandidates(limit = 5): Promise<
 		)
 		.limit(limit);
 }
+
+/**
+ * Failed downloads stay VISIBLE: a placeholder row (no file) with
+ * download_status='failed'. The retry sweep and the ⚡/↻ actions use it.
+ */
+export async function ensureFailedTrackRow(input: {
+	provider: string;
+	providerTrackId: string | null;
+	title: string;
+	artist: string;
+	album?: string | null;
+	isrc?: string | null;
+	coverUrl?: string | null;
+	sourceUrl?: string | null;
+	year?: number | null;
+	durationSec?: number | null;
+	trackNumber?: number | null;
+	genre?: string | null;
+	error: string;
+}): Promise<string> {
+	const values = {
+		provider: input.provider,
+		providerTrackId: input.providerTrackId,
+		title: input.title,
+		artist: input.artist,
+		album: input.album ?? null,
+		albumArtist: input.artist,
+		isrc: input.isrc ?? null,
+		trackNumber: input.trackNumber ?? null,
+		releaseYear: input.year ?? null,
+		genre: input.genre ?? null,
+		durationSec: input.durationSec ?? null,
+		format: 'unknown',
+		filePath: null,
+		coverPath: null,
+		downloadStatus: 'failed' as const,
+		updatedAt: new Date()
+	};
+	const rows = await db
+		.insert(tracks)
+		.values(values)
+		.onConflictDoUpdate({
+			target: [tracks.provider, tracks.providerTrackId],
+			set: { ...values, downloadStatus: 'failed' }
+		})
+		.returning({ id: tracks.id });
+	await logFailedDownload(input.error, rows[0].id);
+	return rows[0].id;
+}
+
+/** Last failure reason is kept in audit_log (redacted) for the UI tooltip. */
+async function logFailedDownload(error: string, trackId: string): Promise<void> {
+	const { auditLog } = await import('$lib/server/db/schema');
+	await db
+		.insert(auditLog)
+		.values({ event: 'download.failed', userId: null, metadata: { trackId, error: error.slice(0, 300) } })
+		.catch(() => undefined);
+}
+
+export async function markDownloadStatus(
+	id: string,
+	status: 'completed' | 'failed' | 'pending'
+): Promise<void> {
+	await db.update(tracks).set({ downloadStatus: status, updatedAt: new Date() }).where(eq(tracks.id, id));
+}
+
+/** Failed-download rows for the retry sweep (oldest first, 6h cooldown). */
+export async function listFailedDownloadTracks(limit = 5): Promise<
+	Array<{ id: string; provider: string; providerTrackId: string | null; title: string; artist: string; sourceUrl: string | null }>
+> {
+	return db
+		.select({
+			id: tracks.id,
+			provider: tracks.provider,
+			providerTrackId: tracks.providerTrackId,
+			title: tracks.title,
+			artist: tracks.artist,
+			sourceUrl: tracks.sourceUrl
+		})
+		.from(tracks)
+		.where(
+			and(
+				eq(tracks.downloadStatus, 'failed'),
+				sql`${tracks.updatedAt} < now() - interval '6 hours'`,
+				sql`NOT EXISTS (
+					SELECT 1 FROM jobs j
+					WHERE j.track_id = ${tracks.id}
+					  AND j.type = 'download'
+					  AND j.status IN ('queued','running')
+				)`
+			)
+		)
+		.orderBy(tracks.updatedAt)
+		.limit(limit);
+}

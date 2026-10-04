@@ -2,6 +2,7 @@ import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
 import { enqueueJob } from '$lib/server/queue/jobs';
 import { findBestMatch, csvToPlaylist, type MatchCandidate } from '$lib/server/search/matcher';
 import { getProvider } from '$lib/server/providers/registry';
+import { isProviderEnabled } from '$lib/server/providers/enabled';
 import type { RequestHandler } from './$types';
 
 const MAX_ROWS = 200;
@@ -40,6 +41,17 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		);
 	}
 
+	if (!(await isProviderEnabled('deezer'))) {
+		return json(
+			{
+				error: {
+					code: 'PROVIDER_DISABLED',
+					message: 'Deezer is disabled — enable it in Settings → Providers.'
+				}
+			},
+			{ status: 409 }
+		);
+	}
 	const deezer = getProvider('deezer');
 	const matched: Array<{
 		title: string;

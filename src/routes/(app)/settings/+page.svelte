@@ -9,6 +9,7 @@
 		minBitrateKbps: number;
 		preferLossless: boolean;
 		allowLowerFallback: boolean;
+		enabledProviders: string[];
 		concurrentDownloads: number;
 	};
 
@@ -34,12 +35,40 @@
 		preferLossless = data.settings.preferLossless;
 		allowLowerFallback = data.settings.allowLowerFallback;
 		concurrentDownloads = data.settings.concurrentDownloads;
+		enabled = [...data.settings.enabledProviders];
 	});
 
 	let message = $state<{ tone: 'ok' | 'error'; text: string } | null>(null);
 	let busy = $state(false);
 	let pingBusy = $state(false);
 	let scanBusy = $state(false);
+
+	// Enabled providers (local working copy; persisted via Save settings)
+	let enabled = $state<string[]>([]);
+	let aliveBusy: Record<string, boolean> = $state({});
+	let aliveResult: { id: string; ok: boolean; text: string } | null = $state(null);
+
+	function toggleProvider(id: string, on: boolean) {
+		enabled = on ? [...new Set([...enabled, id])] : enabled.filter((x) => x !== id);
+	}
+
+	async function checkAlive(id: string) {
+		aliveBusy[id] = true;
+		aliveResult = null;
+		try {
+			const res = await fetch(`/api/providers/${id}/test`, { method: 'POST' });
+			const body = (await res.json()) as { ok?: boolean; detail?: string };
+			aliveResult = {
+				id,
+				ok: Boolean(body.ok),
+				text: body.ok ? (body.detail ?? 'alive') : (body.detail ?? 'unreachable')
+			};
+		} catch {
+			aliveResult = { id, ok: false, text: 'network error' };
+		} finally {
+			aliveBusy[id] = false;
+		}
+	}
 
 	async function save(e: SubmitEvent) {
 		e.preventDefault();
@@ -52,6 +81,7 @@
 				minBitrateKbps,
 				preferLossless,
 				allowLowerFallback,
+				enabledProviders: enabled.length > 0 ? enabled : ['deezer'],
 				concurrentDownloads
 			};
 			if (navidromeUrl.trim().length > 0) payload.navidromeUrl = navidromeUrl.trim();
@@ -69,7 +99,7 @@
 			}
 			navidromePassword = '';
 			message = { tone: 'ok', text: 'Settings saved.' };
-			await invalidateAll();
+				await invalidateAll();
 		} finally {
 			busy = false;
 		}
@@ -157,6 +187,58 @@
 					{scanBusy ? 'Queueing…' : 'Trigger scan now'}
 				</button>
 			</div>
+		</div>
+	</section>
+
+	<!-- Enabled providers + alive checks -->
+	<section class="m3-card p-5" aria-labelledby="providers-h">
+		<h2 id="providers-h" class="mb-4 text-base font-medium">Providers</h2>
+		<p class="mb-4 text-sm text-on-surface-variant">
+			Turn providers on/off for search, downloads and quality upgrades. The upgrade
+			sweep only hunts across <em>enabled</em> providers — with both on, the best
+			quality always wins. Manage credentials on the Providers page.
+		</p>
+		<div class="flex flex-col gap-3">
+			{#each [
+				{ id: 'deezer', label: 'Deezer', desc: 'FLAC 16-bit · 320/128 MP3' },
+				{ id: 'monochrome', label: 'Monochrome (tracks.monochrome.st)', desc: 'FLAC up to 24-bit (slow, Cloudflare-chunked)' }
+			] as prov (prov.id)}
+				<div class="flex min-h-14 items-center gap-3 rounded-xl bg-surface-low px-3">
+					<label class="flex flex-1 cursor-pointer items-center gap-3">
+						<input
+							type="checkbox"
+							class="h-5 w-5 accent-[var(--md-primary)]"
+							checked={enabled.includes(prov.id)}
+							onchange={(e) => toggleProvider(prov.id, e.currentTarget.checked)}
+						/>
+						<span>
+							<span class="block text-sm font-medium">{prov.label}</span>
+							<span class="block text-xs text-on-surface-variant">{prov.desc}</span>
+						</span>
+					</label>
+					<span class="m3-chip {enabled.includes(prov.id) ? 'bg-tertiary-container text-on-tertiary-container' : 'bg-surface-highest text-on-surface-variant'}">
+						{enabled.includes(prov.id) ? 'ON' : 'OFF'}
+					</span>
+					<button
+						type="button"
+						class="m3-btn m3-btn-tonal h-10 min-h-10 px-3 text-xs"
+						disabled={!enabled.includes(prov.id) || aliveBusy[prov.id]}
+						onclick={() => checkAlive(prov.id)}
+					>
+						{aliveBusy[prov.id] ? 'Checking…' : 'Check alive'}
+					</button>
+				</div>
+			{/each}
+			{#if aliveResult}
+				<p
+					class="rounded-lg px-3 py-2 text-sm {aliveResult.ok
+						? 'bg-tertiary-container text-on-tertiary-container'
+						: 'bg-error-container text-on-error-container'}"
+					role="status"
+				>
+					{aliveResult.id}: {aliveResult.text}
+				</p>
+			{/if}
 		</div>
 	</section>
 

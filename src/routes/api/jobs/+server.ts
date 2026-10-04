@@ -67,6 +67,18 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		// Direct enqueue from search results — metadata snapshot travels with
 		// the job (required for providers without bare-id metadata lookups).
 		const { getProvider } = await import('$lib/server/providers/registry');
+		const { isProviderEnabled } = await import('$lib/server/providers/enabled');
+		if (!(await isProviderEnabled(parsed.data.provider))) {
+			return json(
+				{
+					error: {
+						code: 'PROVIDER_DISABLED',
+						message: 'That provider is disabled — enable it in Settings → Providers.'
+					}
+				},
+				{ status: 409 }
+			);
+		}
 		const provider = getProvider(parsed.data.provider);
 		let sourceUrl = `https://www.deezer.com/track/${parsed.data.trackId}`;
 		try {

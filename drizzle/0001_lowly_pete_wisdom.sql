@@ -1,0 +1,1 @@
+ALTER TABLE "tracks" ADD COLUMN "download_status" text DEFAULT 'completed' NOT NULL;

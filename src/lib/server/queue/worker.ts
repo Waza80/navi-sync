@@ -79,7 +79,7 @@ export function ensureWorkerStarted(): void {
 						});
 
 						void executeJob(job, controller)
-							.catch((err: unknown) => {
+							.catch(async (err: unknown) => {
 								if (controller.signal.aborted) {
 									log.warn('job aborted by cancellation', { jobId: job.id });
 									return failJob(job, new Error('cancelled'), false);
@@ -88,7 +88,14 @@ export function ensureWorkerStarted(): void {
 									jobId: job.id,
 									error: String(err),
 								});
-								return failJob(job, err, true);
+								const outcome = await failJob(job, err, true);
+								if (outcome === 'dead' && job.type === 'download') {
+									// Failed downloads stay visible as failed track rows.
+									await recordFailedDownload(job, String(err)).catch((e) =>
+										log.warn('failed-track row not recorded', { error: String(e) }),
+									);
+								}
+								return outcome;
 							})
 							.finally(() => {
 								active.delete(entry);
@@ -138,13 +145,17 @@ export function ensureWorkerStarted(): void {
 			poller.unref?.();
 			void claimLoop();
 
-			// Periodic maintenance sweeps (Phase 2): lyrics backfill + quality
-			// upgrades. Both are rate-limited by the jobs table itself.
+			// Periodic maintenance sweeps: lyrics backfill (5m), failed-download
+			// retries (30m), cross-provider quality upgrades (1h). All are
+			// rate-limited by the jobs table itself.
 			const lyricsSweep = setInterval(() => void lyricsBackfillSweep(), 5 * 60_000);
 			lyricsSweep.unref?.();
+			const retrySweep = setInterval(() => void downloadRetrySweep(), 30 * 60_000);
+			retrySweep.unref?.();
 			const upgradeSweep = setInterval(() => void qualityUpgradeSweep(), 60 * 60_000);
 			upgradeSweep.unref?.();
 			void lyricsBackfillSweep();
+			void downloadRetrySweep();
 			void qualityUpgradeSweep();
 
 			globalForWorker.naviWorkerStop = async () => {
@@ -182,122 +193,77 @@ export function ensureWorkerStarted(): void {
 			}
 
 			/**
-			 * Quality upgrade sweep: periodically ask each provider whether a better
-			 * stream now exists for tracks below the 24-bit ceiling. On a strictly
-			 * better offer, enqueue an upgrade download (which refetches lyrics after).
-			 * "If the lyrics API is down, keep the same" — the lyrics handler preserves
-			 * existing sidecars on failure.
+			 * Quality upgrade sweep (CROSS-PROVIDER): for every track below the
+			 * 24-bit ceiling, ask ALL configured providers (Deezer AND Monochrome
+			 * AND …) for the best available version — ISRC-exact when possible.
+			 * One provider up = it takes precedence; both up = best quality wins.
+			 * Enqueued upgrades refetch lyrics; a downed lyrics API keeps existing
+			 * sidecars (handled by the lyrics job).
 			 */
 			async function qualityUpgradeSweep(): Promise<void> {
 				try {
 					const { listUpgradeCandidates } = await import('$lib/server/db/tracks');
-					const { providers } = await import('$lib/server/providers/registry');
-					const { qualityRank } = await import('$lib/shared/quality');
+					const { findBestUpgrade } = await import('./upgrades');
 					const { enqueueJob } = await import('./jobs');
-					const { and, eq, inArray, gte } = await import('drizzle-orm');
-					const { jobs } = await import('$lib/server/db/schema');
-					const settings = await getSettings();
-
-					for (const provider of providers) {
-						const candidates = await listUpgradeCandidates(provider.id, 10);
-						for (const track of candidates) {
-							if (!track.providerTrackId) continue;
-							// Skip tracks with a recent/active download attempt.
-							const active = await db
-								.select({ id: jobs.id })
-								.from(jobs)
-								.where(
-									and(
-										eq(jobs.trackId, track.id),
-										eq(jobs.type, 'download'),
-										inArray(jobs.status, ['queued', 'running']),
-									),
-								)
-								.limit(1);
-							if (active.length > 0) continue;
-							const recent = await db
-								.select({ id: jobs.id })
-								.from(jobs)
-								.where(
-									and(
-										eq(jobs.trackId, track.id),
-										eq(jobs.type, 'download'),
-										gte(
-											jobs.createdAt,
-											new Date(Date.now() - 24 * 3600 * 1000),
-										),
-									),
-								)
-								.limit(1);
-							if (recent.length > 0) continue;
-
-							const meta = {
-								provider: track.provider,
-								providerTrackId: track.providerTrackId,
-								title: track.title,
-								artist: track.artist,
-								album: track.album,
-								albumArtist: track.artist,
-								isrc: track.isrc,
-								trackNumber: null,
-								discNumber: null,
-								durationSec: track.durationSec,
-								year: track.year,
-								genre: track.genre,
-								coverUrl: null,
-								sourceUrl: track.sourceUrl,
-								streamToken: null,
-							};
-							const existingRank = qualityRank({
-								format: track.format,
-								bitrateKbps: track.bitrateKbps,
-								bitDepth: track.bitDepth,
-								isLossless: track.isLossless,
-							});
-							if (existingRank >= 4) continue; // ceiling reached
-
-							try {
-								const resolution = await provider.resolve(meta, {
-									preferLossless: settings.preferLossless,
-									minBitrateKbps: settings.minBitrateKbps,
-									allowLowerFallback: settings.allowLowerFallback,
-								});
-								const incomingRank = qualityRank({
-									format: resolution.format,
-									bitrateKbps: resolution.claimedBitrateKbps,
-									bitDepth: resolution.claimedLossless ? 24 : null,
-									isLossless: resolution.claimedLossless,
-								});
-								if (incomingRank <= existingRank) continue;
-
-								await enqueueJob({
-									type: 'download',
-									payload: {
-										url: meta.sourceUrl ?? meta.providerTrackId,
-										provider: provider.id,
-										upgradeForTrackId: track.id,
-									},
-									trackId: track.id,
-								});
-								log.info('upgrade enqueued', {
-									trackId: track.id,
-									title: track.title,
-									from: existingRank,
-									to: incomingRank,
-								});
-							} catch (err) {
-								// No rights/availability right now — log quietly and skip the
-								// remaining candidates this sweep (next sweep retries).
-								log.debug('upgrade check unavailable', {
-									trackId: track.id,
-									error: String(err),
-								});
-								break;
-							}
-						}
+					const candidates = await listUpgradeCandidates('*', 25);
+					for (const track of candidates) {
+						const upgrade = await findBestUpgrade(track).catch(() => null);
+						if (!upgrade) continue;
+						await enqueueJob({
+							type: 'download',
+							payload: {
+								url: upgrade.meta.sourceUrl ?? upgrade.meta.providerTrackId,
+								provider: upgrade.provider,
+								upgradeForTrackId: track.id,
+								meta: {
+									title: upgrade.meta.title,
+									artist: upgrade.meta.artist,
+									album: upgrade.meta.album,
+									durationSec: upgrade.meta.durationSec,
+									isrc: upgrade.meta.isrc,
+									coverUrl: upgrade.meta.coverUrl,
+									year: upgrade.meta.year
+								}
+							},
+							trackId: track.id,
+							priority: 6
+						});
+						log.info('cross-provider upgrade enqueued', {
+							trackId: track.id,
+							title: track.title,
+							to: upgrade.incomingRank,
+							via: upgrade.provider
+						});
 					}
 				} catch (err) {
 					log.debug('upgrade sweep skipped', { error: String(err) });
+				}
+			}
+
+			/** Failed-download retry sweep: 6h cooldown per track, oldest first. */
+			async function downloadRetrySweep(): Promise<void> {
+				try {
+					const { listFailedDownloadTracks, markDownloadStatus } = await import(
+						'$lib/server/db/tracks'
+					);
+					const { enqueueJob } = await import('./jobs');
+					const rows = await listFailedDownloadTracks(5);
+					for (const row of rows) {
+						await enqueueJob({
+							type: 'download',
+							payload: {
+								url: row.sourceUrl ?? `https://www.deezer.com/track/${row.providerTrackId ?? ''}`,
+								provider: row.provider,
+								retryForTrackId: row.id,
+								meta: { title: row.title, artist: row.artist }
+							},
+							trackId: row.id
+						});
+						await markDownloadStatus(row.id, 'pending');
+						log.info('failed download requeued', { trackId: row.id, title: row.title });
+					}
+				} catch (err) {
+					log.debug('download retry sweep skipped', { error: String(err) });
 				}
 			}
 
@@ -319,3 +285,56 @@ export function ensureWorkerStarted(): void {
 		}
 	})();
 }
+
+/** Best-effort placeholder row so failed downloads are visible + retryable. */
+async function recordFailedDownload(job: JobRow, error: string): Promise<void> {
+	const payload = job.payload as { url?: string; provider?: string; meta?: Record<string, unknown> };
+	const providerId = typeof payload.provider === 'string' ? payload.provider : 'unknown';
+	const meta: Record<string, unknown> = payload.meta ?? {};
+	let title = typeof meta['title'] === 'string' ? meta['title'] : '';
+	let artist = typeof meta['artist'] === 'string' ? meta['artist'] : '';
+	let album = typeof meta['album'] === 'string' ? meta['album'] : null;
+	let isrc = typeof meta['isrc'] === 'string' ? meta['isrc'] : null;
+	let coverUrl = typeof meta['coverUrl'] === 'string' ? meta['coverUrl'] : null;
+	let year = typeof meta['year'] === 'number' ? meta['year'] : null;
+	let durationSec = typeof meta['durationSec'] === 'number' ? meta['durationSec'] : null;
+
+	// Enrich from the provider when possible (metadata API ≠ stream rights).
+	if (providerId !== 'unknown') {
+		try {
+			const { getProvider } = await import('$lib/server/providers/registry');
+			const provider = getProvider(providerId);
+			const url = typeof payload.url === 'string' ? payload.url : '';
+			const parsedRef = url ? await provider.parseRef(url).catch(() => null) : null;
+			const ref = { provider: provider.id, id: parsedRef?.id ?? url };
+			const m = await provider.metadata(ref);
+			title = m.title;
+			artist = m.artist;
+			album = m.album;
+			isrc = m.isrc;
+			coverUrl = m.coverUrl;
+			year = m.year;
+			durationSec = m.durationSec;
+		} catch {
+			// metadata unavailable — placeholder with what we know
+		}
+	}
+	if (!title) title = `Failed download (${providerId})`;
+	if (!artist) artist = 'Unknown Artist';
+
+	const { ensureFailedTrackRow } = await import('$lib/server/db/tracks');
+	await ensureFailedTrackRow({
+		provider: providerId,
+		providerTrackId: typeof payload.url === 'string' ? payload.url : null,
+		title,
+		artist,
+		album,
+		isrc,
+		coverUrl,
+		sourceUrl: typeof payload.url === 'string' ? payload.url : null,
+		year,
+		durationSec,
+		error,
+	});
+}
+

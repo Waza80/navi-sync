@@ -7,6 +7,7 @@ import { getSettings } from '$lib/server/settings';
 import {
 	findExistingTrack,
 	getTrackById,
+	markDownloadStatus,
 	updateLyricsStatus,
 	upsertTrack,
 } from '$lib/server/db/tracks';
@@ -279,6 +280,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 			log.warn('post-upgrade lyrics refetch enqueue failed', { trackId, error: String(err) });
 		}
 	}
+	await markDownloadStatus(trackId, 'completed');
 
 	return {
 		trackId,
@@ -445,82 +447,57 @@ async function runUpgradeCheck(job: JobRow, ctx: JobContext): Promise<Record<str
 	if (typeof payload.trackId !== 'string') throw new Error('upgrade_check missing trackId');
 	const row = await getTrackById(payload.trackId);
 	if (!row) throw new Error(`Track not found: ${payload.trackId}`);
-	const t = row as {
-		id: string;
-		provider: string;
-		providerTrackId: string | null;
-		title: string;
-		artist: string;
-		album: string | null;
-		albumArtist: string | null;
-		isrc: string | null;
-		trackNumber: number | null;
-		discNumber: number | null;
-		durationSec: number | null;
-		releaseYear: number | null;
-		genre: string | null;
-		sourceUrl: string | null;
-		format: string;
-		bitrateKbps: number | null;
-		bitDepth: number | null;
-		isLossless: boolean;
-	};
+	const t = row;
 	if (!t.providerTrackId) throw new Error('Track has no provider link (uploads cannot upgrade)');
 
-	const { getProvider } = await import('$lib/server/providers/registry');
-	const { qualityRank } = await import('$lib/shared/quality');
-	const provider = getProvider(t.provider);
-	const settings = await getSettings();
+	await ctx.report(20, 'asking every provider for a better version');
+	const { findBestUpgrade } = await import('./upgrades');
+	// User-initiated: bypass the sweep's 24h cooldown (the sweep keeps its own).
+	const upgrade = await findBestUpgrade(
+		{
+			id: t.id,
+			provider: t.provider,
+			providerTrackId: t.providerTrackId,
+			title: t.title,
+			artist: t.artist,
+			album: t.album,
+			isrc: t.isrc,
+			sourceUrl: t.sourceUrl,
+			durationSec: t.durationSec,
+			year: t.releaseYear,
+			genre: t.genre,
+			format: t.format,
+			bitrateKbps: t.bitrateKbps,
+			bitDepth: t.bitDepth,
+			isLossless: t.isLossless
+		},
+		{ skipRecentCheck: true }
+	);
 
-	// Fresh metadata = fresh stream token (resolves need a live TRACK_TOKEN).
-	await ctx.report(15, 'fetching fresh metadata');
-	const meta: TrackMeta = await provider.metadata({
-		provider: t.provider,
-		id: t.providerTrackId,
-		sourceUrl: t.sourceUrl ?? undefined,
-	});
-
-	await ctx.report(30, 'resolving best available stream');
-	const resolution = await provider.resolve(meta, {
-		preferLossless: settings.preferLossless,
-		minBitrateKbps: settings.minBitrateKbps,
-		allowLowerFallback: settings.allowLowerFallback,
-	});
-	const existingRank = qualityRank({
-		format: t.format,
-		bitrateKbps: t.bitrateKbps,
-		bitDepth: t.bitDepth,
-		isLossless: t.isLossless,
-	});
-	const incomingRank = qualityRank({
-		format: resolution.format,
-		bitrateKbps: resolution.claimedBitrateKbps,
-		bitDepth: resolution.claimedBitDepth ?? null,
-		isLossless: resolution.claimedLossless,
-	});
-
-	if (incomingRank <= existingRank) {
-		log.info('upgrade check: already at best available quality', {
-			trackId: t.id,
-			existingRank,
-			incomingRank,
-		});
-		return { upgrade: false, existingRank, incomingRank };
+	if (!upgrade) {
+		log.info('upgrade check: already at best available quality', { trackId: t.id });
+		return { upgrade: false };
 	}
 
-	await ctx.report(
-		70,
-		`better quality found (${existingRank}→${incomingRank}) — queueing upgrade`,
-	);
+	await ctx.report(70, 'better quality found — queueing upgrade');
 	await enqueueJob({
 		type: 'download',
 		payload: {
-			url: meta.sourceUrl ?? meta.providerTrackId,
-			provider: t.provider,
+			url: upgrade.meta.sourceUrl ?? upgrade.meta.providerTrackId,
+			provider: upgrade.provider,
 			upgradeForTrackId: t.id,
+			meta: {
+				title: upgrade.meta.title,
+				artist: upgrade.meta.artist,
+				album: upgrade.meta.album,
+				durationSec: upgrade.meta.durationSec,
+				isrc: upgrade.meta.isrc,
+				coverUrl: upgrade.meta.coverUrl,
+				year: upgrade.meta.year
+			}
 		},
 		trackId: t.id,
-		priority: 8, // upgrades before fresh downloads
+		priority: 8
 	});
-	return { upgrade: true, existingRank, incomingRank };
+	return { upgrade: true, incomingRank: upgrade.incomingRank, provider: upgrade.provider };
 }

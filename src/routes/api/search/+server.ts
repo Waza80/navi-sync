@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
-import { providers } from '$lib/server/providers/registry';
+import { enabledProviders } from '$lib/server/providers/enabled';
 import type { TrackMeta } from '$lib/server/providers/types';
 import type { RequestHandler } from './$types';
 
@@ -15,6 +15,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const parsed = searchSchema.safeParse({ q: url.searchParams.get('q') ?? '' });
 	if (!parsed.success) return badRequest('Query must be 2-200 characters.', 'INVALID_QUERY');
 
+	const providers = await enabledProviders();
 	const [trackLists, albumLists] = await Promise.all([
 		Promise.all(
 			providers.map(async (p) => {

@@ -85,6 +85,8 @@ export interface Provider {
 	): Promise<{ kind: 'track' | 'album' | 'playlist'; id: string } | null>;
 	/** Playlist track-id listing for playlist fan-out. */
 	playlistTrackIds?(playlistId: string, max?: number): Promise<string[]>;
+	/** Exact catalog lookup by ISRC — enables cross-provider best-quality. */
+	findByIsrc?(isrc: string): Promise<TrackMeta | null>;
 	/** Fetch full metadata incl. stream token. */
 	metadata(ref: TrackRef): Promise<TrackMeta>;
 	/** Resolve a downloadable stream honoring the quality policy. */

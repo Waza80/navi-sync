@@ -3,6 +3,7 @@ import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
 import { listTracks } from '$lib/server/db/tracks';
 import { enqueueJob } from '$lib/server/queue/jobs';
 import { findProviderForUrl, getProvider, providers } from '$lib/server/providers/registry';
+import { isProviderEnabled } from '$lib/server/providers/enabled';
 import type { RequestHandler } from './$types';
 
 /** GET /api/tracks?q=&page=&pageSize= — paginated, filtered track listing. */
@@ -47,6 +48,17 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return badRequest(
 			'Unsupported URL. Example: https://www.deezer.com/track/3135556',
 			'UNSUPPORTED_URL',
+		);
+	}
+	if (!(await isProviderEnabled(providerId))) {
+		return json(
+			{
+				error: {
+					code: 'PROVIDER_DISABLED',
+					message: `${getProvider(providerId).displayName} is disabled — enable it in Settings → Providers.`
+				}
+			},
+			{ status: 409 }
 		);
 	}
 	const provider = getProvider(providerId);

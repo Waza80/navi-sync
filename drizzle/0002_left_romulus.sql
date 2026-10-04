@@ -1,0 +1,1 @@
+ALTER TABLE "settings" ADD COLUMN "enabled_providers" jsonb DEFAULT '["deezer","monochrome"]'::jsonb NOT NULL;

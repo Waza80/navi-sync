@@ -33,6 +33,7 @@ export const load: PageServerLoad = async ({ url }) => {
 			isLossless: boolean;
 			sizeBytes: number | null;
 			lyricsStatus: string;
+			downloadStatus: string;
 			createdAt: Date;
 		};
 		return {
@@ -52,6 +53,7 @@ export const load: PageServerLoad = async ({ url }) => {
 			isLossless: row.isLossless,
 			sizeBytes: row.sizeBytes,
 			lyricsStatus: (row.lyricsStatus as TrackDTO['lyricsStatus']) ?? 'none',
+			downloadStatus: (row.downloadStatus as TrackDTO['downloadStatus']) ?? 'completed',
 			createdAt: row.createdAt.toISOString(),
 		};
 	});

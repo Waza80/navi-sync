@@ -17,6 +17,8 @@ export interface AppSettings {
 	minBitrateKbps: number;
 	preferLossless: boolean;
 	allowLowerFallback: boolean;
+	/** Providers the engine may use. */
+	enabledProviders: string[];
 	concurrentDownloads: number;
 }
 
@@ -25,7 +27,8 @@ const DEFAULTS = {
 	minBitrateKbps: 320,
 	preferLossless: true,
 	allowLowerFallback: true,
-	concurrentDownloads: 4,
+	enabledProviders: ['deezer', 'monochrome'] as string[],
+	concurrentDownloads: 4
 };
 
 export async function getSettings(): Promise<AppSettings> {
@@ -58,7 +61,10 @@ export async function getSettings(): Promise<AppSettings> {
 		minBitrateKbps: row.minBitrateKbps,
 		preferLossless: row.preferLossless,
 		allowLowerFallback: row.allowLowerFallback,
-		concurrentDownloads: row.concurrentDownloads,
+		enabledProviders: Array.isArray(row.enabledProviders)
+			? row.enabledProviders
+			: [...DEFAULTS.enabledProviders],
+		concurrentDownloads: row.concurrentDownloads
 	};
 }
 
@@ -70,6 +76,7 @@ export interface SettingsPatch {
 	minBitrateKbps?: number;
 	preferLossless?: boolean;
 	allowLowerFallback?: boolean;
+	enabledProviders?: string[];
 	concurrentDownloads?: number;
 }
 
@@ -86,6 +93,8 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
 	if (patch.preferLossless !== undefined) values.preferLossless = patch.preferLossless;
 	if (patch.allowLowerFallback !== undefined)
 		values.allowLowerFallback = patch.allowLowerFallback;
+	if (patch.enabledProviders !== undefined)
+		values.enabledProviders = patch.enabledProviders;
 	if (patch.concurrentDownloads !== undefined)
 		values.concurrentDownloads = patch.concurrentDownloads;
 
@@ -102,6 +111,8 @@ export async function getPublicSettings(): Promise<{
 	minBitrateKbps: number;
 	preferLossless: boolean;
 	allowLowerFallback: boolean;
+	/** Providers the engine may use. */
+	enabledProviders: string[];
 	concurrentDownloads: number;
 }> {
 	const s = await getSettings();
@@ -114,5 +125,6 @@ export async function getPublicSettings(): Promise<{
 		preferLossless: s.preferLossless,
 		allowLowerFallback: s.allowLowerFallback,
 		concurrentDownloads: s.concurrentDownloads,
-	};
+			enabledProviders: s.enabledProviders,
+};
 }

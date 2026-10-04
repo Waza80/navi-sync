@@ -177,7 +177,11 @@ export async function completeJob(
 /**
  * Handle a job failure: retry with backoff until maxAttempts, then dead-letter.
  */
-export async function failJob(job: JobRow, error: unknown, retryable = true): Promise<void> {
+export async function failJob(
+	job: JobRow,
+	error: unknown,
+	retryable = true,
+): Promise<'queued' | 'dead'> {
 	const message = error instanceof Error ? error.message : String(error);
 	const stack = error instanceof Error ? (error.stack ?? '').slice(0, 800) : undefined;
 	if (stack) log.debug('job failure stack', { jobId: job.id, stack });
@@ -209,6 +213,7 @@ export async function failJob(job: JobRow, error: unknown, retryable = true): Pr
 			nextRun: runAfter.toISOString(),
 			error: message,
 		});
+		return 'queued';
 	} else {
 		await db
 			.update(jobs)
@@ -224,6 +229,7 @@ export async function failJob(job: JobRow, error: unknown, retryable = true): Pr
 			ts: new Date().toISOString(),
 		});
 		log.error('job dead-lettered', { jobId: job.id, jobType: job.type, error: message });
+		return 'dead';
 	}
 }
 

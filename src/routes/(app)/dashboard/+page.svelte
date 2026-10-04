@@ -49,6 +49,17 @@
 	});
 
 	let queueFilter = $state<'all' | 'active' | 'done' | 'failed'>('all');
+	let trackFilter = $state('');
+	const filteredTracks = $derived.by(() => {
+		const f = trackFilter.trim().toLowerCase();
+		if (!f) return data.tracks;
+		return data.tracks.filter(
+			(t) =>
+				t.title.toLowerCase().includes(f) ||
+				t.artist.toLowerCase().includes(f) ||
+				(t.album ?? '').toLowerCase().includes(f)
+		);
+	});
 	const queueCounts = $derived({
 		all: live.recentJobs.length,
 		active: live.recentJobs.filter((j) => j.status === 'queued' || j.status === 'running').length,
@@ -140,6 +151,21 @@
 				? { tone: 'ok', text: body.message ?? 'Quality check queued — watch the queue.' }
 				: { tone: 'error', text: body.error?.message ?? body.message ?? `HTTP ${res.status}` };
 			toast(message.tone, message.text);
+		} finally {
+			upgrading.delete(id);
+		}
+	}
+	async function retryFailedDownload(id: string) {
+		upgrading.add(id);
+		try {
+			const res = await fetch(`/api/tracks/${id}/retry-download`, { method: 'POST' });
+			const body = (await res.json()) as { job?: { id: string }; message?: string; error?: { message: string } };
+			if (res.ok) {
+				toast('info', body.message ?? 'Retry queued.');
+				await invalidateAll();
+			} else {
+				toast('error', body.message ?? body.error?.message ?? `HTTP ${res.status}`);
+			}
 		} finally {
 			upgrading.delete(id);
 		}
@@ -685,31 +711,39 @@
 <section aria-label="Tracks">
 	<div class="mb-3 flex flex-wrap items-center gap-2">
 		<h2 class="text-base font-medium">
-			Tracks <span class="text-sm text-on-surface-variant">({data.tracksTotal})</span>
+			Tracks <span class="text-sm text-on-surface-variant">({filteredTracks.length}{trackFilter ? ` of ${data.tracksTotal}` : ''})</span>
 		</h2>
+		<input
+			type="search"
+			class="m3-input h-10 min-h-10 w-full max-w-xs px-3 py-1 text-sm sm:ml-2 sm:w-auto"
+			placeholder="Filter library…"
+			aria-label="Filter library"
+			bind:value={trackFilter}
+		/>
 		<a
 			href={resolve("/api/export")}
 			class="m3-btn m3-btn-tonal ml-auto h-10 min-h-10 px-4 text-sm"
 			aria-label="Export whole library as ZIP">⬇ Export library (ZIP)</a
 		>
 	</div>
-	{#if data.tracks.length === 0}
+	{#if filteredTracks.length === 0}
 		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
 			Nothing here yet — queue your first download above.
 		</p>
 	{:else}
 		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-			{#each data.tracks as track (track.id)}
+			{#each filteredTracks as track (track.id)}
 				<TrackCard
 					track={track}
 					playing={nowPlaying?.id === track.id}
 					ondelete={deleteTrack}
 					onplay={(id: string) => {
-						const t = data.tracks.find((x) => x.id === id);
+						const t = filteredTracks.find((x) => x.id === id);
 						if (t) togglePlay(t);
 					}}
 					ondownload={downloadTrackFile}
 					onupgrade={(id: string) => void forceUpgrade(id)}
+					onretry={(id: string) => void retryFailedDownload(id)}
 				/>
 			{/each}
 		</div>

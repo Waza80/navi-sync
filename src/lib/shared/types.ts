@@ -21,6 +21,8 @@ export interface TrackDTO {
 	isLossless: boolean;
 	sizeBytes: number | null;
 	lyricsStatus: LyricsStatus;
+	/** 'completed' | 'failed' | 'pending' — failed rows have no file yet. */
+	downloadStatus: 'completed' | 'failed' | 'pending';
 	createdAt: string;
 }
 

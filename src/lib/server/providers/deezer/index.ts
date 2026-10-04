@@ -234,6 +234,41 @@ export const deezerProvider: Provider = {
 		return rows.map((r) => String(r.SNG_ID ?? '')).filter((id) => /^\d+$/.test(id));
 	},
 
+	async findByIsrc(isrc) {
+		// Public API — exact ISRC lookup, no gateway auth needed.
+		const res = await fetch(`https://api.deezer.com/track/isrc:${encodeURIComponent(isrc)}`, {
+			signal: AbortSignal.timeout(10_000)
+		});
+		if (!res.ok) return null;
+		const data = (await res.json()) as {
+			id?: number | string;
+			title?: string;
+			artist?: { name?: string };
+			album?: { title?: string; cover_xl?: string };
+			duration?: number;
+			release_date?: string;
+			error?: unknown;
+		};
+		if (!data.id || data.error) return null;
+		return {
+			provider: 'deezer',
+			providerTrackId: String(data.id),
+			title: data.title ?? 'Unknown Title',
+			artist: data.artist?.name ?? 'Unknown Artist',
+			album: data.album?.title ?? null,
+			albumArtist: data.artist?.name ?? null,
+			isrc,
+			trackNumber: null,
+			discNumber: null,
+			durationSec: data.duration ?? null,
+			year: data.release_date ? Number.parseInt(data.release_date.slice(0, 4), 10) || null : null,
+			genre: null,
+			coverUrl: data.album?.cover_xl ?? null,
+			sourceUrl: `https://www.deezer.com/track/${data.id}`,
+			streamToken: null
+		};
+	},
+
 	async resolve(meta, prefs) {
 		if (!meta.streamToken) {
 			throw new ProviderError(

@@ -1,4 +1,4 @@
-import { MonochromeClient, type MonochromeConfig } from './client';
+import { MonochromeClient, type MonochromeConfig, type MonochromeTrack } from './client';
 import { parseMonochromeInput } from './parse';
 import { getProviderConfig } from '$lib/server/providers/config';
 import { ProviderError, type Provider, type QualityPreferences, type StreamResolution, type TrackMeta, type TrackRef } from '$lib/server/providers/types';
@@ -39,24 +39,7 @@ export const monochromeProvider: Provider = {
 		if (!cfg?.instanceUrl) return []; // unconfigured → no results, not an error
 		const client = new MonochromeClient(cfg);
 		const items = await client.search(query);
-		const base = cfg.instanceUrl.replace(/\/+$/, '');
-		return items.map((item) => ({
-			provider: 'monochrome',
-			providerTrackId: item.id,
-			title: item.title,
-			artist: item.artist,
-			album: item.album,
-			albumArtist: item.artist,
-			isrc: item.isrc,
-			trackNumber: null,
-			discNumber: null,
-			durationSec: item.durationSec,
-			year: null,
-			genre: null,
-			coverUrl: item.artworkUrl,
-			sourceUrl: `${base}/track/${item.id}`,
-			streamToken: null
-		}));
+		return items.map((item) => monochromeTrackToMeta(item, cfg.instanceUrl));
 	},
 
 	searchAlbums(_query: string): Promise<
@@ -89,6 +72,16 @@ export const monochromeProvider: Provider = {
 		);
 	},
 
+	async findByIsrc(isrc): Promise<TrackMeta | null> {
+		const cfg = await getProviderConfig<MonochromeConfig>('monochrome');
+		if (!cfg?.instanceUrl) return null;
+		const client = new MonochromeClient(cfg);
+		const items = await client.search(isrc);
+		const exact = items.find((i) => (i.isrc ?? '').toUpperCase() === isrc.toUpperCase());
+		if (!exact) return null;
+		return monochromeTrackToMeta(exact, cfg.instanceUrl, isrc);
+	},
+
 	async resolve(meta, _prefs: QualityPreferences): Promise<StreamResolution> {
 		const cfg = await configOrThrow();
 		const client = new MonochromeClient(cfg);
@@ -97,3 +90,28 @@ export const monochromeProvider: Provider = {
 };
 
 export { MonochromeClient, type MonochromeConfig };
+
+/** Maps a Monochrome track to our generic TrackMeta. */
+function monochromeTrackToMeta(
+	track: MonochromeTrack,
+	instanceBase: string,
+	isrcOverride?: string
+): TrackMeta {
+	return {
+		provider: 'monochrome',
+		providerTrackId: track.id,
+		title: track.title,
+		artist: track.artist,
+		album: track.album,
+		albumArtist: track.artist,
+		isrc: isrcOverride ?? track.isrc,
+		trackNumber: null,
+		discNumber: null,
+		durationSec: track.durationSec,
+		year: null,
+		genre: null,
+		coverUrl: track.artworkUrl,
+		sourceUrl: `${instanceBase.replace(/\/+$/, '')}/track/${track.id}`,
+		streamToken: null
+	};
+}

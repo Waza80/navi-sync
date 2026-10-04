@@ -8,7 +8,8 @@
 		ondelete,
 		onplay,
 		ondownload,
-		onupgrade
+		onupgrade,
+		onretry
 	}: {
 		track: TrackDTO;
 		playing?: boolean;
@@ -16,8 +17,10 @@
 		onplay?: (id: string) => void;
 		ondownload?: (id: string) => void;
 		onupgrade?: (id: string) => void;
+		onretry?: (id: string) => void;
 	} = $props();
 
+	const failed = $derived(track.downloadStatus === 'failed');
 	const lyricsBadge = $derived(
 		track.lyricsStatus === 'synced'
 			? { text: 'LYRICS', cls: 'bg-tertiary-container text-on-tertiary-container' }
@@ -26,6 +29,9 @@
 				: track.lyricsStatus === 'failed'
 					? { text: 'LYRICS ⏳', cls: 'bg-surface-highest text-on-surface-variant' }
 					: null
+	);
+	const statusBadge = $derived(
+		failed ? { text: 'FAILED — will retry', cls: 'bg-error-container text-on-error-container' } : null
 	);
 	const lossless = $derived(track.isLossless || track.format === 'flac');
 </script>
@@ -43,14 +49,27 @@
 			}}
 		/>
 		<!-- Play overlay -->
-		<button
-			type="button"
-			class="absolute right-2 bottom-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary text-on-primary shadow-[var(--md-elev-2)] transition-transform hover:scale-105"
-			aria-label="Preview {track.title}"
-			onclick={() => onplay?.(track.id)}
-		>
-			{playing ? '⏸' : '▶'}
-		</button>
+		{#if failed}
+			<button
+				type="button"
+				class="absolute right-2 bottom-2 flex h-12 w-12 items-center justify-center rounded-full bg-error-container text-on-error-container shadow-[var(--md-elev-2)]"
+				title="Retry download now"
+				aria-label="Retry download {track.title}"
+				onclick={() => onretry?.(track.id)}>↻</button
+			>
+		{:else}
+			<button
+				type="button"
+				class="absolute right-2 bottom-2 flex h-12 w-12 items-center justify-center rounded-full bg-primary text-on-primary shadow-[var(--md-elev-2)] transition-transform hover:scale-105"
+				aria-label="Preview {track.title}"
+				onclick={() => onplay?.(track.id)}
+			>
+				{playing ? '⏸' : '▶'}
+			</button>
+		{/if}
+		{#if failed}
+			<span class="absolute top-2 right-2 m3-chip bg-error-container text-on-error-container">FAILED</span>
+		{/if}
 		<span
 			class="absolute top-2 left-2 m3-chip {lossless
 				? 'bg-primary-container/90 text-on-primary-container'
@@ -67,7 +86,9 @@
 			{track.artist}
 		</p>
 		<div class="mt-1 flex flex-wrap items-center gap-1.5">
-			{#if lyricsBadge}
+			{#if statusBadge}
+				<span class="m3-chip {statusBadge.cls}" title="Will retry automatically, or press ↻">{statusBadge.text}</span>
+			{:else if lyricsBadge}
 				<span class="m3-chip {lyricsBadge.cls}">{lyricsBadge.text}</span>
 			{/if}
 			<span class="text-xs text-on-surface-variant">{formatDuration(track.durationSec)}</span>
