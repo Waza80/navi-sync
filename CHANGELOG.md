@@ -6,6 +6,17 @@ All notable changes to NaviSync. Format: Keep a Changelog; semver.
 
 ### Fixed
 
+- **Retry-all actually retries**: it reconciles dead jobs into failed rows
+  first (48 materialized live), re-marks stale completed rows whose file is
+  gone, and bypasses the 6h sweep cooldown — previously it silently requeued
+  ~nothing. Verified live: 134 jobs requeued.
+- **Missing-but-not-failed songs**: repair now audits the library and flips
+  rows whose file vanished to `failed` (95 marked live), so they surface in
+  the UI and get retried. Scoped per-server to its own library dir so shared
+  DBs can't false-positive. Failed uploads now also leave a failed row.
+- **Missing album covers**: repair backfills a canonical `cover.jpg` per
+  art-less album via public Deezer search (deduped `cover (2).jpg` files are
+  invisible to Navidrome — now detected as missing); unit-tested.
 - **Lyrics fetch gating**: lyrics APIs are now hit ONLY when a song misses
   lyrics (no `.lrc`/`.txt` sidecar on disk) or was just upgraded. Re-downloads
   with an existing sidecar skip the fetch (and no longer risk flipping a good

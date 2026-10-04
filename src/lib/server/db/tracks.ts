@@ -1,4 +1,6 @@
 import { and, count, desc, eq, ilike, isNotNull, or, sql } from 'drizzle-orm';
+import { existsSync } from 'node:fs';
+import { jobs } from './schema';
 import { db } from '$lib/server/db';
 import { tracks } from '$lib/server/db/schema';
 import type { TrackMeta, StreamResolution } from '$lib/server/providers/types';
@@ -387,8 +389,14 @@ export async function markDownloadStatus(
 		.where(eq(tracks.id, id));
 }
 
-/** Failed-download rows for the retry sweep (oldest first, 6h cooldown). */
-export async function listFailedDownloadTracks(limit = 5): Promise<
+/** Failed-download rows for the retry sweep (oldest first, 6h cooldown).
+ * Pass `{ ignoreCooldown: true }` for the manual force-retry — the user
+ * explicitly asked, so waiting is wrong.
+ */
+export async function listFailedDownloadTracks(
+	limit = 5,
+	opts: { ignoreCooldown?: boolean } = {},
+): Promise<
 	Array<{
 		id: string;
 		provider: string;
@@ -411,7 +419,9 @@ export async function listFailedDownloadTracks(limit = 5): Promise<
 		.where(
 			and(
 				eq(tracks.downloadStatus, 'failed'),
-				sql`${tracks.updatedAt} < now() - interval '6 hours'`,
+				...(opts.ignoreCooldown
+					? []
+					: [sql`${tracks.updatedAt} < now() - interval '6 hours'`]),
 				sql`NOT EXISTS (
 					SELECT 1 FROM jobs j
 					WHERE j.track_id = ${tracks.id}
@@ -445,4 +455,90 @@ export async function markLibrarySynced(): Promise<number> {
 		.where(isNotNull(tracks.filePath))
 		.returning({ id: tracks.id });
 	return rows.length;
+}
+
+/**
+ * Rows this server owns (filePath under its library dir) whose audio file
+ * is gone from disk — the "song isn't there but shows completed" case.
+ * Scoped to our own library dir on purpose: with several servers sharing
+ * one DB, each server may only judge paths it can actually see.
+ */
+export async function findMissingFiles(
+	libraryDir: string,
+): Promise<Array<{ id: string; title: string; artist: string; filePath: string }>> {
+	const prefix = libraryDir.endsWith('/') ? libraryDir : `${libraryDir}/`;
+	const rows = await db
+		.select({
+			id: tracks.id,
+			title: tracks.title,
+			artist: tracks.artist,
+			filePath: tracks.filePath,
+		})
+		.from(tracks)
+		.where(
+			and(
+				eq(tracks.downloadStatus, 'completed'),
+				isNotNull(tracks.filePath),
+				sql`${tracks.filePath} LIKE ${`${prefix}%`}`,
+			),
+		);
+	return rows.filter(
+		(r): r is { id: string; title: string; artist: string; filePath: string } =>
+			typeof r.filePath === 'string' && !existsSync(r.filePath),
+	);
+}
+
+/**
+ * Materialize failed rows for dead download jobs that never got one (e.g.
+ * jobs that died before failed rows existed, or whose history was cleared).
+ * Links each job to its row so repeat runs never duplicate.
+ */
+export async function reconcileDeadJobs(
+	limit = 200,
+): Promise<{ materialized: number; marked: number }> {
+	const dead = await db
+		.select({ id: jobs.id, trackId: jobs.trackId, payload: jobs.payload, error: jobs.error })
+		.from(jobs)
+		.where(and(eq(jobs.type, 'download'), eq(jobs.status, 'dead')))
+		.orderBy(desc(jobs.createdAt))
+		.limit(limit);
+	let materialized = 0;
+	let marked = 0;
+	for (const job of dead) {
+		const payload = (job.payload ?? {}) as Record<string, unknown>;
+		const meta = (payload['meta'] ?? {}) as Record<string, unknown>;
+		const url = typeof payload['url'] === 'string' ? payload['url'] : null;
+		const provider = typeof payload['provider'] === 'string' ? payload['provider'] : 'unknown';
+		if (job.trackId) {
+			const row = await getTrackById(job.trackId);
+			if (row) {
+				const fp = row.filePath;
+				if (typeof fp !== 'string' || !existsSync(fp)) {
+					await markDownloadStatus(job.trackId, 'failed');
+					marked++;
+				}
+				continue;
+			}
+		}
+		const title =
+			typeof meta['title'] === 'string' && meta['title'].length > 0
+				? meta['title']
+				: 'Failed download';
+		const artist =
+			typeof meta['artist'] === 'string' && meta['artist'].length > 0
+				? meta['artist']
+				: 'Unknown Artist';
+		const newId = await ensureFailedTrackRow({
+			provider,
+			providerTrackId: url,
+			title,
+			artist,
+			album: typeof meta['album'] === 'string' ? meta['album'] : null,
+			sourceUrl: url,
+			error: typeof job.error === 'string' ? job.error : 'dead job',
+		});
+		await db.update(jobs).set({ trackId: newId }).where(eq(jobs.id, job.id));
+		materialized++;
+	}
+	return { materialized, marked };
 }

@@ -8,6 +8,7 @@ import {
 	deleteTrackRow,
 	findExistingTrack,
 	getTrackById,
+	listFiledTracks,
 	markDownloadStatus,
 	updateLyricsStatus,
 	upsertTrack,
@@ -501,12 +502,12 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 	let retagged = 0;
 	let tagsSkipped = 0;
 	let tagsFailed = 0;
+	let coversBackfilled = 0;
 	if (payload.repair) {
 		// Repair mode: rewrite embedded tags from canonical DB data BEFORE
 		// scanning, so Navidrome indexes real artists/albums instead of
 		// [Unknown]. Store FLACs often carry junk/empty Vorbis comments.
 		await updateProgress(job.id, job.type, job.trackId, 20, 'repairing embedded tags');
-		const { listFiledTracks } = await import('$lib/server/db/tracks');
 		const { ensureFileTags } = await import('$lib/server/library/tagging');
 		const { readFile } = await import('node:fs/promises');
 		for (const t of await listFiledTracks()) {
@@ -548,6 +549,24 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 			35,
 			`tags repaired (${retagged} fixed)`,
 		);
+
+		// Cover backfill: albums without Navidrome-recognized folder art get a
+		// canonical cover.jpg (deduped variants like "cover (2).jpg" are
+		// invisible to it).
+		await updateProgress(job.id, job.type, job.trackId, 37, 'backfilling missing covers');
+		const { backfillAlbumCovers } = await import('$lib/server/library/coverart');
+		const coverReport = await backfillAlbumCovers(
+			(await listFiledTracks()).map((t) => ({
+				filePath: t.filePath,
+				artist: t.artist,
+				album: t.album,
+			})),
+		).catch((err) => {
+			log.warn('cover backfill pass failed', { error: String(err) });
+			return { checked: 0, backfilled: 0 };
+		});
+		coversBackfilled = coverReport.backfilled;
+		log.info('navidrome repair cover pass finished', { ...coverReport });
 	}
 	await updateProgress(job.id, job.type, job.trackId, 40, 'triggering scan');
 	const started = await startScan(s.navidromeUrl, s.navidromeUsername, s.navidromePassword);
@@ -604,6 +623,7 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		lastScanCount: lastCount,
 		stamped,
 		retagged,
+		coversBackfilled,
 		filesOnDisk: payload.filesOnDisk ?? null,
 		tracksInDb: payload.tracksInDb ?? null,
 	};

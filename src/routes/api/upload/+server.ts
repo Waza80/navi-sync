@@ -47,6 +47,36 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	}
 	const input = parsed.data;
 
+	try {
+		return await finalizeUpload(input);
+	} catch (err) {
+		// Failed uploads stay visible as failed rows (same as downloads).
+		const { ensureFailedTrackRow } = await import('$lib/server/db/tracks');
+		const trackId = await ensureFailedTrackRow({
+			provider: 'upload',
+			providerTrackId: input.uploadId,
+			title: input.title,
+			artist: input.artist,
+			album: input.album,
+			year: input.year ?? null,
+			genre: input.genre ?? null,
+			error: err instanceof Error ? err.message : String(err),
+		}).catch(() => null);
+		log.warn('upload finalize failed', { error: String(err), trackId });
+		return json(
+			{
+				error: {
+					code: 'UPLOAD_FAILED',
+					message: err instanceof Error ? err.message : 'Upload failed',
+					trackId,
+				},
+			},
+			{ status: 500 },
+		);
+	}
+};
+
+async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Response> {
 	// Locate the temp file from the inspect step.
 	const prefix = `upload-${input.uploadId}.`;
 	const entries = await readdir(env.MUSIC_TMP_DIR).catch(() => [] as string[]);
@@ -173,6 +203,6 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		probed,
 		lyricsStatus,
 	});
-};
+}
 
 void coverRelativePath;
