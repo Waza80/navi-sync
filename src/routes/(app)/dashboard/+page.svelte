@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { live } from '$lib/stores/events.svelte';
 	import JobRow from '$lib/components/JobRow.svelte';
 	import TrackCard from '$lib/components/TrackCard.svelte';
@@ -27,7 +29,8 @@
 		live.start(() => void invalidateAll());
 	});
 	$effect(() => {
-		for (const j of data.jobs) if (!live.jobs.has(j.id)) live.jobs.set(j.id, j);
+		live.hydrate(data.jobs);
+		live.pruneNotIn(data.jobs);
 	});
 
 	let queueFilter = $state<'all' | 'active' | 'done' | 'failed'>('all');
@@ -53,9 +56,7 @@
 		clearing = true;
 		try {
 			await fetch('/api/jobs/completed', { method: 'DELETE' });
-			for (const j of live.recentJobs) {
-				if (['succeeded', 'cancelled', 'failed'].includes(j.status)) live.jobs.delete(j.id);
-			}
+			await invalidateAll(); // authoritative snapshot prunes the cleared rows
 		} finally {
 			clearing = false;
 		}
@@ -97,6 +98,22 @@
 	async function retryJob(id: string) {
 		await fetch(`/api/jobs/${id}/retry`, { method: 'POST' });
 	}
+	function downloadTrackFile(id: string) {
+		window.open(`/api/tracks/${id}/file`, '_blank');
+	}
+	let upgrading = new SvelteSet<string>();
+	async function forceUpgrade(id: string) {
+		upgrading.add(id);
+		try {
+			const res = await fetch(`/api/tracks/${id}/upgrade`, { method: 'POST' });
+			const body = (await res.json()) as { job?: { id: string }; message?: string; error?: { message: string } };
+			message = res.ok
+				? { tone: 'ok', text: body.message ?? 'Quality check queued — watch the queue.' }
+				: { tone: 'error', text: body.error?.message ?? body.message ?? `HTTP ${res.status}` };
+		} finally {
+			upgrading.delete(id);
+		}
+	}
 	async function deleteTrack(id: string) {
 		await fetch(`/api/tracks/${id}`, { method: 'DELETE' });
 		if (nowPlaying?.id === id) nowPlaying = null;
@@ -112,11 +129,20 @@
 		album: string | null;
 		durationSec: number | null;
 	}
+	interface AlbumResult {
+		provider: string;
+		albumId: string;
+		title: string;
+		artist: string;
+		year: number | null;
+	}
 	let searchInput = $state('');
 	let searchBusy = $state(false);
 	let searchResults = $state<SearchResult[]>([]);
+	let searchAlbums = $state<AlbumResult[]>([]);
+	let albumBusy = new SvelteSet<string>();
 	let searchMsg = $state<string | null>(null);
-	let queuedSearch = $state<Set<string>>(new Set());
+	let queuedSearch = new SvelteSet<string>();
 
 	async function doSearch(e: SubmitEvent) {
 		e.preventDefault();
@@ -128,16 +154,33 @@
 		searchMsg = null;
 		try {
 			const res = await fetch(`/api/search?q=${encodeURIComponent(searchInput.trim())}`);
-			const body = (await res.json()) as { results?: SearchResult[] };
+			const body = (await res.json()) as { results?: SearchResult[]; albums?: AlbumResult[] };
 			searchResults = body.results ?? [];
+			searchAlbums = body.albums ?? [];
 			if (searchResults.length === 0) searchMsg = 'No results from the enabled providers.';
 		} finally {
 			searchBusy = false;
 		}
 	}
+	async function downloadAlbum(a: AlbumResult) {
+		const key = a.provider + ':' + a.albumId;
+		albumBusy.add(key);
+		try {
+			const res = await fetch(`/api/albums/${a.albumId}/download`, { method: 'POST' });
+			const body = (await res.json()) as { enqueued?: number; error?: { message: string } };
+			if (res.ok) {
+				searchMsg = `Queued ${body.enqueued} tracks from “${a.title}”.`;
+				await invalidateAll();
+			} else {
+				searchMsg = body.error?.message ?? `HTTP ${res.status}`;
+			}
+		} finally {
+			albumBusy.delete(key);
+		}
+	}
 	async function downloadResult(r: SearchResult) {
 		const key = `${r.provider}:${r.providerTrackId}`;
-		queuedSearch = new Set([...queuedSearch, key]);
+		queuedSearch.add(key);
 		await fetch('/api/jobs', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
@@ -365,7 +408,32 @@
 	{#if searchMsg}
 		<p class="mt-3 text-sm text-on-surface-variant" role="status">{searchMsg}</p>
 	{/if}
+	{#if searchAlbums.length > 0}
+		<p class="mt-4 mb-2 text-xs font-medium text-on-surface-variant uppercase">Albums</p>
+		<div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+			{#each searchAlbums as a (a.provider + a.albumId)}
+				{@const key = a.provider + ':' + a.albumId}
+				<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2">
+					<div class="min-w-0 flex-1">
+						<p class="truncate text-sm">{a.title}</p>
+						<p class="truncate text-xs text-on-surface-variant">
+							{a.artist}{#if a.year} · {a.year}{/if}
+						</p>
+					</div>
+					<button
+						type="button"
+						class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm {albumBusy.has(key) ? 'opacity-50' : ''}"
+						disabled={albumBusy.has(key)}
+						onclick={() => downloadAlbum(a)}
+					>
+						{albumBusy.has(key) ? 'Queueing…' : 'Download album'}
+					</button>
+				</div>
+			{/each}
+		</div>
+	{/if}
 	{#if searchResults.length > 0}
+		<p class="mt-4 mb-2 text-xs font-medium text-on-surface-variant uppercase">Tracks</p>
 		<div class="mt-3 flex flex-col gap-2">
 			{#each searchResults as r (r.provider + r.providerTrackId)}
 				{@const key = r.provider + ':' + r.providerTrackId}
@@ -553,17 +621,34 @@
 
 <!-- Tracks -->
 <section aria-label="Tracks">
-	<h2 class="mb-3 text-base font-medium">
-		Tracks <span class="text-sm text-on-surface-variant">({data.tracksTotal})</span>
-	</h2>
+	<div class="mb-3 flex flex-wrap items-center gap-2">
+		<h2 class="text-base font-medium">
+			Tracks <span class="text-sm text-on-surface-variant">({data.tracksTotal})</span>
+		</h2>
+		<a
+			href={resolve("/api/export")}
+			class="m3-btn m3-btn-tonal ml-auto h-10 min-h-10 px-4 text-sm"
+			aria-label="Export whole library as ZIP">⬇ Export library (ZIP)</a
+		>
+	</div>
 	{#if data.tracks.length === 0}
 		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
 			Nothing here yet — queue your first download above.
 		</p>
 	{:else}
-		<div class="flex flex-col gap-3">
+		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
 			{#each data.tracks as track (track.id)}
-				<TrackCard track={track} playing={nowPlaying?.id === track.id} ondelete={deleteTrack} onplay={(id: string) => { const t = data.tracks.find((x) => x.id === id); if (t) togglePlay(t); }} />
+				<TrackCard
+					track={track}
+					playing={nowPlaying?.id === track.id}
+					ondelete={deleteTrack}
+					onplay={(id: string) => {
+						const t = data.tracks.find((x) => x.id === id);
+						if (t) togglePlay(t);
+					}}
+					ondownload={downloadTrackFile}
+					onupgrade={(id: string) => void forceUpgrade(id)}
+				/>
 			{/each}
 		</div>
 	{/if}

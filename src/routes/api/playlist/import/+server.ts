@@ -1,10 +1,6 @@
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
 import { enqueueJob } from '$lib/server/queue/jobs';
-import {
-	findBestMatch,
-	csvToPlaylist,
-	type MatchCandidate,
-} from '$lib/server/search/matcher';
+import { findBestMatch, csvToPlaylist, type MatchCandidate } from '$lib/server/search/matcher';
 import { getProvider } from '$lib/server/providers/registry';
 import type { RequestHandler } from './$types';
 

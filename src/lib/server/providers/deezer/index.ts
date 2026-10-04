@@ -134,6 +134,51 @@ export const deezerProvider: Provider = {
 		return meta;
 	},
 
+	async searchAlbums(query) {
+		const body = await callGateway('search.music', {
+			query,
+			filter: 'ALBUM',
+			output: 'ALBUM',
+		});
+		const results = body.results as { data?: Array<Record<string, unknown>> } | undefined;
+		const rows = results?.data ?? [];
+		return rows.slice(0, 15).map((raw) => {
+			const album = raw as {
+				ALB_ID?: string | number;
+				ALB_TITLE?: string;
+				ALB_PICTURE?: string;
+				ART_NAME?: string;
+				ARTISTS?: Array<{ ART_NAME?: string }>;
+				YEAR?: string | number;
+			};
+			const artist = album.ART_NAME ?? album.ARTISTS?.[0]?.ART_NAME ?? 'Unknown Artist';
+			const pic = String(album.ALB_PICTURE ?? '');
+			return {
+				provider: 'deezer',
+				albumId: String(album.ALB_ID ?? ''),
+				title: String(album.ALB_TITLE ?? ''),
+				artist: String(artist),
+				year: album.YEAR != null ? Number(album.YEAR) : null,
+				coverUrl: pic
+					? `https://e-cdns-images.dzcdn.net/images/cover/${pic}/500x500-000000-80-0-0.jpg`
+					: null,
+			};
+		});
+	},
+
+	async albumTrackIds(albumId) {
+		// Track list lives at results.SONGS.data of deezer.pageAlbum
+		// (reference: DeezerAlbum.album → loadTracks; verified live 2026-10).
+		const body = await callGateway('deezer.pageAlbum', {
+			alb_id: albumId,
+			header: true,
+			lang: 'en'
+		});
+		const results = body.results as { SONGS?: { data?: Array<{ SNG_ID?: string | number }> } };
+		const rows = results?.SONGS?.data ?? [];
+		return rows.map((r) => String(r.SNG_ID ?? '')).filter((id) => /^\d+$/.test(id));
+	},
+
 	async resolve(meta, prefs) {
 		if (!meta.streamToken) {
 			throw new ProviderError(

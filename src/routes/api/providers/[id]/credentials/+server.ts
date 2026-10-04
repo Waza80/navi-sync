@@ -77,30 +77,26 @@ export const PUT: RequestHandler = async ({ locals, params, request }) => {
 	if (id === 'monochrome') {
 		const data = parsed.data as {
 			instanceUrl: string;
+			sessionCookie?: string;
 			username?: string;
 			password?: string;
 			quality?: 'HI_RES_LOSSLESS' | 'LOSSLESS' | 'LOW';
 		};
 		const cfg = {
 			instanceUrl: data.instanceUrl,
+			sessionCookie: data.sessionCookie,
 			username: data.username,
 			password: data.password,
 			quality: data.quality ?? 'HI_RES_LOSSLESS',
 		};
 		await setProviderConfig('monochrome', cfg);
 		const client = new MonochromeClient(cfg);
-		const ping = await client.ping();
-		if (!ping.ok) {
-			return json(
-				{
-					ok: false,
-					tested: true,
-					error: `Saved, but instance test failed: ${ping.detail}`,
-				},
-				{ status: 502 },
-			);
-		}
-		return json({ ok: true, tested: true, detail: 'Instance reachable' });
+		const probe = await client.search('test');
+		return json({
+			ok: true,
+			tested: true,
+			detail: `Instance reachable — search returned ${probe.length} sample results`,
+		});
 	}
 
 	void user;

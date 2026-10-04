@@ -71,4 +71,3 @@ export const HEAD: RequestHandler = async (event) => {
 	}
 	return res;
 };
-

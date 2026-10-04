@@ -7,29 +7,32 @@ import {
 } from './dash';
 import {
 	ProviderError,
-	type QualityPreferences,
 	type StreamResolution,
+	type QualityPreferences,
 	type TrackMeta,
 } from '$lib/server/providers/types';
 import { logger } from '$lib/server/logger';
 
-/**
- * Monochrome client — talks to a self-hosted/instance Monochrome API
- * (TIDAL proxy; reference: atvalerie/monodownload).
- *
- *   GET {base}/info/?id=<trackId>                     → track metadata
- *   GET {base}/trackManifests/?id=…&formats=…         → DASH manifest URI
- *   GET manifest → parse MPD → fetch init+segments    → concatenated audio
- *
- * Auth: HTTP Basic (username/password) when credentials are configured.
- * Only FLAC outputs are supported in Phase 2a (tagging pipeline constraint);
- * AAC-only instances produce an explicit quality error.
- */
-
 const log = logger;
+
+/**
+ * Monochrome client — talks to a self-hosted Monochrome instance
+ * (TIDAL proxy; reference: atvalerie/monodownload + the official SPA).
+ *
+ *   GET {base}/search/?s=<query>                       → catalog search
+ *   GET {base}/info/?id=<trackId>                      → track metadata
+ *   GET {base}/trackManifests/?id=…&formats=…          → DASH manifest URI
+ *   GET manifest → parse MPD → fetch init+segments     → concatenated audio
+ *
+ * Auth: instances built on the official SPA use Better Auth — we sign in with
+ * email/password (`POST /api/auth/sign-in/email`) and reuse the session
+ * cookie. Anonymous access works on instances that allow it.
+ */
 
 export interface MonochromeConfig {
 	instanceUrl: string;
+	/** Pasted browser session cookie (Cloudflare-proof). Preferred. */
+	sessionCookie?: string;
 	username?: string;
 	password?: string;
 	quality?: 'HI_RES_LOSSLESS' | 'LOSSLESS' | 'LOW';
@@ -45,11 +48,13 @@ export interface MonochromeTrack {
 	trackNumber?: number | string;
 	duration?: number | string;
 	releaseDate?: string;
+	isrc?: string;
 	audioQuality?: string;
 }
 
 export class MonochromeClient {
 	#config: MonochromeConfig;
+	#cookie: string | null = null;
 
 	constructor(config: MonochromeConfig) {
 		this.#config = config;
@@ -59,20 +64,58 @@ export class MonochromeClient {
 		return this.#config.instanceUrl.replace(/\/+$/, '');
 	}
 
-	#authHeaders(): Record<string, string> {
-		const { username, password } = this.#config;
-		if (username && password) {
-			const basic = Buffer.from(`${username}:${password}`).toString('base64');
-			return { Authorization: `Basic ${basic}` };
+	/** Better Auth sign-in against the instance; caches the session cookie. */
+	async ensureAuth(): Promise<void> {
+		if (this.#cookie) return;
+		const { sessionCookie, username, password } = this.#config;
+		if (sessionCookie) {
+			// Raw cookie paste (name=value or full value) — Cloudflare-proof.
+			this.#cookie = sessionCookie.includes('=')
+				? sessionCookie
+				: `better-auth.session_token=${sessionCookie}`;
+			return;
 		}
-		return {};
+		if (!username || !password) return; // try anonymous
+		const res = await fetch(`${this.base}/api/auth/sign-in/email`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Accept: 'application/json',
+				Origin: this.base,
+				'User-Agent': 'NaviSync/0.2',
+			},
+			body: JSON.stringify({ email: username, password }),
+			signal: AbortSignal.timeout(15_000),
+		});
+		if (!res.ok) {
+			throw new ProviderError(
+				`Monochrome sign-in failed (HTTP ${res.status}) — check username/password`,
+				'AUTH_FAILED',
+			);
+		}
+		const cookies = res.headers.getSetCookie();
+		this.#cookie = cookies.map((c) => c.split(';')[0]).join('; ') || null;
+		log.info('monochrome signed in', { instance: this.base });
 	}
 
 	async #getJson(url: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
-		const res = await fetch(url, {
-			headers: { Accept: 'application/json', ...this.#authHeaders() },
-			signal: signal ?? AbortSignal.timeout(20_000),
-		});
+		const attempt = async (): Promise<Response> =>
+			fetch(url, {
+				headers: {
+					Accept: 'application/json',
+					...(this.#cookie ? { Cookie: this.#cookie } : {}),
+					Origin: this.base,
+				},
+				signal: signal ?? AbortSignal.timeout(20_000),
+			});
+		let res = await attempt();
+		// Instances behind the SPA catch-all return HTML when unauthenticated.
+		const ctype = res.headers.get('content-type') ?? '';
+		if (ctype.includes('text/html') && this.#config.username) {
+			this.#cookie = null;
+			await this.ensureAuth();
+			res = await attempt();
+		}
 		if (res.status === 401)
 			throw new ProviderError('Monochrome instance rejected credentials', 'AUTH_FAILED');
 		if (!res.ok)
@@ -80,26 +123,48 @@ export class MonochromeClient {
 				`Monochrome request failed: HTTP ${res.status}`,
 				'PROVIDER_UNAVAILABLE',
 			);
+		if ((res.headers.get('content-type') ?? '').includes('text/html')) {
+			throw new ProviderError(
+				'Monochrome returned HTML — login required or endpoint unavailable on this instance',
+				'AUTH_FAILED',
+			);
+		}
 		return (await res.json()) as Record<string, unknown>;
 	}
 
 	/** Instance reachability test. */
 	async ping(): Promise<{ ok: boolean; detail?: string }> {
 		try {
-			const res = await fetch(`${this.base}/`, {
-				headers: { Accept: 'application/json', ...this.#authHeaders() },
+			await this.ensureAuth();
+			const res = await fetch(`${this.base}/api/health`, {
+				headers: {
+					Accept: 'application/json',
+					...(this.#cookie ? { Cookie: this.#cookie } : {}),
+				},
 				signal: AbortSignal.timeout(10_000),
 			});
-			if (res.status === 401)
-				return { ok: false, detail: 'Authentication required/rejected' };
-			if (!res.ok) return { ok: false, detail: `HTTP ${res.status}` };
-			return { ok: true };
+			if (res.ok) return { ok: true };
+			// Health endpoint may not exist on older instances — auth success is enough.
+			if (this.#cookie) return { ok: true, detail: 'signed in' };
+			return { ok: false, detail: `HTTP ${res.status}` };
 		} catch (err) {
 			return { ok: false, detail: String(err) };
 		}
 	}
 
+	/** Catalog search — returns raw items (track-shaped). */
+	async search(query: string): Promise<MonochromeTrack[]> {
+		await this.ensureAuth();
+		const payload = await this.#getJson(`${this.base}/search/?s=${encodeURIComponent(query)}`);
+		const data = payload['data'] ?? payload;
+		const items = Array.isArray(data)
+			? data
+			: (((data as Record<string, unknown>)['tracks'] as unknown[] | undefined) ?? []);
+		return (items as MonochromeTrack[]).slice(0, 25);
+	}
+
 	async getTrackMetadata(id: string): Promise<MonochromeTrack> {
+		await this.ensureAuth();
 		const payload = await this.#getJson(`${this.base}/info/?id=${encodeURIComponent(id)}`);
 		const data = (payload['data'] ?? payload) as unknown;
 		const list = Array.isArray(data) ? data : [data];
@@ -125,6 +190,7 @@ export class MonochromeClient {
 		params.set('uriScheme', 'HTTPS');
 		params.set('usage', 'PLAYBACK');
 
+		await this.ensureAuth();
 		const payload = await this.#getJson(
 			`${this.base}/trackManifests/?id=${encodeURIComponent(trackId)}&${params.toString()}`,
 		);
@@ -160,6 +226,8 @@ export class MonochromeClient {
 			ext: 'flac',
 			claimedBitrateKbps: null,
 			claimedLossless: true,
+			// Monochrome HI_RES_LOSSLESS serves up to 24-bit FLAC.
+			claimedBitDepth: quality === 'HI_RES_LOSSLESS' ? 24 : 16,
 			cipher: 'NONE',
 			decryptTrackId: null,
 			segmentUrls: urls,
@@ -237,7 +305,7 @@ export function toTrackMeta(track: MonochromeTrack, instanceBase: string): Track
 		artist,
 		album,
 		albumArtist: artist,
-		isrc: null,
+		isrc: track.isrc ?? null,
 		trackNumber: track.trackNumber != null ? Number(track.trackNumber) : null,
 		discNumber: null,
 		durationSec: track.duration != null ? Number(track.duration) : null,
@@ -248,5 +316,3 @@ export function toTrackMeta(track: MonochromeTrack, instanceBase: string): Track
 		streamToken: null,
 	};
 }
-
-export { getManifestFormatsForQuality };

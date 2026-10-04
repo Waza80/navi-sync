@@ -2,9 +2,39 @@
 
 All notable changes to NaviSync. Format: Keep a Changelog; semver.
 
+## [0.2.2] — Phase 2C: Grid UI, album fan-out, ZIP export, forced upgrades, Monochrome auth — 2026-10-04
+
+### Fixed
+- **Queue reactivity**: missed SSE events (reconnect gaps) left stale entries
+  forever — the authoritative snapshot now overwrites/prunes on every load,
+  and "Clear finished" re-syncs via invalidateAll.
+- **Phantom upgrade loop**: Deezer FLAC now claims its true 16-bit depth
+  (`claimedBitDepth` on StreamResolution) so upgrade sweeps stop re-fetching
+  identical files; Monochrome HI_RES correctly claims 24-bit.
+- `/providers` SSR crash (synchronous form init), upload card spacing.
+
+### Added
+- **Track grid**: responsive M3 tile grid (2→5 columns) with album covers
+  (`GET /api/tracks/:id/cover`), inline play/upgrade/download/delete.
+- **Individual file download** (`GET /api/tracks/:id/file`, Content-Disposition).
+- **ZIP export**: `GET /api/export` streams the whole library as a ZIP
+  (store mode — audio is pre-compressed; ~35 MB/s observed, zero buffering).
+- **Album search + fan-out**: `searchAlbums`/`albumTrackIds` (gw
+  `search.music` ALBUM + `deezer.pageAlbum` SONGS.data) with album cover art;
+  `POST /api/albums/:id/download` queues every track (guardrail dedupes).
+  Dashboard search shows an Albums section with per-album download.
+- **Forced quality check**: ⚡ button → `POST /api/tracks/:id/upgrade` →
+  `upgrade_check` job (priority 8) — re-resolves the best stream with fresh
+  metadata; strictly better versions download + refetch lyrics; otherwise
+  reports "already at best".
+- **Monochrome auth**: Better Auth sign-in against instances (email/password)
+  AND Cloudflare-proof **session-cookie paste** (preferred); live search
+  integration (`/search/?s=`); instance test performs a real search probe.
+
 ## [0.2.1] — Phase 2B: CSV import, search UI, preview, queue management, sweeps — 2026-10-04
 
 ### Added
+
 - **Playlist/CSV import** (`POST /api/playlist/import`): supports Deezer
   library exports (exact `Deezer - id` + ISRC — zero guessing) and
   Spotify-style exports (ISRC → exact Deezer-id resolution via public API;
@@ -28,6 +58,7 @@ All notable changes to NaviSync. Format: Keep a Changelog; semver.
   twice; duplicate uploads return the existing track.
 
 ### Fixed
+
 - `/providers` page 500 on SSR (forms now initialize synchronously from the
   server snapshot).
 - Upload card spacing.

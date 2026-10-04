@@ -140,13 +140,14 @@ export async function resolveStream(
 		);
 	}
 	const cipher = cipherOf(entry);
-	const { format, ext, bitrate, lossless } = describeFormat(entry.format);
+	const { format, ext, bitrate, lossless, bitDepth } = describeFormat(entry.format);
 	return {
 		url,
 		format,
 		ext,
 		claimedBitrateKbps: bitrate,
 		claimedLossless: lossless,
+		claimedBitDepth: bitDepth,
 		cipher,
 		decryptTrackId: cipher === 'BF_CBC_STRIPE' ? trackId : null,
 	};
@@ -165,10 +166,13 @@ function describeFormat(f: string): {
 	ext: 'mp3' | 'flac';
 	bitrate: number | null;
 	lossless: boolean;
+	bitDepth: number | null;
 } {
-	if (f.includes('FLAC')) return { format: 'flac', ext: 'flac', bitrate: null, lossless: true };
-	if (f.includes('320')) return { format: 'mp3', ext: 'mp3', bitrate: 320, lossless: false };
-	return { format: 'mp3', ext: 'mp3', bitrate: 128, lossless: false };
+	if (f.includes('FLAC'))
+		return { format: 'flac', ext: 'flac', bitrate: null, lossless: true, bitDepth: 16 };
+	if (f.includes('320'))
+		return { format: 'mp3', ext: 'mp3', bitrate: 320, lossless: false, bitDepth: null };
+	return { format: 'mp3', ext: 'mp3', bitrate: 128, lossless: false, bitDepth: null };
 }
 
 /** External dzmedia-compatible resolver (echo's getMediaUrl path). */
@@ -192,13 +196,14 @@ async function resolveViaExternal(
 	const entry = pickBestMedia(body.data?.[0]?.media ?? []);
 	const url = sourceUrlOf(entry);
 	if (!url || !entry.format) throw new ProviderError('resolver returned no URL', 'NO_STREAM');
-	const { format, ext, bitrate, lossless } = describeFormat(entry.format);
+	const { format, ext, bitrate, lossless, bitDepth } = describeFormat(entry.format);
 	return {
 		url,
 		format,
 		ext,
 		claimedBitrateKbps: bitrate,
 		claimedLossless: lossless,
+		claimedBitDepth: bitDepth,
 		// External resolvers return pre-decrypted streams.
 		cipher: 'NONE',
 		decryptTrackId: null,

@@ -15,23 +15,35 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const parsed = searchSchema.safeParse({ q: url.searchParams.get('q') ?? '' });
 	if (!parsed.success) return badRequest('Query must be 2-200 characters.', 'INVALID_QUERY');
 
-	const results = await Promise.all(
-		providers.map(async (p) => {
-			try {
-				const metas: TrackMeta[] = await p.search(parsed.data.q);
-				return metas.map((m) => ({
-					provider: p.id,
-					providerTrackId: m.providerTrackId,
-					title: m.title,
-					artist: m.artist,
-					album: m.album,
-					durationSec: m.durationSec,
-					sourceUrl: m.sourceUrl,
-				}));
-			} catch {
-				return [];
-			}
-		}),
-	);
-	return json({ results: results.flat() });
+	const [trackLists, albumLists] = await Promise.all([
+		Promise.all(
+			providers.map(async (p) => {
+				try {
+					const metas: TrackMeta[] = await p.search(parsed.data.q);
+					return metas.map((m) => ({
+						provider: p.id,
+						providerTrackId: m.providerTrackId,
+						title: m.title,
+						artist: m.artist,
+						album: m.album,
+						durationSec: m.durationSec,
+						sourceUrl: m.sourceUrl,
+					}));
+				} catch {
+					return [];
+				}
+			}),
+		),
+		Promise.all(
+			providers.map(async (p) => {
+				if (!p.searchAlbums) return [];
+				try {
+					return await p.searchAlbums(parsed.data.q);
+				} catch {
+					return [];
+				}
+			}),
+		),
+	]);
+	return json({ results: trackLists.flat(), albums: albumLists.flat() });
 };

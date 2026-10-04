@@ -45,6 +45,8 @@ export interface StreamResolution {
 	/** Bitrate as claimed by the provider (null for lossless). */
 	claimedBitrateKbps: number | null;
 	claimedLossless: boolean;
+	/** Bit depth as claimed (16 for standard FLAC, 24 for hires). */
+	claimedBitDepth?: number | null;
 	/** 'BF_CBC_STRIPE' → file must be decrypted locally before use. */
 	cipher: 'NONE' | 'BF_CBC_STRIPE';
 	/** Provider track id — required to derive the decryption key. */
@@ -63,8 +65,20 @@ export interface Provider {
 	matches(url: string): boolean;
 	/** Parse a user-supplied URL/id into a canonical ref. Null = unsupported. */
 	parseRef(input: string): Promise<TrackRef | null>;
-	/** Search (Phase 2 UI) — providers may return an empty list. */
+	/** Search (dashboard UI) — providers may return an empty list. */
 	search(query: string): Promise<TrackMeta[]>;
+	/** Optional album search + track-id listing for album fan-out. */
+	searchAlbums?(query: string): Promise<
+		Array<{
+			provider: string;
+			albumId: string;
+			title: string;
+			artist: string;
+			year: number | null;
+			coverUrl: string | null;
+		}>
+	>;
+	albumTrackIds?(albumId: string): Promise<string[]>;
 	/** Fetch full metadata incl. stream token. */
 	metadata(ref: TrackRef): Promise<TrackMeta>;
 	/** Resolve a downloadable stream honoring the quality policy. */

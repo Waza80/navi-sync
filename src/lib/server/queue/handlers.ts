@@ -42,6 +42,8 @@ export async function runJob(job: JobRow, ctx: JobContext): Promise<Record<strin
 			return runLyrics(job, ctx);
 		case 'navidrome_scan':
 			return runNavidromeScan(job);
+		case 'upgrade_check':
+			return runUpgradeCheck(job, ctx);
 		default:
 			throw new Error(`No handler for job type: ${job.type}`);
 	}
@@ -397,4 +399,96 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 	if (!result.ok) throw new Error(`Scan failed: ${result.error ?? 'unknown error'}`);
 	log.info('navidrome scan triggered', { serverVersion: result.serverVersion });
 	return { status: 'ok', serverVersion: result.serverVersion };
+}
+
+/* ── upgrade_check ──────────────────────────────────────────────────────── */
+
+/**
+ * Forced quality check for one track (user-triggered or sweep). Re-resolves
+ * the best stream and compares measured ranks; strictly better → download
+ * with lyrics refetch; otherwise completes with noUpgrade.
+ */
+async function runUpgradeCheck(job: JobRow, ctx: JobContext): Promise<Record<string, unknown>> {
+	const payload = job.payload as { trackId?: string };
+	if (typeof payload.trackId !== 'string') throw new Error('upgrade_check missing trackId');
+	const row = await getTrackById(payload.trackId);
+	if (!row) throw new Error(`Track not found: ${payload.trackId}`);
+	const t = row as {
+		id: string;
+		provider: string;
+		providerTrackId: string | null;
+		title: string;
+		artist: string;
+		album: string | null;
+		albumArtist: string | null;
+		isrc: string | null;
+		trackNumber: number | null;
+		discNumber: number | null;
+		durationSec: number | null;
+		releaseYear: number | null;
+		genre: string | null;
+		sourceUrl: string | null;
+		format: string;
+		bitrateKbps: number | null;
+		bitDepth: number | null;
+		isLossless: boolean;
+	};
+	if (!t.providerTrackId) throw new Error('Track has no provider link (uploads cannot upgrade)');
+
+	const { getProvider } = await import('$lib/server/providers/registry');
+	const { qualityRank } = await import('$lib/shared/quality');
+	const provider = getProvider(t.provider);
+	const settings = await getSettings();
+
+	// Fresh metadata = fresh stream token (resolves need a live TRACK_TOKEN).
+	await ctx.report(15, 'fetching fresh metadata');
+	const meta: TrackMeta = await provider.metadata({
+		provider: t.provider,
+		id: t.providerTrackId,
+		sourceUrl: t.sourceUrl ?? undefined,
+	});
+
+	await ctx.report(30, 'resolving best available stream');
+	const resolution = await provider.resolve(meta, {
+		preferLossless: settings.preferLossless,
+		minBitrateKbps: settings.minBitrateKbps,
+		allowLowerFallback: settings.allowLowerFallback,
+	});
+	const existingRank = qualityRank({
+		format: t.format,
+		bitrateKbps: t.bitrateKbps,
+		bitDepth: t.bitDepth,
+		isLossless: t.isLossless,
+	});
+	const incomingRank = qualityRank({
+		format: resolution.format,
+		bitrateKbps: resolution.claimedBitrateKbps,
+		bitDepth: resolution.claimedBitDepth ?? null,
+		isLossless: resolution.claimedLossless,
+	});
+
+	if (incomingRank <= existingRank) {
+		log.info('upgrade check: already at best available quality', {
+			trackId: t.id,
+			existingRank,
+			incomingRank,
+		});
+		return { upgrade: false, existingRank, incomingRank };
+	}
+
+	await ctx.report(
+		70,
+		`better quality found (${existingRank}→${incomingRank}) — queueing upgrade`,
+	);
+	await enqueueJob({
+		type: 'download',
+		payload: {
+			url: meta.sourceUrl ?? meta.providerTrackId,
+			provider: t.provider,
+			upgradeForTrackId: t.id,
+		},
+		trackId: t.id,
+		priority: 8, // upgrades before fresh downloads
+	});
+	return { upgrade: true, existingRank, incomingRank };
 }

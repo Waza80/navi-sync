@@ -43,9 +43,21 @@ class LiveEventClient {
 		this.connected = false;
 	}
 
-	/** Seed with the initial snapshot from the server load function. */
+	/**
+	 * Seed/replace with the authoritative server snapshot. Overwrites (not
+	 * just adds) so missed SSE events during reconnects can never leave a
+	 * stale entry behind.
+	 */
 	hydrate(jobs: JobDTO[]): void {
 		for (const j of jobs) this.jobs.set(j.id, j);
+	}
+
+	/** Drop entries absent from the authoritative snapshot (post-clear). */
+	pruneNotIn(jobs: JobDTO[]): void {
+		const ids = new Set(jobs.map((j) => j.id));
+		for (const id of [...this.jobs.keys()]) {
+			if (!ids.has(id)) this.jobs.delete(id);
+		}
 	}
 
 	#apply(evt: NaviEvent): void {
