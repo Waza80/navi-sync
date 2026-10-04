@@ -14,7 +14,7 @@ const log = logger;
  *   1. Better Auth session resolution → locals.user/session
  *   2. /api/auth/* handled by Better Auth (has its own rate limiting)
  *   3. Worker bootstrap (idempotent, first request after boot)
- *   4. API guards: CSRF-style origin check + per-user rate limit (100/min)
+ *   4. API guards: CSRF-style origin check + per-user rate limit (10k/min)
  *   5. Security headers on every response
  */
 export const handle: Handle = async ({ event, resolve }) => {

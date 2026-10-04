@@ -22,6 +22,12 @@
 > normalization in `src/lib/server/env.ts` — it makes quoted secret values
 > safe under both Bun and `node --env-file`.
 
+> **Container is ground truth.** The production container's database is the
+> authoritative library. Local dev must use its **own** database (e.g.
+> `navisync_dev`) and its own `MUSIC_LIBRARY_DIR` so the two volumes never
+> merge. Create it with `DATABASE_NAME=navisync_dev bun run db:create` and
+> point local `.env` at it.
+
 ## Docker Compose (single service, external Postgres)
 
 ```bash

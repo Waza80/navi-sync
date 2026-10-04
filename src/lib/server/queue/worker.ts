@@ -338,9 +338,11 @@ async function recordFailedDownload(job: JobRow, error: string): Promise<void> {
 	if (!artist) artist = 'Unknown Artist';
 
 	const { ensureFailedTrackRow } = await import('$lib/server/db/tracks');
+	const { canonicalTrackId } = await import('$lib/server/providers/ids');
+	const rawId = typeof payload.url === 'string' ? payload.url : null;
 	await ensureFailedTrackRow({
 		provider: providerId,
-		providerTrackId: typeof payload.url === 'string' ? payload.url : null,
+		providerTrackId: canonicalTrackId(providerId, rawId) ?? rawId,
 		title,
 		artist,
 		album,

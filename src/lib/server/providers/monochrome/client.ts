@@ -105,6 +105,71 @@ export class MonochromeClient {
 	}
 
 	/**
+	 * Track metadata by id via the instance `/info/` endpoint (same item
+	 * shape as search results, optionally wrapped in `{ data }` or `{ item }`).
+	 * Throws NOT_FOUND when the id is unknown — callers fall back gracefully.
+	 */
+	async getTrackMetadata(id: string): Promise<MonochromeTrack> {
+		const res = await fetch(`${this.base}/info/?id=${encodeURIComponent(id)}`, {
+			headers: this.#accept,
+			signal: AbortSignal.timeout(20_000),
+		});
+		if (!res.ok) {
+			throw new ProviderError(
+				`Monochrome track lookup failed: HTTP ${res.status}`,
+				res.status === 404 ? 'NOT_FOUND' : 'PROVIDER_UNAVAILABLE',
+			);
+		}
+		const parsed: unknown = await res.json().catch(() => null);
+		if (!parsed || typeof parsed !== 'object') {
+			throw new ProviderError('Monochrome track lookup failed', 'PROVIDER_UNAVAILABLE');
+		}
+		const record = parsed as { data?: unknown; item?: unknown };
+		const data = record.data ?? parsed;
+		const list: unknown[] = Array.isArray(data) ? data : [data];
+		const isRecord = (v: unknown): v is Record<string, unknown> =>
+			typeof v === 'object' && v !== null;
+		const textOf = (item: unknown, key: string): string | null => {
+			if (!isRecord(item)) return null;
+			const v = item[key];
+			return typeof v === 'string' ? v : null;
+		};
+		const match = list.find(
+			(item) => (textOf(item, 'id') ?? textOf(item, 'trackId') ?? '') === id,
+		);
+		const inner = isRecord(match) ? match['item'] : undefined;
+		const raw = (isRecord(inner) ? inner : isRecord(match) ? match : null) as {
+			id?: string;
+			trackId?: string;
+			title?: string;
+			name?: string;
+			artistNames?: string[];
+			artist?: string;
+			artwork?: string;
+			duration?: number;
+			isrc?: string;
+		} | null;
+		if (!raw) throw new ProviderError(`Monochrome track not found: ${id}`, 'NOT_FOUND');
+		const artists = Array.isArray(raw.artistNames)
+			? raw.artistNames.filter((a): a is string => typeof a === 'string')
+			: [];
+		return {
+			id: String(raw.id ?? raw.trackId ?? id),
+			title:
+				typeof raw.title === 'string'
+					? raw.title
+					: typeof raw.name === 'string'
+						? raw.name
+						: 'Unknown Title',
+			artist: artists[0] ?? (typeof raw.artist === 'string' ? raw.artist : 'Unknown Artist'),
+			album: null,
+			durationSec: typeof raw.duration === 'number' ? Math.round(raw.duration / 1000) : null,
+			isrc: typeof raw.isrc === 'string' ? raw.isrc : null,
+			artworkUrl: typeof raw.artwork === 'string' ? raw.artwork : null,
+		};
+	}
+
+	/**
 	 * Resolves the direct FLAC stream URL. The instance serves the decrypted
 	 * stream itself (verified: first bytes are `fLaC`), so no decryption.
 	 */

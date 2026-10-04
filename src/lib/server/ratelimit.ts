@@ -54,8 +54,8 @@ function prune(t: number): void {
 	}
 }
 
-/** Default limits per spec: 100 requests/minute per user. */
-export const DEFAULT_RATE_LIMIT = 100;
+/** Default limits: 10,000 requests/minute per user (raised for batch imports). */
+export const DEFAULT_RATE_LIMIT = 10_000;
 export const DEFAULT_RATE_WINDOW_MS = 60_000;
 
 /** Test helper — do not use in production code paths. */

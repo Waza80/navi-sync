@@ -68,15 +68,14 @@ export const monochromeProvider: Provider = {
 		return Promise.resolve([]);
 	},
 
-	metadata(_ref): Promise<TrackMeta> {
-		// Bare ids have no metadata endpoint — the pipeline carries metadata
-		// from the search snapshot via the job payload (handlers.ts).
-		return Promise.reject(
-			new ProviderError(
-				'Monochrome tracks must be enqueued from search results (metadata travels with the job).',
-				'NOT_FOUND',
-			),
-		);
+	async metadata(ref): Promise<TrackMeta> {
+		// Bare-id lookup via the instance `/info/` endpoint. Throws NOT_FOUND
+		// for unknown ids — callers (pipeline refresh, upgrade checks) fall
+		// back to the search snapshot gracefully.
+		const cfg = await configOrThrow();
+		const client = new MonochromeClient(cfg);
+		const item = await client.getTrackMetadata(ref.id);
+		return monochromeTrackToMeta(item, cfg.instanceUrl);
 	},
 
 	async findByIsrc(isrc): Promise<TrackMeta | null> {

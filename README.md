@@ -56,8 +56,12 @@ cp .env.example .env
 
 # 2. Install + database
 bun install
-bun run db:create     # creates the `navisync` database (idempotent)
+bun run db:create     # creates the database in DATABASE_URL (idempotent)
 bun run db:migrate    # applies migrations (also auto-runs on server boot)
+
+# NOTE: local dev uses its OWN database (e.g. navisync_dev) so it never
+# touches the production container's data. The container is ground truth.
+# Create it with: DATABASE_NAME=navisync_dev bun run db:create
 
 # 3. Run
 bun run build

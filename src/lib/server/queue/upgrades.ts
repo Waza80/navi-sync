@@ -112,9 +112,24 @@ export async function findBestUpgrade(
 	for (const provider of enabled) {
 		try {
 			let meta: TrackMeta = baseMeta;
-			// Cross-provider: locate the same recording — ISRC first (exact),
-			// then a STRICT title/artist/duration match (never guess).
-			if (provider.id !== track.provider) {
+			if (provider.id === track.provider) {
+				// Same provider: refresh metadata for a live stream grant
+				// (TRACK_TOKENs expire). Best-effort — Monochrome falls back
+				// to the stored snapshot when the instance can't resolve it.
+				if (track.providerTrackId) {
+					try {
+						meta = await provider.metadata({
+							provider: provider.id,
+							id: track.providerTrackId,
+							sourceUrl: track.sourceUrl ?? undefined,
+						});
+					} catch {
+						meta = baseMeta;
+					}
+				}
+			} else {
+				// Cross-provider: locate the same recording — ISRC first (exact),
+				// then a STRICT title/artist/duration match (never guess).
 				let found: TrackMeta | null = null;
 				if (track.isrc && provider.findByIsrc) {
 					const byIsrc = await provider.findByIsrc(track.isrc);

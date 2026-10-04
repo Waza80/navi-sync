@@ -3,7 +3,7 @@
 Base: `http://<host>:7158` · All `/api/*` require a session cookie except
 `/api/health` and `/api/auth/*` (Better Auth endpoints). Mutations require a
 same-origin `Origin` header or an entry in `TRUSTED_ORIGINS`. Rate limit:
-100 req/min per user (429 + `Retry-After` beyond). OpenAPI spec lands in
+10,000 req/min per user (429 + `Retry-After` beyond). OpenAPI spec lands in
 Phase 2; this page is the contract.
 
 Error shape (non-2xx):
@@ -103,7 +103,6 @@ job.cancelled`. Heartbeat every 25s; auto-reconnect (`retry: 3000`).
 | Endpoint      | Method | Notes                                                    |
 | ------------- | ------ | -------------------------------------------------------- |
 | `/api/health` | GET    | `{status:'ok', db, uptimeSec, version}` — 503 if DB down |
-| `/api/export` | GET    | **501** — Phase 2 (streaming ZIP)                        |
 | `/api/upload` | POST   | **501** — Phase 2                                        |
 
 ## curl walkthrough

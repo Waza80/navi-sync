@@ -6,16 +6,19 @@ import { findProviderForUrl, getProvider, providers } from '$lib/server/provider
 import { isProviderEnabled } from '$lib/server/providers/enabled';
 import type { RequestHandler } from './$types';
 
-/** GET /api/tracks?q=&page=&pageSize= — paginated, filtered track listing. */
+/** GET /api/tracks?q=&page=&pageSize=&scope= — paginated, filtered track listing. */
 export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!locals.user) return unauthorizedResponse();
 	const q = url.searchParams.get('q') ?? undefined;
 	const page = Number.parseInt(url.searchParams.get('page') ?? '1', 10);
 	const pageSize = Number.parseInt(url.searchParams.get('pageSize') ?? '50', 10);
+	const scopeParam = url.searchParams.get('scope');
+	const scope = scopeParam === 'filed' || scopeParam === 'failed' ? scopeParam : 'all';
 	const result = await listTracks({
 		q: q && q.trim().length > 0 ? q.trim() : undefined,
 		page: Number.isFinite(page) ? page : 1,
 		pageSize: Number.isFinite(pageSize) ? pageSize : 50,
+		scope,
 	});
 	return json(result);
 };

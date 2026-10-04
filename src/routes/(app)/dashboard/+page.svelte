@@ -1,18 +1,22 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { untrack } from 'svelte';
-	import { resolve } from '$app/paths';
-	import { SvelteSet } from 'svelte/reactivity';
+	import { SvelteSet, SvelteURLSearchParams } from 'svelte/reactivity';
 	import { live } from '$lib/stores/events.svelte';
 	import JobRow from '$lib/components/JobRow.svelte';
 	import TrackCard from '$lib/components/TrackCard.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import type { TrackDTO } from '$lib/shared/types';
 
+	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
+
 	let { data }: { data: {
 		jobs: Parameters<typeof live.hydrate>[0];
 		tracks: TrackDTO[];
 		tracksTotal: number;
+		failedTracks: TrackDTO[];
+		failedTotal: number;
 		stats: { total: number; lossless: number; withLyrics: number; failed: number };
 	} } = $props();
 
@@ -49,17 +53,33 @@
 	});
 
 	let queueFilter = $state<'all' | 'active' | 'done' | 'failed'>('all');
-	let trackFilter = $state('');
-	const filteredTracks = $derived.by(() => {
-		const f = trackFilter.trim().toLowerCase();
-		if (!f) return data.tracks;
-		return data.tracks.filter(
-			(t) =>
-				t.title.toLowerCase().includes(f) ||
-				t.artist.toLowerCase().includes(f) ||
-				(t.album ?? '').toLowerCase().includes(f)
-		);
-	});
+	// Library filter + pagination are server-driven so they cover the whole
+	// library, not just the loaded page.
+	let trackFilter = $state(page.url.searchParams.get('q') ?? '');
+	let filterTimer: ReturnType<typeof setTimeout> | null = null;
+	function onFilterInput() {
+		if (filterTimer) clearTimeout(filterTimer);
+		filterTimer = setTimeout(() => {
+			const params = new SvelteURLSearchParams(page.url.searchParams);
+			const q = trackFilter.trim();
+			if (q) params.set('q', q);
+			else params.delete('q');
+			params.set('page', '1');
+			// Same-page query navigation — resolve() cannot express query-only URLs.
+			// eslint-disable-next-line svelte/no-navigation-without-resolve
+			void goto(`${page.url.pathname}?${params.toString()}`, { replaceState: true, keepFocus: true });
+		}, 300);
+	}
+	function gotoPage(next: number) {
+		const params = new SvelteURLSearchParams(page.url.searchParams);
+		params.set('page', String(next));
+		// Same-page query navigation — resolve() cannot express query-only URLs.
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		void goto(`${page.url.pathname}?${params.toString()}`, { replaceState: true });
+	}
+	const currentPage = $derived(Number.parseInt(page.url.searchParams.get('page') ?? '1', 10) || 1);
+	const pageCount = $derived(Math.max(1, Math.ceil(data.tracksTotal / 50)));
+	const filteredTracks = $derived(data.tracks);
 	const queueCounts = $derived({
 		all: live.recentJobs.length,
 		active: live.recentJobs.filter((j) => j.status === 'queued' || j.status === 'running').length,
@@ -727,15 +747,35 @@
 <section aria-label="Tracks">
 	<div class="mb-3 flex flex-wrap items-center gap-2">
 		<h2 class="text-base font-medium">
-			Tracks <span class="text-sm text-on-surface-variant">({filteredTracks.length}{trackFilter ? ` of ${data.tracksTotal}` : ''})</span>
+			Tracks <span class="text-sm text-on-surface-variant">({data.tracksTotal} files)</span>
 		</h2>
 		<input
 			type="search"
 			class="m3-input h-10 min-h-10 w-full max-w-xs px-3 py-1 text-sm sm:ml-2 sm:w-auto"
 			placeholder="Filter library…"
-			aria-label="Filter library"
+			aria-label="Filter library across all tracks"
 			bind:value={trackFilter}
+			oninput={onFilterInput}
 		/>
+		{#if pageCount > 1}
+			<div class="ml-auto flex items-center gap-2 text-sm text-on-surface-variant" role="navigation" aria-label="Track pages">
+				<button
+					type="button"
+					class="m3-btn m3-btn-text h-10 min-h-10 px-3 text-sm"
+					disabled={currentPage <= 1}
+					onclick={() => gotoPage(currentPage - 1)}
+					aria-label="Previous page">← Prev</button
+				>
+				<span aria-live="polite">Page {currentPage} of {pageCount}</span>
+				<button
+					type="button"
+					class="m3-btn m3-btn-text h-10 min-h-10 px-3 text-sm"
+					disabled={currentPage >= pageCount}
+					onclick={() => gotoPage(currentPage + 1)}
+					aria-label="Next page">Next →</button
+				>
+			</div>
+		{/if}
 		{#if data.stats.failed > 0}
 			<button
 				type="button"
@@ -747,15 +787,10 @@
 				{retryAllBusy ? 'Queueing…' : `↻ Retry all failed (${data.stats.failed})`}
 			</button>
 		{/if}
-		<a
-			href={resolve("/api/export")}
-			class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm"
-			aria-label="Export whole library as ZIP">⬇ Export library (ZIP)</a
-		>
 	</div>
 	{#if filteredTracks.length === 0}
 		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
-			Nothing here yet — queue your first download above.
+			{trackFilter ? `No tracks match "${trackFilter}".` : 'Nothing here yet — queue your first download above.'}
 		</p>
 	{:else}
 		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
@@ -766,6 +801,33 @@
 					ondelete={deleteTrack}
 					onplay={(id: string) => {
 						const t = filteredTracks.find((x) => x.id === id);
+						if (t) togglePlay(t);
+					}}
+					ondownload={downloadTrackFile}
+					onupgrade={(id: string) => void forceUpgrade(id)}
+					onretry={(id: string) => void retryFailedDownload(id)}
+				/>
+			{/each}
+		</div>
+	{/if}
+
+	{#if data.failedTracks.length > 0}
+		<div class="mt-8 mb-3 flex flex-wrap items-center gap-2">
+			<h2 class="text-base font-medium">
+				Failed downloads <span class="text-sm text-on-surface-variant">({data.failedTotal})</span>
+			</h2>
+			<p class="w-full text-xs text-on-surface-variant">
+				These have no file yet. Retry one, or retry them all at once.
+			</p>
+		</div>
+		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+			{#each data.failedTracks as track (track.id)}
+				<TrackCard
+					track={track}
+					playing={false}
+					ondelete={deleteTrack}
+					onplay={(id: string) => {
+						const t = data.failedTracks.find((x) => x.id === id);
 						if (t) togglePlay(t);
 					}}
 					ondownload={downloadTrackFile}

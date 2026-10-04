@@ -9,13 +9,19 @@ export const load: PageServerLoad = async ({ url }) => {
 	const q = url.searchParams.get('q');
 	const page = Number.parseInt(url.searchParams.get('page') ?? '1', 10);
 
-	const [jobs, tracksResult, stats] = await Promise.all([
+	const [jobs, tracksResult, failedResult, stats] = await Promise.all([
 		listJobs(30),
-		listTracks({ q: q ?? undefined, page: Number.isFinite(page) ? page : 1, pageSize: 50 }),
+		listTracks({
+			q: q ?? undefined,
+			page: Number.isFinite(page) ? page : 1,
+			pageSize: 50,
+			scope: 'filed',
+		}),
+		listTracks({ pageSize: 100, scope: 'failed' }),
 		trackStats(),
 	]);
 
-	const trackDtos: TrackDTO[] = tracksResult.items.map((t) => {
+	const toDto = (t: (typeof tracksResult.items)[number]): TrackDTO => {
 		const row = t as {
 			id: string;
 			provider: string;
@@ -56,7 +62,9 @@ export const load: PageServerLoad = async ({ url }) => {
 			downloadStatus: (row.downloadStatus as TrackDTO['downloadStatus']) ?? 'completed',
 			createdAt: row.createdAt.toISOString(),
 		};
-	});
+	};
+	const trackDtos: TrackDTO[] = tracksResult.items.map(toDto);
+	const failedDtos: TrackDTO[] = failedResult.items.map(toDto);
 
 	return {
 		jobs: jobs.map((j) => ({
@@ -75,6 +83,8 @@ export const load: PageServerLoad = async ({ url }) => {
 		})),
 		tracks: trackDtos,
 		tracksTotal: tracksResult.total,
+		failedTracks: failedDtos,
+		failedTotal: failedResult.total,
 		stats,
 	};
 };

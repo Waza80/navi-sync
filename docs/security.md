@@ -24,7 +24,7 @@ in code; no user-controlled URL fetch except provider-track URLs).
 | Credential theft at rest    | AES-256-GCM (key = SHA-256(APP_SECRET)) for Navidrome + Deezer sessions; APP_SECRET ≥32 chars enforced at boot                       |
 | Credential theft in logs    | Structured logger **redacts** keys matching password/token/arl/secret/email/cookie; no external transports                           |
 | Credential theft in VCS     | `.env` gitignored (verified before first commit); `.env.example` placeholders only                                                   |
-| Brute force / abuse         | Better Auth rate limit (30/min on auth) + per-user API limiter (100/min, sliding window) → 429 + `Retry-After`                       |
+| Brute force / abuse         | Better Auth rate limit (30/min on auth) + per-user API limiter (10k/min, sliding window) → 429 + `Retry-After`                       |
 | CSRF                        | SvelteKit content-type checks + explicit `Origin` check on all API mutations; Better Auth trusted-origins (same-host dynamic)        |
 | XSS                         | Svelte auto-escaping; CSP `default-src 'self'`, script nonce (`mode:'auto'`), `object-src 'none'`, `frame-ancestors 'none'`          |
 | Clickjacking                | `X-Frame-Options: DENY` + `frame-ancestors`                                                                                          |

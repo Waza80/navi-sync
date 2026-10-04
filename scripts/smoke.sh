@@ -61,12 +61,12 @@ else
 	exit 1
 fi
 
-say "7. rate limiter responds 429 under flood"
+say "7. rate limiter allows burst traffic (10k/min)"
 for _ in $(seq 1 115); do
 	curl -s -o /dev/null -b "$JAR" "$BASE/api/tracks?pageSize=1"
 done
 code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/api/tracks?pageSize=1")
-[ "$code" = "429" ] && echo "  ✓ 429 after 100 req/min" || echo "  ⚠ got $code (limit may not have reset)"
+[ "$code" = "200" ] && echo "  ✓ 200 after 115 rapid requests (10k/min limit)" || echo "  ⚠ got $code"
 
 rm -f "$JAR"
 say "SMOKE COMPLETE"

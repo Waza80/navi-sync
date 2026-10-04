@@ -1,4 +1,4 @@
-import { and, count, desc, eq, ilike, isNotNull, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { existsSync } from 'node:fs';
 import { jobs } from './schema';
 import { db } from '$lib/server/db';
@@ -113,16 +113,23 @@ export async function listTracks(opts: {
 	q?: string;
 	page?: number;
 	pageSize?: number;
+	/** 'filed' = rows with a file (the actual library); 'failed' = file-less failed rows. */
+	scope?: 'all' | 'filed' | 'failed';
 }): Promise<TrackListResult> {
 	const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 50));
 	const page = Math.max(1, opts.page ?? 1);
-	const filter = opts.q
-		? or(
-				ilike(tracks.title, `%${opts.q}%`),
-				ilike(tracks.artist, `%${opts.q}%`),
-				ilike(tracks.album, `%${opts.q}%`),
-			)
-		: undefined;
+	const scope = opts.scope ?? 'all';
+	const conditions = [];
+	if (opts.q) {
+		const like = `%${opts.q}%`;
+		conditions.push(
+			or(ilike(tracks.title, like), ilike(tracks.artist, like), ilike(tracks.album, like)),
+		);
+	}
+	if (scope === 'filed') conditions.push(isNotNull(tracks.filePath));
+	else if (scope === 'failed')
+		conditions.push(and(eq(tracks.downloadStatus, 'failed'), isNull(tracks.filePath)));
+	const filter = conditions.length > 0 ? and(...conditions) : undefined;
 
 	const [{ value: total }] = await db.select({ value: count() }).from(tracks).where(filter);
 	const items = await db
