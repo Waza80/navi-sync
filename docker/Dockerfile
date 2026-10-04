@@ -27,8 +27,9 @@ ENV NODE_ENV=production \
     HOST=0.0.0.0
 # Runtime: compiled server, production deps only, SQL migrations.
 # flac (metaflac) embeds canonical tags into FLACs so Navidrome indexes
-# real artists/albums instead of [Unknown].
-RUN apt-get update && apt-get install -y --no-install-recommends flac && rm -rf /var/lib/apt/lists/*
+# real artists/albums instead of [Unknown]. curl serves Coolify's
+# Dockerfile-deployment healthcheck (execs curl/wget in-container).
+RUN apt-get update && apt-get install -y --no-install-recommends flac curl && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/build ./build
 COPY --from=build /app/drizzle ./drizzle
 COPY --from=build /app/package.json ./package.json
