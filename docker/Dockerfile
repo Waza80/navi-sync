@@ -3,7 +3,7 @@
 # Build:  docker build -f docker/Dockerfile -t navisync .
 # Run:    docker compose -f docker/compose.prod.yaml up -d
 
-FROM oven/bun:1.2-slim AS deps
+FROM oven/bun:1-slim AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
@@ -11,11 +11,16 @@ RUN bun install --frozen-lockfile
 FROM deps AS build
 WORKDIR /app
 COPY . .
+# Build-time dummies (real secrets come from runtime env; .env is dockerignored).
+# vite build imports server env which requires these to be present.
+ARG APP_SECRET=build-time-dummy-secret-0123456789abcdef
+ARG DATABASE_URL=postgresql://build:build@localhost:5432/build
+ENV APP_SECRET=${APP_SECRET} DATABASE_URL=${DATABASE_URL}
 # svelte-kit sync happens inside vite build via the check script chain;
 # build directly with vite (dev deps present in this stage)
 RUN bun ./node_modules/.bin/vite build
 
-FROM oven/bun:1.2-slim AS runtime
+FROM oven/bun:1-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=7158 \
