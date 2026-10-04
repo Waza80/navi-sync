@@ -1,4 +1,4 @@
-import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, isNotNull, or, sql } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { tracks } from '$lib/server/db/schema';
 import type { TrackMeta, StreamResolution } from '$lib/server/providers/types';
@@ -312,14 +312,14 @@ export async function ensureFailedTrackRow(input: {
 		filePath: null,
 		coverPath: null,
 		downloadStatus: 'failed' as const,
-		updatedAt: new Date()
+		updatedAt: new Date(),
 	};
 	const rows = await db
 		.insert(tracks)
 		.values(values)
 		.onConflictDoUpdate({
 			target: [tracks.provider, tracks.providerTrackId],
-			set: { ...values, downloadStatus: 'failed' }
+			set: { ...values, downloadStatus: 'failed' },
 		})
 		.returning({ id: tracks.id });
 	await logFailedDownload(input.error, rows[0].id);
@@ -331,20 +331,34 @@ async function logFailedDownload(error: string, trackId: string): Promise<void> 
 	const { auditLog } = await import('$lib/server/db/schema');
 	await db
 		.insert(auditLog)
-		.values({ event: 'download.failed', userId: null, metadata: { trackId, error: error.slice(0, 300) } })
+		.values({
+			event: 'download.failed',
+			userId: null,
+			metadata: { trackId, error: error.slice(0, 300) },
+		})
 		.catch(() => undefined);
 }
 
 export async function markDownloadStatus(
 	id: string,
-	status: 'completed' | 'failed' | 'pending'
+	status: 'completed' | 'failed' | 'pending',
 ): Promise<void> {
-	await db.update(tracks).set({ downloadStatus: status, updatedAt: new Date() }).where(eq(tracks.id, id));
+	await db
+		.update(tracks)
+		.set({ downloadStatus: status, updatedAt: new Date() })
+		.where(eq(tracks.id, id));
 }
 
 /** Failed-download rows for the retry sweep (oldest first, 6h cooldown). */
 export async function listFailedDownloadTracks(limit = 5): Promise<
-	Array<{ id: string; provider: string; providerTrackId: string | null; title: string; artist: string; sourceUrl: string | null }>
+	Array<{
+		id: string;
+		provider: string;
+		providerTrackId: string | null;
+		title: string;
+		artist: string;
+		sourceUrl: string | null;
+	}>
 > {
 	return db
 		.select({
@@ -353,7 +367,7 @@ export async function listFailedDownloadTracks(limit = 5): Promise<
 			providerTrackId: tracks.providerTrackId,
 			title: tracks.title,
 			artist: tracks.artist,
-			sourceUrl: tracks.sourceUrl
+			sourceUrl: tracks.sourceUrl,
 		})
 		.from(tracks)
 		.where(
@@ -365,9 +379,32 @@ export async function listFailedDownloadTracks(limit = 5): Promise<
 					WHERE j.track_id = ${tracks.id}
 					  AND j.type = 'download'
 					  AND j.status IN ('queued','running')
-				)`
-			)
+				)`,
+			),
 		)
 		.orderBy(tracks.updatedAt)
 		.limit(limit);
+}
+
+/** Number of library rows that point at a real file on disk. */
+export async function countLibraryTracks(): Promise<number> {
+	const [row] = await db
+		.select({ value: count() })
+		.from(tracks)
+		.where(isNotNull(tracks.filePath));
+	return row?.value ?? 0;
+}
+
+/**
+ * Stamp every filed track as Navidrome-synced. Called after a repair scan
+ * completes — Navidrome scans the whole folder, so per-track precision
+ * would be false accuracy.
+ */
+export async function markLibrarySynced(): Promise<number> {
+	const rows = await db
+		.update(tracks)
+		.set({ navidromeSyncedAt: new Date(), updatedAt: new Date() })
+		.where(isNotNull(tracks.filePath))
+		.returning({ id: tracks.id });
+	return rows.length;
 }

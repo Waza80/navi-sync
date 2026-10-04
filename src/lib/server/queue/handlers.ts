@@ -5,12 +5,14 @@ import { env } from '$lib/server/env';
 import { logger } from '$lib/server/logger';
 import { getSettings } from '$lib/server/settings';
 import {
+	deleteTrackRow,
 	findExistingTrack,
 	getTrackById,
 	markDownloadStatus,
 	updateLyricsStatus,
 	upsertTrack,
 } from '$lib/server/db/tracks';
+import { isSameRecording } from '$lib/shared/quality';
 import { enqueueJob, updateProgress, type JobRow } from './jobs';
 import { downloadLyrics } from '$lib/server/lyrics';
 import { providers } from '$lib/server/providers/registry';
@@ -77,10 +79,15 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		);
 
 	// 2. Metadata. Providers without bare-id metadata (Monochrome) receive the
-	// search snapshot via the job payload.
+	// search snapshot via the job payload — but stream grants (TRACK_TOKEN)
+	// expire, so always refresh from the provider when possible.
 	const payloadMeta = job.payload['meta'] as Partial<TrackMeta> | undefined;
 	let meta: TrackMeta;
-	if (payloadMeta && typeof payloadMeta.title === 'string' && typeof payloadMeta.artist === 'string') {
+	if (
+		payloadMeta &&
+		typeof payloadMeta.title === 'string' &&
+		typeof payloadMeta.artist === 'string'
+	) {
 		meta = {
 			provider: provider.id,
 			providerTrackId: ref.id,
@@ -96,9 +103,23 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 			genre: null,
 			coverUrl: payloadMeta.coverUrl ?? null,
 			sourceUrl: ref.sourceUrl ?? null,
-			streamToken: null
+			streamToken: null,
 		};
-		await ctx.report(12, `metadata (from search): ${meta.artist} — ${meta.title}`);
+		await ctx.report(10, 'refreshing stream grant');
+		try {
+			const fresh = await provider.metadata(ref);
+			meta = { ...meta, ...fresh, streamToken: fresh.streamToken ?? null };
+			await ctx.report(15, `metadata: ${meta.artist} — ${meta.title}`);
+		} catch (err) {
+			// Providers without bare-id metadata (Monochrome) keep the search
+			// snapshot — their streams need no per-track grant.
+			log.debug('fresh metadata unavailable, using search snapshot', {
+				jobId: job.id,
+				provider: provider.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			await ctx.report(12, `metadata (from search): ${meta.artist} — ${meta.title}`);
+		}
 	} else {
 		await ctx.report(8, 'fetching metadata');
 		meta = await provider.metadata(ref);
@@ -251,14 +272,24 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		typeof job.payload['upgradeForTrackId'] === 'string'
 			? job.payload['upgradeForTrackId']
 			: null;
-	if (upgradeForTrackId) {
-		// Upgrade: drop the superseded file (new one passed the guardrail as
-		// strictly better quality).
-		const previous = await getTrackById(upgradeForTrackId);
-		const oldPath = typeof previous?.['filePath'] === 'string' ? previous['filePath'] : null;
-		if (oldPath && oldPath !== finalPath) {
-			await rm(oldPath, { force: true }).catch((err) =>
-				log.warn('old file cleanup failed', { path: oldPath, error: String(err) }),
+	// Supersede rule: an explicit upgrade target always replaces; otherwise
+	// only when both rows carry the SAME ISRC (exact same recording — never
+	// guess across title/artist-only matches). The new file passed the
+	// guardrail as strictly better quality.
+	const supersededId =
+		upgradeForTrackId ??
+		(existing && isSameRecording(existing.isrc, meta.isrc) ? existing.id : null);
+	let supersededFilePath: string | null = null;
+	if (supersededId) {
+		const previous = await getTrackById(supersededId);
+		supersededFilePath =
+			previous && typeof previous['filePath'] === 'string' ? previous['filePath'] : null;
+		if (supersededFilePath && supersededFilePath !== finalPath) {
+			await rm(supersededFilePath, { force: true }).catch((err) =>
+				log.warn('superseded file cleanup failed', {
+					path: supersededFilePath,
+					error: String(err),
+				}),
 			);
 		}
 	}
@@ -272,6 +303,27 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		checksumSha256: checksum,
 		lyricsStatus: lyrics.success ? (lyrics.synced ? 'synced' : 'plain') : 'failed',
 	});
+	if (supersededId && supersededId !== trackId) {
+		// The old row loses: remove orphaned sidecars that no longer belong
+		// to any track (cover.jpg is shared per album — never delete it).
+		if (supersededFilePath) {
+			const oldBase = supersededFilePath.replace(/\.(mp3|flac)$/i, '');
+			const newBase = finalPath.replace(/\.(mp3|flac)$/i, '');
+			for (const ext of ['lrc', 'txt']) {
+				const sidecar = `${oldBase}.${ext}`;
+				if (sidecar !== `${newBase}.${ext}`) {
+					await rm(sidecar, { force: true }).catch(() => undefined);
+				}
+			}
+		}
+		const removed = await deleteTrackRow(supersededId).catch(() => false);
+		log.info('superseded track row replaced', {
+			jobId: job.id,
+			oldTrackId: supersededId,
+			newTrackId: trackId,
+			rowRemoved: removed,
+		});
+	}
 	if (upgradeForTrackId) {
 		// Refetch lyrics for the surviving row after a quality upgrade.
 		try {
@@ -424,15 +476,68 @@ async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, u
 
 async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 	const { getSettings } = await import('$lib/server/settings');
+	const { getScanStatus } = await import('$lib/server/navidrome/subsonic');
 	const s = await getSettings();
 	if (!s.navidromeUrl || !s.navidromeUsername || !s.navidromePassword) {
 		throw new Error('Navidrome not configured (URL, username and password required)');
 	}
+	const payload = job.payload as { repair?: boolean; filesOnDisk?: number; tracksInDb?: number };
 	await updateProgress(job.id, job.type, job.trackId, 40, 'triggering scan');
-	const result = await startScan(s.navidromeUrl, s.navidromeUsername, s.navidromePassword);
-	if (!result.ok) throw new Error(`Scan failed: ${result.error ?? 'unknown error'}`);
-	log.info('navidrome scan triggered', { serverVersion: result.serverVersion });
-	return { status: 'ok', serverVersion: result.serverVersion };
+	const started = await startScan(s.navidromeUrl, s.navidromeUsername, s.navidromePassword);
+	if (!started.ok) throw new Error(`Scan failed: ${started.error ?? 'unknown error'}`);
+	log.info('navidrome scan triggered', { serverVersion: started.serverVersion });
+
+	// Wait for Navidrome to finish (poll every 5s, up to 5 min) so a repair
+	// reports the true outcome instead of "triggered and hoped".
+	const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+	let scanCompleted = false;
+	let lastCount: number | null = null;
+	for (let i = 0; i < 60; i++) {
+		await sleep(5000);
+		const status = await getScanStatus(
+			s.navidromeUrl,
+			s.navidromeUsername,
+			s.navidromePassword,
+		);
+		if (!status.ok) {
+			log.warn('navidrome scan-status poll failed', { error: status.error });
+			continue;
+		}
+		lastCount = status.count ?? lastCount;
+		if (!status.scanning) {
+			scanCompleted = true;
+			break;
+		}
+		await updateProgress(
+			job.id,
+			job.type,
+			job.trackId,
+			60,
+			`scan running (${status.count ?? '?'} tracks indexed)`,
+		);
+	}
+	const { markLibrarySynced } = await import('$lib/server/db/tracks');
+	const stamped = scanCompleted
+		? await markLibrarySynced().catch((err) => {
+				log.warn('navidrome sync-stamp failed', { error: String(err) });
+				return 0;
+			})
+		: 0;
+	log.info('navidrome scan finished', {
+		scanCompleted,
+		lastCount,
+		stamped,
+		repair: payload.repair ?? false,
+	});
+	return {
+		status: 'ok',
+		serverVersion: started.serverVersion,
+		scanCompleted,
+		lastScanCount: lastCount,
+		stamped,
+		filesOnDisk: payload.filesOnDisk ?? null,
+		tracksInDb: payload.tracksInDb ?? null,
+	};
 }
 
 /* ── upgrade_check ──────────────────────────────────────────────────────── */
@@ -469,9 +574,9 @@ async function runUpgradeCheck(job: JobRow, ctx: JobContext): Promise<Record<str
 			format: t.format,
 			bitrateKbps: t.bitrateKbps,
 			bitDepth: t.bitDepth,
-			isLossless: t.isLossless
+			isLossless: t.isLossless,
 		},
-		{ skipRecentCheck: true }
+		{ skipRecentCheck: true },
 	);
 
 	if (!upgrade) {
@@ -493,11 +598,11 @@ async function runUpgradeCheck(job: JobRow, ctx: JobContext): Promise<Record<str
 				durationSec: upgrade.meta.durationSec,
 				isrc: upgrade.meta.isrc,
 				coverUrl: upgrade.meta.coverUrl,
-				year: upgrade.meta.year
-			}
+				year: upgrade.meta.year,
+			},
 		},
 		trackId: t.id,
-		priority: 8
+		priority: 8,
 	});
 	return { upgrade: true, incomingRank: upgrade.incomingRank, provider: upgrade.provider };
 }

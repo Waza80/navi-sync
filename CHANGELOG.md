@@ -2,9 +2,29 @@
 
 All notable changes to NaviSync. Format: Keep a Changelog; semver.
 
+## [Unreleased]
+
+### Fixed
+
+- **Navidrome indexation**: downloads now schedule a debounced library scan
+  automatically (`ensurePostDownloadScan` — skipped when a scan is already
+  pending), so new files get indexed without manual action.
+- **Repair indexation**: new `POST /api/navidrome/repair` + Settings button.
+  Reports files-on-disk vs DB-rows up front, then the scan job polls
+  `getScanStatus` until Navidrome finishes and stamps `navidrome_synced_at`.
+- **Expired stream tokens**: downloads enqueued from search results (which
+  carry a token-less metadata snapshot) now refresh the provider metadata
+  before resolving — fixing instant `NO_STREAM` deaths. Monochrome snapshots
+  still work (no per-track grant needed there).
+- **16-bit + 24-bit duplicates**: a strictly-better download now
+  _replaces_ the old row (explicit upgrade target, or same ISRC on both
+  sides) — old file, orphaned sidecars and stale row are removed, so each
+  song appears exactly once. Title/artist-only matches are never replaced.
+
 ## [0.3.0] — Phase 3: UI polish, link fan-out, covers, logging, security pass — 2026-10-04
 
 ### Added
+
 - **Album/playlist link support**: `POST /api/tracks` accepts album and
   playlist links (incl. `link.deezer.com` short links) and fans out one
   download per track — verified live with 70-track playlist (11-track album).
@@ -20,6 +40,7 @@ All notable changes to NaviSync. Format: Keep a Changelog; semver.
   completion, upload/sweep summaries (all redacted, local-only).
 
 ### Security
+
 - Final pre-commit audit: no secrets in tree (`.env` gitignored + verified),
   logs redact credentials, DB stores only AES-256-GCM ciphertext, CSP +
   rate limits + origin checks active. Remote configured; push on request.
@@ -27,6 +48,7 @@ All notable changes to NaviSync. Format: Keep a Changelog; semver.
 ## [0.2.3] — Phase 2D: tracks.monochrome.st, chunked downloads, UI freeze fix — 2026-10-04
 
 ### Fixed
+
 - **Dashboard freeze / unresponsive UI**: the snapshot-sync effect read and
   wrote reactive state in the same tracked scope → infinite self-trigger.
   Snapshot sync now runs `untrack()`. Regression-tested (5 new store tests:
@@ -41,6 +63,7 @@ All notable changes to NaviSync. Format: Keep a Changelog; semver.
   always detectable.
 
 ### Added
+
 - **tracks.monochrome.st provider** (verified live end-to-end):
   `GET /search?q=` (rich results incl. ISRC/duration/artwork) and
   `GET /track/<id>` serving **raw decrypted FLAC** — no manifests/decryption
@@ -55,6 +78,7 @@ All notable changes to NaviSync. Format: Keep a Changelog; semver.
 ## [0.2.2] — Phase 2C: Grid UI, album fan-out, ZIP export, forced upgrades, Monochrome auth — 2026-10-04
 
 ### Fixed
+
 - **Queue reactivity**: missed SSE events (reconnect gaps) left stale entries
   forever — the authoritative snapshot now overwrites/prunes on every load,
   and "Clear finished" re-syncs via invalidateAll.
@@ -64,6 +88,7 @@ All notable changes to NaviSync. Format: Keep a Changelog; semver.
 - `/providers` SSR crash (synchronous form init), upload card spacing.
 
 ### Added
+
 - **Track grid**: responsive M3 tile grid (2→5 columns) with album covers
   (`GET /api/tracks/:id/cover`), inline play/upgrade/download/delete.
 - **Individual file download** (`GET /api/tracks/:id/file`, Content-Disposition).

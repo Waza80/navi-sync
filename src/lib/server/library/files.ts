@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readdir, rename, rm, stat, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, extname, join } from 'node:path';
 import { env } from '$lib/server/env';
 import { logger } from '$lib/server/logger';
 
@@ -103,4 +103,33 @@ export async function purgeStaleTemp(): Promise<number> {
 	}
 	if (purged > 0) log.info('purged stale temp files', { count: purged });
 	return purged;
+}
+
+const AUDIO_EXTENSIONS = new Set([
+	'.flac',
+	'.mp3',
+	'.m4a',
+	'.mp4',
+	'.aac',
+	'.ogg',
+	'.opus',
+	'.wav',
+]);
+
+/**
+ * Recursively counts audio files under a library root. Used by the
+ * indexation-repair flow to compare disk reality vs DB rows vs Navidrome.
+ */
+export async function countAudioFiles(dir: string): Promise<number> {
+	let total = 0;
+	const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+	for (const entry of entries) {
+		const full = join(dir, entry.name);
+		if (entry.isDirectory()) {
+			total += await countAudioFiles(full);
+		} else if (entry.isFile() && AUDIO_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+			total += 1;
+		}
+	}
+	return total;
 }

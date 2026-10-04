@@ -26,10 +26,10 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 			...(track.title
 				? { meta: { title: track.title, artist: track.artist, album: track.album } }
 				: {}),
-			retryForTrackId: track.id
+			retryForTrackId: track.id,
 		},
 		trackId: track.id,
-		priority: 7
+		priority: 7,
 	});
 	return json({ job: { id: job.id, type: job.type, status: job.status } }, { status: 202 });
 };

@@ -41,14 +41,14 @@ const metaSchema = z.object({
 	durationSec: z.number().int().nullable().optional(),
 	isrc: z.string().max(20).nullable().optional(),
 	coverUrl: z.string().url().max(1000).nullable().optional(),
-	year: z.number().int().nullable().optional()
+	year: z.number().int().nullable().optional(),
 });
 const enqueueSchema = z.union([
 	z.object({ url: z.string().min(1).max(2048) }),
 	z.object({
 		provider: z.string().min(1).max(50),
 		trackId: z.string().min(1).max(100),
-		meta: metaSchema.optional()
+		meta: metaSchema.optional(),
 	}),
 ]);
 
@@ -73,10 +73,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				{
 					error: {
 						code: 'PROVIDER_DISABLED',
-						message: 'That provider is disabled — enable it in Settings → Providers.'
-					}
+						message: 'That provider is disabled — enable it in Settings → Providers.',
+					},
 				},
-				{ status: 409 }
+				{ status: 409 },
 			);
 		}
 		const provider = getProvider(parsed.data.provider);

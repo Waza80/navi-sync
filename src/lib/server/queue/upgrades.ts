@@ -51,7 +51,7 @@ function prefsOf(settings: {
 	return {
 		preferLossless: settings.preferLossless,
 		minBitrateKbps: settings.minBitrateKbps,
-		allowLowerFallback: settings.allowLowerFallback
+		allowLowerFallback: settings.allowLowerFallback,
 	};
 }
 
@@ -63,8 +63,8 @@ async function hasRecentUpgradeAttempt(trackId: string, hours: number): Promise<
 			and(
 				eq(jobs.trackId, trackId),
 				inArray(jobs.type, ['download', 'upgrade_check']),
-				gte(jobs.createdAt, new Date(Date.now() - hours * 3600 * 1000))
-			)
+				gte(jobs.createdAt, new Date(Date.now() - hours * 3600 * 1000)),
+			),
 		)
 		.limit(1);
 	return rows.length > 0;
@@ -76,14 +76,14 @@ async function hasRecentUpgradeAttempt(trackId: string, hours: number): Promise<
  */
 export async function findBestUpgrade(
 	track: TrackForUpgrade,
-	opts: { skipRecentCheck?: boolean } = {}
+	opts: { skipRecentCheck?: boolean } = {},
 ): Promise<UpgradeCandidate | null> {
 	const settings = await getSettings();
 	const existingRank = qualityRank({
 		format: track.format,
 		bitrateKbps: track.bitrateKbps,
 		bitDepth: track.bitDepth,
-		isLossless: track.isLossless
+		isLossless: track.isLossless,
 	});
 	if (existingRank >= 4) return null; // 24-bit ceiling reached
 	if (!opts.skipRecentCheck && (await hasRecentUpgradeAttempt(track.id, 24))) return null;
@@ -103,7 +103,7 @@ export async function findBestUpgrade(
 		genre: track.genre,
 		coverUrl: null,
 		sourceUrl: track.sourceUrl,
-		streamToken: null
+		streamToken: null,
 	};
 	const prefs = prefsOf(settings);
 
@@ -121,26 +121,30 @@ export async function findBestUpgrade(
 					if (byIsrc) found = byIsrc;
 				}
 				if (!found && provider.search) {
-					const metas = await provider.search(`${track.artist} ${track.title}`).catch(() => []);
+					const metas = await provider
+						.search(`${track.artist} ${track.title}`)
+						.catch(() => []);
 					const { findBestMatch } = await import('$lib/server/search/matcher');
 					const verdict = findBestMatch(
 						{
 							title: track.title,
 							artist: track.artist,
 							album: track.album,
-							durationSec: track.durationSec
+							durationSec: track.durationSec,
 						},
 						metas.map((m) => ({
 							title: m.title,
 							artist: m.artist,
 							album: m.album,
-							durationSec: m.durationSec
-						}))
+							durationSec: m.durationSec,
+						})),
 					);
 					if (verdict.candidate) {
 						found =
 							metas.find(
-								(m) => m.title === verdict.candidate?.title && m.artist === verdict.candidate?.artist
+								(m) =>
+									m.title === verdict.candidate?.title &&
+									m.artist === verdict.candidate?.artist,
 							) ?? null;
 					}
 				}
@@ -152,7 +156,7 @@ export async function findBestUpgrade(
 				format: resolution.format,
 				bitrateKbps: resolution.claimedBitrateKbps,
 				bitDepth: resolution.claimedBitDepth ?? null,
-				isLossless: resolution.claimedLossless
+				isLossless: resolution.claimedLossless,
 			});
 			if (incomingRank > existingRank) {
 				candidates.push({ provider: provider.id, meta, resolution, incomingRank });
@@ -161,7 +165,7 @@ export async function findBestUpgrade(
 			log.debug('upgrade candidate unavailable', {
 				provider: provider.id,
 				trackId: track.id,
-				error: String(err)
+				error: String(err),
 			});
 		}
 	}

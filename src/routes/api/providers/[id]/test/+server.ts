@@ -23,7 +23,7 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 		} catch (err) {
 			return json(
 				{ ok: false, detail: err instanceof Error ? err.message : String(err) },
-				{ status: 502 }
+				{ status: 502 },
 			);
 		}
 	}

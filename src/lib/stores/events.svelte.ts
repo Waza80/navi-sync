@@ -88,7 +88,7 @@ class LiveEventClient {
 					maxAttempts: 3,
 					trackId: evt.trackId,
 					createdAt: evt.ts,
-					finishedAt: null
+					finishedAt: null,
 				});
 				break;
 			}
@@ -105,11 +105,11 @@ class LiveEventClient {
 						maxAttempts: 3,
 						trackId: evt.trackId,
 						createdAt: evt.ts,
-						finishedAt: null
+						finishedAt: null,
 					}),
 					status: 'running',
 					progress: evt.progress,
-					stage: evt.stage
+					stage: evt.stage,
 				});
 				break;
 			}
@@ -123,12 +123,12 @@ class LiveEventClient {
 						attempts: 1,
 						maxAttempts: 3,
 						trackId: evt.trackId,
-						createdAt: evt.ts
+						createdAt: evt.ts,
 					}),
 					status: 'succeeded',
 					progress: 100,
 					stage: 'done',
-					finishedAt: evt.ts
+					finishedAt: evt.ts,
 				});
 				this.#onTerminal?.();
 				break;
@@ -146,11 +146,11 @@ class LiveEventClient {
 						maxAttempts: 3,
 						trackId: evt.trackId,
 						createdAt: evt.ts,
-						finishedAt: null
+						finishedAt: null,
 					}),
 					status: evt.willRetry ? 'failed' : 'dead',
 					error: evt.error,
-					finishedAt: evt.willRetry ? (prev?.finishedAt ?? null) : evt.ts
+					finishedAt: evt.willRetry ? (prev?.finishedAt ?? null) : evt.ts,
 				});
 				this.#onTerminal?.();
 				break;
@@ -167,10 +167,10 @@ class LiveEventClient {
 						attempts: 0,
 						maxAttempts: 3,
 						trackId: null,
-						createdAt: evt.ts
+						createdAt: evt.ts,
 					}),
 					status: 'cancelled',
-					finishedAt: evt.ts
+					finishedAt: evt.ts,
 				});
 				break;
 			}
@@ -185,7 +185,9 @@ class LiveEventClient {
 	}
 
 	get activeCount(): number {
-		return [...this.jobs.values()].filter((j) => j.status === 'queued' || j.status === 'running').length;
+		return [...this.jobs.values()].filter(
+			(j) => j.status === 'queued' || j.status === 'running',
+		).length;
 	}
 }
 

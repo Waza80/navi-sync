@@ -20,7 +20,10 @@ const patchSchema = z.object({
 	minBitrateKbps: z.coerce.number().int().min(64).max(1411).optional(),
 	preferLossless: z.boolean().optional(),
 	allowLowerFallback: z.boolean().optional(),
-	enabledProviders: z.array(z.enum(['deezer', 'monochrome'])).max(2).optional(),
+	enabledProviders: z
+		.array(z.enum(['deezer', 'monochrome']))
+		.max(2)
+		.optional(),
 	concurrentDownloads: z.coerce.number().int().min(1).max(8).optional(),
 });
 

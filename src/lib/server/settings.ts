@@ -28,7 +28,7 @@ const DEFAULTS = {
 	preferLossless: true,
 	allowLowerFallback: true,
 	enabledProviders: ['deezer', 'monochrome'] as string[],
-	concurrentDownloads: 4
+	concurrentDownloads: 4,
 };
 
 export async function getSettings(): Promise<AppSettings> {
@@ -64,7 +64,7 @@ export async function getSettings(): Promise<AppSettings> {
 		enabledProviders: Array.isArray(row.enabledProviders)
 			? row.enabledProviders
 			: [...DEFAULTS.enabledProviders],
-		concurrentDownloads: row.concurrentDownloads
+		concurrentDownloads: row.concurrentDownloads,
 	};
 }
 
@@ -93,8 +93,7 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
 	if (patch.preferLossless !== undefined) values.preferLossless = patch.preferLossless;
 	if (patch.allowLowerFallback !== undefined)
 		values.allowLowerFallback = patch.allowLowerFallback;
-	if (patch.enabledProviders !== undefined)
-		values.enabledProviders = patch.enabledProviders;
+	if (patch.enabledProviders !== undefined) values.enabledProviders = patch.enabledProviders;
 	if (patch.concurrentDownloads !== undefined)
 		values.concurrentDownloads = patch.concurrentDownloads;
 
@@ -125,6 +124,6 @@ export async function getPublicSettings(): Promise<{
 		preferLossless: s.preferLossless,
 		allowLowerFallback: s.allowLowerFallback,
 		concurrentDownloads: s.concurrentDownloads,
-			enabledProviders: s.enabledProviders,
-};
+		enabledProviders: s.enabledProviders,
+	};
 }

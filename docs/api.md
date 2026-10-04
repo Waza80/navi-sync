@@ -66,29 +66,30 @@ job.cancelled`. Heartbeat every 25s; auto-reconnect (`retry: 3000`).
 
 ## Albums (Phase 2)
 
-| Endpoint                        | Method | Notes                                        |
-| ------------------------------- | ------ | -------------------------------------------- |
-| `/api/albums/:id/download`      | POST   | fan-out: enqueue every track of the album (202 `{enqueued, jobIds}`) |
+| Endpoint                   | Method | Notes                                                                |
+| -------------------------- | ------ | -------------------------------------------------------------------- |
+| `/api/albums/:id/download` | POST   | fan-out: enqueue every track of the album (202 `{enqueued, jobIds}`) |
 
 `POST /api/tracks` also accepts **album/playlist links** (incl.
 `link.deezer.com` short links) — response `202 {kind, enqueued, jobIds}`.
 
 ## Per-track files (Phase 2)
 
-| Endpoint                    | Method | Notes                                        |
-| --------------------------- | ------ | -------------------------------------------- |
-| `/api/tracks/:id/file`      | GET    | authenticated download (attachment)          |
-| `/api/tracks/:id/cover`     | GET    | album art (jpeg)                             |
-| `/api/tracks/:id/audio`     | GET    | HTTP Range streaming (preview seeking)       |
-| `/api/tracks/:id/upgrade`   | POST   | force quality check now (202 `{job}`)        |
+| Endpoint                  | Method | Notes                                  |
+| ------------------------- | ------ | -------------------------------------- |
+| `/api/tracks/:id/file`    | GET    | authenticated download (attachment)    |
+| `/api/tracks/:id/cover`   | GET    | album art (jpeg)                       |
+| `/api/tracks/:id/audio`   | GET    | HTTP Range streaming (preview seeking) |
+| `/api/tracks/:id/upgrade` | POST   | force quality check now (202 `{job}`)  |
 
 ## Navidrome
 
-| Endpoint              | Method | Body                                                                                                                                   | Notes                                             |
-| --------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `/api/navidrome`      | GET    | —                                                                                                                                      | config (no password echo; `hasNavidromePassword`) |
-| `/api/navidrome`      | PUT    | `{navidromeUrl?, navidromeUsername?, navidromePassword?, minBitrateKbps?, preferLossless?, allowLowerFallback?, concurrentDownloads?}` | password stored AES-256-GCM encrypted             |
-| `/api/navidrome/scan` | POST   | `{}` enqueue scan · `{"pingOnly":true}` synchronous test                                                                               | scan job result visible via SSE                   |
+| Endpoint                | Method | Body                                                                                                                                   | Notes                                                                                                               |
+| ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `/api/navidrome`        | GET    | —                                                                                                                                      | config (no password echo; `hasNavidromePassword`)                                                                   |
+| `/api/navidrome`        | PUT    | `{navidromeUrl?, navidromeUsername?, navidromePassword?, minBitrateKbps?, preferLossless?, allowLowerFallback?, concurrentDownloads?}` | password stored AES-256-GCM encrypted                                                                               |
+| `/api/navidrome/scan`   | POST   | `{}` enqueue scan · `{"pingOnly":true}` synchronous test                                                                               | scan job waits for completion, stamps synced rows                                                                   |
+| `/api/navidrome/repair` | POST   | `{}` — ping + disk/DB inventory, then a scan job that waits for completion                                                             | 202 `{job, filesOnDisk, tracksInDb, serverVersion}`; job result carries `scanCompleted`, `lastScanCount`, `stamped` |
 
 ## Lyrics
 

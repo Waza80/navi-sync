@@ -76,3 +76,58 @@ export function startScan(
 ): Promise<SubsonicResult> {
 	return call(baseUrl, 'startScan', username, password);
 }
+
+export interface ScanStatusResult {
+	ok: boolean;
+	/** True while Navidrome is still scanning the library. */
+	scanning: boolean;
+	/** Tracks indexed so far (when reported). */
+	count?: number | null;
+	error?: string;
+}
+
+/**
+ * Pollable scan state (Navidrome Subsonic extension: getScanStatus →
+ * scanStatus { scanning, count }). Used by the indexation-repair flow to
+ * wait until a triggered scan actually finishes.
+ */
+export async function getScanStatus(
+	baseUrl: string,
+	username: string,
+	password: string,
+): Promise<ScanStatusResult> {
+	try {
+		const url = `${normalizeBaseUrl(baseUrl)}/rest/getScanStatus?${authParams(username, password)}`;
+		const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+		if (!res.ok) {
+			return { ok: false, scanning: false, error: `HTTP ${res.status}` };
+		}
+		const body = (await res.json()) as {
+			'subsonic-response'?: {
+				status?: string;
+				version?: string;
+				error?: { message?: string };
+				scanStatus?: { scanning?: boolean; count?: number };
+			};
+		};
+		const sr = body['subsonic-response'];
+		if (!sr)
+			return {
+				ok: false,
+				scanning: false,
+				error: 'Malformed response (not a Subsonic server?)',
+			};
+		if (sr.status !== 'ok') {
+			return { ok: false, scanning: false, error: sr.error?.message ?? 'Subsonic error' };
+		}
+		const st = sr.scanStatus;
+		if (!st || typeof st.scanning !== 'boolean') {
+			return { ok: false, scanning: false, error: 'Server did not report scanStatus' };
+		}
+		return { ok: true, scanning: st.scanning, count: st.count ?? null };
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		log.warn('subsonic scan-status failed', { error: msg });
+		return { ok: false, scanning: false, error: msg };
+	}
+}

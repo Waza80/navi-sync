@@ -1,7 +1,14 @@
 import { MonochromeClient, type MonochromeConfig, type MonochromeTrack } from './client';
 import { parseMonochromeInput } from './parse';
 import { getProviderConfig } from '$lib/server/providers/config';
-import { ProviderError, type Provider, type QualityPreferences, type StreamResolution, type TrackMeta, type TrackRef } from '$lib/server/providers/types';
+import {
+	ProviderError,
+	type Provider,
+	type QualityPreferences,
+	type StreamResolution,
+	type TrackMeta,
+	type TrackRef,
+} from '$lib/server/providers/types';
 
 /**
  * Monochrome provider — tracks.monochrome.st instance.
@@ -67,8 +74,8 @@ export const monochromeProvider: Provider = {
 		return Promise.reject(
 			new ProviderError(
 				'Monochrome tracks must be enqueued from search results (metadata travels with the job).',
-				'NOT_FOUND'
-			)
+				'NOT_FOUND',
+			),
 		);
 	},
 
@@ -86,7 +93,7 @@ export const monochromeProvider: Provider = {
 		const cfg = await configOrThrow();
 		const client = new MonochromeClient(cfg);
 		return client.resolveStream(meta.providerTrackId, _prefs);
-	}
+	},
 };
 
 export { MonochromeClient, type MonochromeConfig };
@@ -95,7 +102,7 @@ export { MonochromeClient, type MonochromeConfig };
 function monochromeTrackToMeta(
 	track: MonochromeTrack,
 	instanceBase: string,
-	isrcOverride?: string
+	isrcOverride?: string,
 ): TrackMeta {
 	return {
 		provider: 'monochrome',
@@ -112,6 +119,6 @@ function monochromeTrackToMeta(
 		genre: null,
 		coverUrl: track.artworkUrl,
 		sourceUrl: `${instanceBase.replace(/\/+$/, '')}/track/${track.id}`,
-		streamToken: null
+		streamToken: null,
 	};
 }

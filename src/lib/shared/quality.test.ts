@@ -3,6 +3,7 @@ import {
 	qualityRank,
 	shouldSkipRefetch,
 	selectBestQuality,
+	isSameRecording,
 	type QualityDescriptor,
 } from './quality';
 
@@ -101,5 +102,20 @@ describe('selectBestQuality', () => {
 		});
 		expect(allowed.chosen).toBe(mp3_128);
 		expect(allowed.reason).toBe('lower_fallback');
+	});
+});
+
+describe('isSameRecording (supersede identity)', () => {
+	it('matches equal ISRCs case-insensitively', () => {
+		expect(isSameRecording('USSM11300080', 'ussm11300080')).toBe(true);
+	});
+	it('rejects different ISRCs', () => {
+		expect(isSameRecording('USSM11300080', 'USSM11300081')).toBe(false);
+	});
+	it('never matches when either side is missing (no guessing)', () => {
+		expect(isSameRecording(null, 'USSM11300080')).toBe(false);
+		expect(isSameRecording('USSM11300080', null)).toBe(false);
+		expect(isSameRecording(null, null)).toBe(false);
+		expect(isSameRecording('', 'USSM11300080')).toBe(false);
 	});
 });

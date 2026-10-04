@@ -10,7 +10,7 @@ async function resolveShortLink(input: string): Promise<string | null> {
 			const res = await fetch(input.trim(), {
 				method,
 				redirect: 'follow',
-				signal: AbortSignal.timeout(10_000)
+				signal: AbortSignal.timeout(10_000),
 			});
 			const final = res.url;
 			if (method === 'GET') await res.arrayBuffer();
@@ -127,7 +127,7 @@ export const deezerProvider: Provider = {
 	},
 
 	async resolveLink(
-		input: string
+		input: string,
 	): Promise<{ kind: 'track' | 'album' | 'playlist'; id: string } | null> {
 		// Canonicalizes any deezer link (incl. link.deezer.com short links)
 		// into {kind, id}: track, album or playlist.
@@ -155,7 +155,7 @@ export const deezerProvider: Provider = {
 			lang: 'en',
 			nb: max,
 			tags: false,
-			start: 0
+			start: 0,
 		});
 		const results = body.results as { SONGS?: { data?: Array<{ SNG_ID?: string | number }> } };
 		const rows = results?.SONGS?.data ?? [];
@@ -227,7 +227,7 @@ export const deezerProvider: Provider = {
 		const body = await callGateway('deezer.pageAlbum', {
 			alb_id: albumId,
 			header: true,
-			lang: 'en'
+			lang: 'en',
 		});
 		const results = body.results as { SONGS?: { data?: Array<{ SNG_ID?: string | number }> } };
 		const rows = results?.SONGS?.data ?? [];
@@ -237,7 +237,7 @@ export const deezerProvider: Provider = {
 	async findByIsrc(isrc) {
 		// Public API — exact ISRC lookup, no gateway auth needed.
 		const res = await fetch(`https://api.deezer.com/track/isrc:${encodeURIComponent(isrc)}`, {
-			signal: AbortSignal.timeout(10_000)
+			signal: AbortSignal.timeout(10_000),
 		});
 		if (!res.ok) return null;
 		const data = (await res.json()) as {
@@ -261,18 +261,20 @@ export const deezerProvider: Provider = {
 			trackNumber: null,
 			discNumber: null,
 			durationSec: data.duration ?? null,
-			year: data.release_date ? Number.parseInt(data.release_date.slice(0, 4), 10) || null : null,
+			year: data.release_date
+				? Number.parseInt(data.release_date.slice(0, 4), 10) || null
+				: null,
 			genre: null,
 			coverUrl: data.album?.cover_xl ?? null,
 			sourceUrl: `https://www.deezer.com/track/${data.id}`,
-			streamToken: null
+			streamToken: null,
 		};
 	},
 
 	async resolve(meta, prefs) {
 		if (!meta.streamToken) {
 			throw new ProviderError(
-				'Track has no stream token (expired or restricted)',
+				'Track has no stream token (sign-in expired or track restricted)',
 				'NO_STREAM',
 			);
 		}

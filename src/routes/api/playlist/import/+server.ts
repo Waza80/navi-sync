@@ -46,10 +46,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			{
 				error: {
 					code: 'PROVIDER_DISABLED',
-					message: 'Deezer is disabled — enable it in Settings → Providers.'
-				}
+					message: 'Deezer is disabled — enable it in Settings → Providers.',
+				},
 			},
-			{ status: 409 }
+			{ status: 409 },
 		);
 	}
 	const deezer = getProvider('deezer');

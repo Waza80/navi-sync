@@ -42,6 +42,7 @@
 	let busy = $state(false);
 	let pingBusy = $state(false);
 	let scanBusy = $state(false);
+	let repairBusy = $state(false);
 
 	// Enabled providers (local working copy; persisted via Save settings)
 	let enabled = $state<string[]>([]);
@@ -140,6 +141,28 @@
 			scanBusy = false;
 		}
 	}
+
+	async function repairIndexation() {
+		message = null;
+		repairBusy = true;
+		try {
+			const res = await fetch('/api/navidrome/repair', { method: 'POST' });
+			const body = (await res.json()) as {
+				filesOnDisk?: number;
+				tracksInDb?: number;
+				serverVersion?: string;
+				error?: { message: string };
+			};
+			message = res.ok
+				? {
+						tone: 'ok',
+						text: `Repair started — ${body.filesOnDisk ?? '?'} files on disk, ${body.tracksInDb ?? '?'} tracks in DB (Navidrome ${body.serverVersion ?? '?'}). Watch the queue; the job reports when indexing finishes.`
+					}
+				: { tone: 'error', text: body.error?.message ?? `HTTP ${res.status}` };
+		} finally {
+			repairBusy = false;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -185,6 +208,9 @@
 				</button>
 				<button type="button" class="m3-btn m3-btn-tonal" disabled={scanBusy} onclick={triggerScan}>
 					{scanBusy ? 'Queueing…' : 'Trigger scan now'}
+				</button>
+				<button type="button" class="m3-btn m3-btn-tonal" disabled={repairBusy} onclick={repairIndexation}>
+					{repairBusy ? 'Repairing…' : 'Repair indexation'}
 				</button>
 			</div>
 		</div>

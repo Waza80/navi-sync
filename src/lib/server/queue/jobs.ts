@@ -118,9 +118,26 @@ export async function claimNextJob(): Promise<JobRow | null> {
 		trackId: row['track_id'],
 		createdBy: row['created_by'],
 		createdAt: row['created_at'],
-		updatedAt: row['updated_at']
+		updatedAt: row['updated_at'],
 	} as unknown as JobRow;
 	return job;
+}
+
+/** Debounced post-download scan: keeps Navidrome indexed without spamming
+ * one scan job per finished download. Skips when a scan is already queued or
+ * running — Navidrome picks up every file present when it runs.
+ */
+export async function ensurePostDownloadScan(): Promise<void> {
+	const active = await db
+		.select({ id: jobs.id })
+		.from(jobs)
+		.where(and(eq(jobs.type, 'navidrome_scan'), inArray(jobs.status, ['queued', 'running'])))
+		.limit(1);
+	if (active.length > 0) {
+		log.debug('post-download scan skipped (scan already pending)');
+		return;
+	}
+	await enqueueJob({ type: 'navidrome_scan', payload: { reason: 'post-download' }, priority: 2 });
 }
 
 export async function updateProgress(

@@ -55,10 +55,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			{
 				error: {
 					code: 'PROVIDER_DISABLED',
-					message: `${getProvider(providerId).displayName} is disabled — enable it in Settings → Providers.`
-				}
+					message: `${getProvider(providerId).displayName} is disabled — enable it in Settings → Providers.`,
+				},
 			},
-			{ status: 409 }
+			{ status: 409 },
 		);
 	}
 	const provider = getProvider(providerId);
@@ -74,7 +74,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			if (!ids || ids.length === 0) {
 				return badRequest(
 					`That ${link.kind} resolved but contains no downloadable tracks.`,
-					'EMPTY_COLLECTION'
+					'EMPTY_COLLECTION',
 				);
 			}
 			const jobIds: string[] = [];
@@ -83,9 +83,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					type: 'download',
 					payload: {
 						url: `https://www.deezer.com/track/${trackId}`,
-						provider: providerId
+						provider: providerId,
 					},
-					createdBy: user.id
+					createdBy: user.id,
 				});
 				jobIds.push(job.id);
 			}

@@ -73,3 +73,17 @@ export function selectBestQuality(
 	}
 	return { chosen: null, reason: 'no_candidate_meets_min_bitrate' };
 }
+
+/**
+ * Identity check for row replacement: two rows are the SAME recording only
+ * when both carry a non-empty, case-insensitively equal ISRC. Title/artist
+ * matches are deliberately NOT enough (live versions, remixes, same-name
+ * tracks) — replacing those would destroy the wrong song.
+ */
+export function isSameRecording(
+	existingIsrc: string | null | undefined,
+	incomingIsrc: string | null | undefined,
+): boolean {
+	if (!existingIsrc || !incomingIsrc) return false;
+	return existingIsrc.toLowerCase() === incomingIsrc.toLowerCase();
+}

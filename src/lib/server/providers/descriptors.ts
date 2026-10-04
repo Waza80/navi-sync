@@ -75,15 +75,20 @@ export const providerDescriptors: ProviderDescriptor[] = [
 				type: 'password',
 				required: false,
 				placeholder: 'better-auth.session_token=…',
-				help: 'Log into the instance in your browser, copy the session cookie (DevTools → Application → Cookies), paste the value here. Cloudflare blocks server-side logins, so this is the reliable path.'
+				help: 'Log into the instance in your browser, copy the session cookie (DevTools → Application → Cookies), paste the value here. Cloudflare blocks server-side logins, so this is the reliable path.',
 			},
-			{ key: 'username', label: 'Email (for automatic re-login)', type: 'text', required: false },
+			{
+				key: 'username',
+				label: 'Email (for automatic re-login)',
+				type: 'text',
+				required: false,
+			},
 			{
 				key: 'password',
 				label: 'Password (for automatic re-login)',
 				type: 'password',
 				required: false,
-				help: 'Only useful on instances without Cloudflare on /api/auth.'
+				help: 'Only useful on instances without Cloudflare on /api/auth.',
 			},
 			{
 				key: 'quality',

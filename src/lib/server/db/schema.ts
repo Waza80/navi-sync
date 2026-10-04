@@ -177,7 +177,10 @@ export const settings = pgTable('settings', {
 	/** Allow accepting a lower quality when the preferred tier is unavailable */
 	allowLowerFallback: boolean('allow_lower_fallback').notNull().default(true),
 	/** Providers the engine may use (search, downloads, upgrades). */
-	enabledProviders: jsonb('enabled_providers').$type<string[]>().notNull().default(['deezer', 'monochrome']),
+	enabledProviders: jsonb('enabled_providers')
+		.$type<string[]>()
+		.notNull()
+		.default(['deezer', 'monochrome']),
 	concurrentDownloads: integer('concurrent_downloads').notNull().default(4),
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

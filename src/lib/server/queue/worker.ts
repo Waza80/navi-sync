@@ -10,6 +10,7 @@ import { getSettings } from '$lib/server/settings';
 import {
 	claimNextJob,
 	completeJob,
+	ensurePostDownloadScan,
 	failJob,
 	recoverOrphanedJobs,
 	updateProgress,
@@ -92,7 +93,9 @@ export function ensureWorkerStarted(): void {
 								if (outcome === 'dead' && job.type === 'download') {
 									// Failed downloads stay visible as failed track rows.
 									await recordFailedDownload(job, String(err)).catch((e) =>
-										log.warn('failed-track row not recorded', { error: String(e) }),
+										log.warn('failed-track row not recorded', {
+											error: String(e),
+										}),
 									);
 								}
 								return outcome;
@@ -135,6 +138,13 @@ export function ensureWorkerStarted(): void {
 					});
 					await completeJob(job.id, job.type, job.trackId, result);
 					log.info('job completed', { jobId: job.id, jobType: job.type });
+					if (job.type === 'download') {
+						// Keep Navidrome indexed: one debounced scan covers every
+						// file landed since the last scan.
+						await ensurePostDownloadScan().catch((err) =>
+							log.warn('post-download scan not scheduled', { error: String(err) }),
+						);
+					}
 				} finally {
 					clearInterval(watcher);
 				}
@@ -222,17 +232,17 @@ export function ensureWorkerStarted(): void {
 									durationSec: upgrade.meta.durationSec,
 									isrc: upgrade.meta.isrc,
 									coverUrl: upgrade.meta.coverUrl,
-									year: upgrade.meta.year
-								}
+									year: upgrade.meta.year,
+								},
 							},
 							trackId: track.id,
-							priority: 6
+							priority: 6,
 						});
 						log.info('cross-provider upgrade enqueued', {
 							trackId: track.id,
 							title: track.title,
 							to: upgrade.incomingRank,
-							via: upgrade.provider
+							via: upgrade.provider,
 						});
 					}
 				} catch (err) {
@@ -243,21 +253,22 @@ export function ensureWorkerStarted(): void {
 			/** Failed-download retry sweep: 6h cooldown per track, oldest first. */
 			async function downloadRetrySweep(): Promise<void> {
 				try {
-					const { listFailedDownloadTracks, markDownloadStatus } = await import(
-						'$lib/server/db/tracks'
-					);
+					const { listFailedDownloadTracks, markDownloadStatus } =
+						await import('$lib/server/db/tracks');
 					const { enqueueJob } = await import('./jobs');
 					const rows = await listFailedDownloadTracks(5);
 					for (const row of rows) {
 						await enqueueJob({
 							type: 'download',
 							payload: {
-								url: row.sourceUrl ?? `https://www.deezer.com/track/${row.providerTrackId ?? ''}`,
+								url:
+									row.sourceUrl ??
+									`https://www.deezer.com/track/${row.providerTrackId ?? ''}`,
 								provider: row.provider,
 								retryForTrackId: row.id,
-								meta: { title: row.title, artist: row.artist }
+								meta: { title: row.title, artist: row.artist },
 							},
-							trackId: row.id
+							trackId: row.id,
 						});
 						await markDownloadStatus(row.id, 'pending');
 						log.info('failed download requeued', { trackId: row.id, title: row.title });
@@ -288,7 +299,11 @@ export function ensureWorkerStarted(): void {
 
 /** Best-effort placeholder row so failed downloads are visible + retryable. */
 async function recordFailedDownload(job: JobRow, error: string): Promise<void> {
-	const payload = job.payload as { url?: string; provider?: string; meta?: Record<string, unknown> };
+	const payload = job.payload as {
+		url?: string;
+		provider?: string;
+		meta?: Record<string, unknown>;
+	};
 	const providerId = typeof payload.provider === 'string' ? payload.provider : 'unknown';
 	const meta: Record<string, unknown> = payload.meta ?? {};
 	let title = typeof meta['title'] === 'string' ? meta['title'] : '';
@@ -337,4 +352,3 @@ async function recordFailedDownload(job: JobRow, error: string): Promise<void> {
 		error,
 	});
 }
-

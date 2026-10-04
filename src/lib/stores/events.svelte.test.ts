@@ -55,7 +55,15 @@ async function freshStore() {
 
 const ts = (n: number): string => new Date(Date.UTC(2026, 0, 1, 0, 0, n)).toISOString();
 const progressEvt = (jobId: string, progress: number, stage: string): string =>
-	JSON.stringify({ type: 'job.progress', jobId, jobType: 'download', trackId: null, progress, stage, ts: ts(1) });
+	JSON.stringify({
+		type: 'job.progress',
+		jobId,
+		jobType: 'download',
+		trackId: null,
+		progress,
+		stage,
+		ts: ts(1),
+	});
 
 describe('LiveEventClient reactivity', () => {
 	it('applies progress events for UNKNOWN jobs (missed queued event)', async () => {
@@ -99,8 +107,8 @@ describe('LiveEventClient reactivity', () => {
 				maxAttempts: 3,
 				trackId: null,
 				createdAt: ts(2),
-				finishedAt: ts(3)
-			}
+				finishedAt: ts(3),
+			},
 		]);
 		expect(live.jobs.get('job-z')?.status).toBe('succeeded');
 	});

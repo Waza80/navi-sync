@@ -1,4 +1,8 @@
-import { ProviderError, type StreamResolution, type QualityPreferences } from '$lib/server/providers/types';
+import {
+	ProviderError,
+	type StreamResolution,
+	type QualityPreferences,
+} from '$lib/server/providers/types';
 /**
  * Monochrome client v2 — tracks.monochrome.st instance.
  *
@@ -75,14 +79,15 @@ export class MonochromeClient {
 	async search(query: string): Promise<MonochromeTrack[]> {
 		const res = await fetch(`${this.base}/search?q=${encodeURIComponent(query)}`, {
 			headers: this.#accept,
-			signal: AbortSignal.timeout(20_000)
+			signal: AbortSignal.timeout(20_000),
 		});
-		const body = (await res.json().catch(() => null)) as SearchResponse | { detail?: string } | null;
+		const body = (await res.json().catch(() => null)) as
+			SearchResponse | { detail?: string } | null;
 		if (!res.ok || !body) {
 			const detail = (body as { detail?: string } | null)?.detail;
 			throw new ProviderError(
 				detail ?? `Monochrome search failed: HTTP ${res.status}`,
-				'PROVIDER_UNAVAILABLE'
+				'PROVIDER_UNAVAILABLE',
 			);
 		}
 		const { tracks = [] } = body as SearchResponse;
@@ -95,7 +100,7 @@ export class MonochromeClient {
 				album: null,
 				durationSec: t.duration != null ? Math.round(t.duration / 1000) : null,
 				isrc: t.isrc ?? null,
-				artworkUrl: t.artwork ?? null
+				artworkUrl: t.artwork ?? null,
 			}));
 	}
 
@@ -136,20 +141,23 @@ export async function downloadChunked(
 		onProgress?: (receivedBytes: number, totalBytes: number) => void;
 		concurrency?: number;
 		chunkSize?: number;
-	} = {}
+	} = {},
 ): Promise<number> {
 	const { open } = await import('node:fs/promises');
 
 	// 1. Probe total size.
 	const probe = await fetch(url, {
 		headers: { Range: 'bytes=0-0', ...baseHeadersOf(url) },
-		signal: opts.signal ?? AbortSignal.timeout(35_000)
+		signal: opts.signal ?? AbortSignal.timeout(35_000),
 	});
 	const contentRange = probe.headers.get('content-range'); // bytes 0-0/TOTAL
 	await probe.arrayBuffer();
 	const total = Number.parseInt((contentRange ?? '').split('/')[1] ?? '', 10);
 	if (!Number.isFinite(total) || total <= 0) {
-		throw new ProviderError('Instance did not report Content-Range total', 'PROVIDER_UNAVAILABLE');
+		throw new ProviderError(
+			'Instance did not report Content-Range total',
+			'PROVIDER_UNAVAILABLE',
+		);
 	}
 
 	const chunkSize = opts.chunkSize ?? 480 * 1024; // safely under the 512KiB cap
@@ -177,14 +185,15 @@ export async function downloadChunked(
 				try {
 					const res = await fetch(url, {
 						headers: { Range: `bytes=${start}-${end}`, ...baseHeadersOf(url) },
-						signal: AbortSignal.timeout(40_000)
+						signal: AbortSignal.timeout(40_000),
 					});
 					if (res.status !== 206 && res.status !== 200) {
 						throw new Error(`HTTP ${res.status}`);
 					}
 					const buf = Buffer.from(await res.arrayBuffer());
 					const expected = end - start + 1;
-					if (buf.length !== expected) throw new Error(`short chunk ${buf.length}/${expected}`);
+					if (buf.length !== expected)
+						throw new Error(`short chunk ${buf.length}/${expected}`);
 					await handle.write(buf, 0, buf.length, start);
 					received += buf.length;
 					opts.onProgress?.(received, total);
@@ -196,10 +205,10 @@ export async function downloadChunked(
 				}
 			}
 			if (lastErr)
-					throw new ProviderError(
-						`Chunk ${index} failed after retries: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
-						'PROVIDER_UNAVAILABLE',
-					);
+				throw new ProviderError(
+					`Chunk ${index} failed after retries: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+					'PROVIDER_UNAVAILABLE',
+				);
 		}
 	}
 
@@ -214,5 +223,7 @@ export async function downloadChunked(
 
 function baseHeadersOf(url: string): Record<string, string> {
 	void url;
-	return { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36' };
+	return {
+		'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
+	};
 }
