@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# Local compose with baked-in secrets — never commit or share
+docker/compose.prod.yaml
 
 # ── dependencies / build artifacts ───────────────────────────────────────────
 node_modules/
