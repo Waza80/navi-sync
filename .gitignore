@@ -1,0 +1,24 @@
+# ── secrets (NEVER commit) ───────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── dependencies / build artifacts ───────────────────────────────────────────
+node_modules/
+build/
+.svelte-kit/
+dist/
+
+# ── libraries & temp data (user content) ─────────────────────────────────────
+music/
+.tmp/
+logs/
+
+# ── caches / coverage ────────────────────────────────────────────────────────
+coverage/
+*.log
+.cache/
+
+# ── os noise ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

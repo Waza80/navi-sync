@@ -1,0 +1,11 @@
+node_modules
+build
+.svelte-kit
+music
+.tmp
+logs
+coverage
+.env
+.env.*
+!.env.example
+.git
