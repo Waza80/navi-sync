@@ -75,12 +75,13 @@ job.cancelled`. Heartbeat every 25s; auto-reconnect (`retry: 3000`).
 
 ## Per-track files (Phase 2)
 
-| Endpoint                  | Method | Notes                                  |
-| ------------------------- | ------ | -------------------------------------- |
-| `/api/tracks/:id/file`    | GET    | authenticated download (attachment)    |
-| `/api/tracks/:id/cover`   | GET    | album art (jpeg)                       |
-| `/api/tracks/:id/audio`   | GET    | HTTP Range streaming (preview seeking) |
-| `/api/tracks/:id/upgrade` | POST   | force quality check now (202 `{job}`)  |
+| Endpoint                   | Method | Notes                                                           |
+| -------------------------- | ------ | --------------------------------------------------------------- |
+| `/api/tracks/:id/file`     | GET    | authenticated download (attachment)                             |
+| `/api/tracks/:id/cover`    | GET    | album art (jpeg)                                                |
+| `/api/tracks/:id/audio`    | GET    | HTTP Range streaming (preview seeking)                          |
+| `/api/tracks/:id/upgrade`  | POST   | force quality check now (202 `{job}`)                           |
+| `/api/tracks/retry-failed` | POST   | force-retry ALL failed downloads now (202 `{requeued, jobIds}`) |
 
 ## Navidrome
 

@@ -148,6 +148,7 @@ export async function trackStats(): Promise<{
 	total: number;
 	lossless: number;
 	withLyrics: number;
+	failed: number;
 }> {
 	const [totalRow] = await db.select({ value: count() }).from(tracks);
 	const [losslessRow] = await db
@@ -158,11 +159,48 @@ export async function trackStats(): Promise<{
 		.select({ value: count() })
 		.from(tracks)
 		.where(sql`${tracks.lyricsStatus} in ('synced','plain')`);
+	const [failedRow] = await db
+		.select({ value: count() })
+		.from(tracks)
+		.where(eq(tracks.downloadStatus, 'failed'));
 	return {
 		total: totalRow?.value ?? 0,
 		lossless: losslessRow?.value ?? 0,
 		withLyrics: lyricsRow?.value ?? 0,
+		failed: failedRow?.value ?? 0,
 	};
+}
+
+/** Every library row that points at a real file — the repair retag pass. */
+export async function listFiledTracks(): Promise<
+	Array<{
+		id: string;
+		filePath: string | null;
+		title: string;
+		artist: string;
+		album: string | null;
+		albumArtist: string | null;
+		trackNumber: number | null;
+		discNumber: number | null;
+		releaseYear: number | null;
+		genre: string | null;
+	}>
+> {
+	return db
+		.select({
+			id: tracks.id,
+			filePath: tracks.filePath,
+			title: tracks.title,
+			artist: tracks.artist,
+			album: tracks.album,
+			albumArtist: tracks.albumArtist,
+			trackNumber: tracks.trackNumber,
+			discNumber: tracks.discNumber,
+			releaseYear: tracks.releaseYear,
+			genre: tracks.genre,
+		})
+		.from(tracks)
+		.where(isNotNull(tracks.filePath));
 }
 
 export async function updateLyricsStatus(

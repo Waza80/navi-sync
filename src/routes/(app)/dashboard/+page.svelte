@@ -13,7 +13,7 @@
 		jobs: Parameters<typeof live.hydrate>[0];
 		tracks: TrackDTO[];
 		tracksTotal: number;
-		stats: { total: number; lossless: number; withLyrics: number };
+		stats: { total: number; lossless: number; withLyrics: number; failed: number };
 	} } = $props();
 
 	let urlInput = $state('');
@@ -168,6 +168,22 @@
 			}
 		} finally {
 			upgrading.delete(id);
+		}
+	}
+	let retryAllBusy = $state(false);
+	async function retryAllFailed() {
+		retryAllBusy = true;
+		try {
+			const res = await fetch('/api/tracks/retry-failed', { method: 'POST' });
+			const body = (await res.json()) as { requeued?: number; error?: { message: string } };
+			if (res.ok) {
+				toast('ok', `Requeued ${body.requeued ?? 0} failed downloads.`);
+				await invalidateAll();
+			} else {
+				toast('error', body.error?.message ?? `HTTP ${res.status}`);
+			}
+		} finally {
+			retryAllBusy = false;
 		}
 	}
 	async function deleteTrack(id: string) {
@@ -720,9 +736,20 @@
 			aria-label="Filter library"
 			bind:value={trackFilter}
 		/>
+		{#if data.stats.failed > 0}
+			<button
+				type="button"
+				class="m3-btn m3-btn-tonal ml-auto h-10 min-h-10 px-4 text-sm"
+				disabled={retryAllBusy}
+				onclick={retryAllFailed}
+				aria-label="Retry all failed downloads now"
+			>
+				{retryAllBusy ? 'Queueing…' : `↻ Retry all failed (${data.stats.failed})`}
+			</button>
+		{/if}
 		<a
 			href={resolve("/api/export")}
-			class="m3-btn m3-btn-tonal ml-auto h-10 min-h-10 px-4 text-sm"
+			class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm"
 			aria-label="Export whole library as ZIP">⬇ Export library (ZIP)</a
 		>
 	</div>

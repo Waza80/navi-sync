@@ -9,7 +9,7 @@ import { cleanupTemp, moveIntoLibrary, sha256File } from '$lib/server/library/fi
 import { probeQuality, tagFlac, tagMp3 } from '$lib/server/library/tagging';
 import { coverRelativePath, trackBaseRelativePath } from '$lib/server/library/paths';
 import { findLibraryDuplicate, upsertTrack } from '$lib/server/db/tracks';
-import { downloadLyrics } from '$lib/server/lyrics';
+import { downloadLyrics, lyricsSidecar } from '$lib/server/lyrics';
 import type { TrackMeta } from '$lib/server/providers/types';
 
 const log = logger;
@@ -125,13 +125,13 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		}
 	}
 
-	// Lyrics: embedded ones were already tagged by the uploader — only fetch
-	// when asked and none embedded.
+	// Lyrics: embedded ones were already tagged by the uploader — otherwise
+	// fetch ONLY when the song misses lyrics (no sidecar at its library path).
 	let lyricsStatus: 'none' | 'synced' | 'plain' | 'failed' = 'none';
 	let lyricsPath: string | null = null;
 	if (input.embeddedLyrics) {
 		lyricsStatus = 'plain';
-	} else if (input.fetchLyrics) {
+	} else if (input.fetchLyrics && (await lyricsSidecar(meta)) == null) {
 		const result = await downloadLyrics(meta);
 		if (result.success) {
 			lyricsStatus = result.synced ? 'synced' : 'plain';

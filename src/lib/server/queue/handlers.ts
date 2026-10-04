@@ -14,7 +14,7 @@ import {
 } from '$lib/server/db/tracks';
 import { isSameRecording } from '$lib/shared/quality';
 import { enqueueJob, updateProgress, type JobRow } from './jobs';
-import { downloadLyrics } from '$lib/server/lyrics';
+import { downloadLyrics, lyricsSidecar, type DownloadLyricsResult } from '$lib/server/lyrics';
 import { providers } from '$lib/server/providers/registry';
 import { ProviderError, type StreamResolution, type TrackMeta } from '$lib/server/providers/types';
 import { shouldSkipRefetch } from '$lib/shared/quality';
@@ -244,8 +244,28 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	}
 
 	// 9. Lyrics BEFORE moving (sidecar lands next to audio path directly).
+	// Fetch ONLY when the song misses lyrics or was just upgraded — never
+	// re-hit dead APIs for sidecars that already exist on disk.
+	const upgradeForTrackId =
+		typeof job.payload['upgradeForTrackId'] === 'string'
+			? job.payload['upgradeForTrackId']
+			: null;
 	await ctx.report(84, 'lyrics');
-	const lyrics = await downloadLyrics(meta);
+	const existingSidecar = await lyricsSidecar(meta);
+	let lyrics: DownloadLyricsResult;
+	if (upgradeForTrackId != null || existingSidecar == null) {
+		lyrics = await downloadLyrics(meta);
+	} else {
+		log.info('lyrics fetch skipped — sidecar already present', {
+			jobId: job.id,
+			path: existingSidecar.path,
+		});
+		lyrics = {
+			success: true,
+			synced: existingSidecar.kind === 'synced',
+			path: existingSidecar.path,
+		};
+	}
 
 	// 10. Move into the library (Artist/Album/NN - Title.ext).
 	await ctx.report(90, 'filing into library');
@@ -268,10 +288,6 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	// 11. Persist track row.
 	await ctx.report(96, 'updating database');
 	const size = await stat(finalPath).then((s) => s.size);
-	const upgradeForTrackId =
-		typeof job.payload['upgradeForTrackId'] === 'string'
-			? job.payload['upgradeForTrackId']
-			: null;
 	// Supersede rule: an explicit upgrade target always replaces; otherwise
 	// only when both rows carry the SAME ISRC (exact same recording — never
 	// guess across title/artist-only matches). The new file passed the
@@ -482,6 +498,57 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		throw new Error('Navidrome not configured (URL, username and password required)');
 	}
 	const payload = job.payload as { repair?: boolean; filesOnDisk?: number; tracksInDb?: number };
+	let retagged = 0;
+	let tagsSkipped = 0;
+	let tagsFailed = 0;
+	if (payload.repair) {
+		// Repair mode: rewrite embedded tags from canonical DB data BEFORE
+		// scanning, so Navidrome indexes real artists/albums instead of
+		// [Unknown]. Store FLACs often carry junk/empty Vorbis comments.
+		await updateProgress(job.id, job.type, job.trackId, 20, 'repairing embedded tags');
+		const { listFiledTracks } = await import('$lib/server/db/tracks');
+		const { ensureFileTags } = await import('$lib/server/library/tagging');
+		const { readFile } = await import('node:fs/promises');
+		for (const t of await listFiledTracks()) {
+			if (!t.filePath) continue;
+			let lyricsPlain: string | null = null;
+			const base = t.filePath.replace(/\.(mp3|flac)$/i, '');
+			for (const ext of ['lrc', 'txt']) {
+				const sidecar = await readFile(`${base}.${ext}`, 'utf8').catch(() => null);
+				if (sidecar) {
+					lyricsPlain = sidecar;
+					break;
+				}
+			}
+			const outcome = await ensureFileTags(t.filePath, {
+				title: t.title,
+				artist: t.artist,
+				album: t.album,
+				albumArtist: t.albumArtist,
+				trackNumber: t.trackNumber,
+				discNumber: t.discNumber,
+				year: t.releaseYear,
+				genre: t.genre,
+				cover: null,
+				lyricsPlain,
+			});
+			if (outcome === 'ok') retagged++;
+			else if (outcome === 'skipped') tagsSkipped++;
+			else tagsFailed++;
+		}
+		log.info('navidrome repair retag pass finished', {
+			retagged,
+			tagsSkipped,
+			tagsFailed,
+		});
+		await updateProgress(
+			job.id,
+			job.type,
+			job.trackId,
+			35,
+			`tags repaired (${retagged} fixed)`,
+		);
+	}
 	await updateProgress(job.id, job.type, job.trackId, 40, 'triggering scan');
 	const started = await startScan(s.navidromeUrl, s.navidromeUsername, s.navidromePassword);
 	if (!started.ok) throw new Error(`Scan failed: ${started.error ?? 'unknown error'}`);
@@ -528,6 +595,7 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		lastCount,
 		stamped,
 		repair: payload.repair ?? false,
+		retagged,
 	});
 	return {
 		status: 'ok',
@@ -535,6 +603,7 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		scanCompleted,
 		lastScanCount: lastCount,
 		stamped,
+		retagged,
 		filesOnDisk: payload.filesOnDisk ?? null,
 		tracksInDb: payload.tracksInDb ?? null,
 	};

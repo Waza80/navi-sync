@@ -94,6 +94,12 @@ export const auth = betterAuth({
 	advanced: {
 		cookiePrefix: 'navisync',
 		useSecureCookies: env.USE_SECURE_COOKIES,
+		ipAddress: {
+			// Behind Cloudflare (+ Traefik): CF-Connecting-IP carries the real
+			// client IP; X-Real-IP is the fallback; X-Forwarded-For last resort.
+			// Without these, rate limiting falls back to a single shared bucket.
+			ipAddressHeaders: ['cf-connecting-ip', 'x-real-ip', 'x-forwarded-for'],
+		},
 	},
 	rateLimit: {
 		enabled: true,

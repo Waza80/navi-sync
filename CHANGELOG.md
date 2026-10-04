@@ -6,6 +6,26 @@ All notable changes to NaviSync. Format: Keep a Changelog; semver.
 
 ### Fixed
 
+- **Lyrics fetch gating**: lyrics APIs are now hit ONLY when a song misses
+  lyrics (no `.lrc`/`.txt` sidecar on disk) or was just upgraded. Re-downloads
+  with an existing sidecar skip the fetch (and no longer risk flipping a good
+  `synced` status to `failed` on API outages). Manual fetch, post-upgrade
+  refetch and the failed-only backfill sweep are unchanged — their callers
+  already satisfy the rule.
+
+- **Settings crash**: the form init ran in `$effect.pre` while assigning
+  state declared later in the file — a temporal-dead-zone ReferenceError
+  that killed hydration. State now initializes inline at declaration
+  (compiled bundle verified: zero pre-effects in the settings chunk).
+- **[Unknown] artists/albums in Navidrome**: store FLACs carry junk/empty
+  Vorbis comments. FLAC tagging now uses `metaflac` (creates the block when
+  missing, embeds cover); the repair scan first rewrites tags for every
+  filed track from canonical DB data (+ sidecar lyrics) — verified live,
+  19/19 files repaired. Runtime image installs the `flac` package.
+- **Force retry-all**: `POST /api/tracks/retry-failed` requeues every failed
+  download immediately (bypassing the 6h sweep cooldown); dashboard shows a
+  `Retry all failed (N)` button when failures exist.
+
 - **Navidrome indexation**: downloads now schedule a debounced library scan
   automatically (`ensurePostDownloadScan` — skipped when a scan is already
   pending), so new files get indexed without manual action.

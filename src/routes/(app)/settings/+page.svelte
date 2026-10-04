@@ -15,28 +15,25 @@
 
 	let { data }: { data: { settings: PublicSettings } } = $props();
 
-	let navidromeUrl = $state('');
-	let navidromeUsername = $state('');
+	// Form state is initialized synchronously from the server snapshot.
+	// (A previous $effect.pre init assigned state declared later in the file,
+	// which crashed hydration with a temporal-dead-zone ReferenceError.)
+	// svelte-ignore state_referenced_locally
+	let navidromeUrl = $state(data.settings.navidromeUrl ?? '');
+	// svelte-ignore state_referenced_locally
+	let navidromeUsername = $state(data.settings.navidromeUsername ?? '');
 	let navidromePassword = $state('');
-	let minBitrateKbps = $state(320);
-	let preferLossless = $state(true);
-	let allowLowerFallback = $state(true);
-	let concurrentDownloads = $state(4);
+	// svelte-ignore state_referenced_locally
+	let minBitrateKbps = $state(data.settings.minBitrateKbps);
+	// svelte-ignore state_referenced_locally
+	let preferLossless = $state(data.settings.preferLossless);
+	// svelte-ignore state_referenced_locally
+	let allowLowerFallback = $state(data.settings.allowLowerFallback);
+	// svelte-ignore state_referenced_locally
+	let concurrentDownloads = $state(data.settings.concurrentDownloads);
 
-	// Initialize the form from the first server snapshot (reactive context —
-	// avoids capturing stale values at component construction).
-	let initialized = false;
-	$effect.pre(() => {
-		if (initialized) return;
-		initialized = true;
-		navidromeUrl = data.settings.navidromeUrl ?? '';
-		navidromeUsername = data.settings.navidromeUsername ?? '';
-		minBitrateKbps = data.settings.minBitrateKbps;
-		preferLossless = data.settings.preferLossless;
-		allowLowerFallback = data.settings.allowLowerFallback;
-		concurrentDownloads = data.settings.concurrentDownloads;
-		enabled = [...data.settings.enabledProviders];
-	});
+	// svelte-ignore state_referenced_locally
+	let enabled = $state<string[]>([...data.settings.enabledProviders]);
 
 	let message = $state<{ tone: 'ok' | 'error'; text: string } | null>(null);
 	let busy = $state(false);
@@ -45,7 +42,6 @@
 	let repairBusy = $state(false);
 
 	// Enabled providers (local working copy; persisted via Save settings)
-	let enabled = $state<string[]>([]);
 	let aliveBusy: Record<string, boolean> = $state({});
 	let aliveResult: { id: string; ok: boolean; text: string } | null = $state(null);
 

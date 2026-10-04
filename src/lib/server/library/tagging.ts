@@ -1,6 +1,8 @@
 import * as NodeID3 from 'node-id3';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { rename } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { rename, unlink, writeFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import { Processor, data as flacData } from 'flac-metadata';
@@ -9,6 +11,7 @@ import { parseFile } from 'music-metadata';
 import { logger } from '$lib/server/logger';
 
 const log = logger;
+const execFileAsync = promisify(execFile);
 
 export interface TagData {
 	title: string;
@@ -63,21 +66,65 @@ export function tagMp3(path: string, tags: TagData): void {
 }
 
 /**
- * Rewrite Vorbis comments for FLAC via the flac-metadata stream processor.
- * The processor re-emits each metadata block; we mutate the VORBIS_COMMENT
- * block in place. Cover art is intentionally NOT embedded in FLAC — it is
- * stored as `cover.jpg` beside the album (Navidrome reads folder art); MP3s
- * get an embedded APIC instead.
+ * Build canonical Vorbis comment fields from tag data (pure — unit-tested).
+ * Store downloads carry junk or empty tags (e.g. a lone "Processed by SoX"
+ * comment), which is exactly why Navidrome shows [Unknown] artists/albums.
+ */
+export function buildVorbisFields(tags: TagData): Array<[string, string]> {
+	const fields: Array<[string, string]> = [
+		['TITLE', tags.title],
+		['ARTIST', tags.artist],
+	];
+	if (tags.album) fields.push(['ALBUM', tags.album]);
+	if (tags.albumArtist) fields.push(['ALBUMARTIST', tags.albumArtist]);
+	if (tags.trackNumber != null) fields.push(['TRACKNUMBER', String(tags.trackNumber)]);
+	if (tags.discNumber != null) fields.push(['DISCNUMBER', String(tags.discNumber)]);
+	if (tags.year != null) fields.push(['DATE', String(tags.year)]);
+	if (tags.genre) fields.push(['GENRE', tags.genre]);
+	if (tags.lyricsPlain) fields.push(['LYRICS', tags.lyricsPlain.replace(/\r/g, '')]);
+	return fields;
+}
+
+/**
+ * Tag a FLAC with metaflac: wipes junk tags, writes canonical fields, creates
+ * the VORBIS_COMMENT block when missing, and embeds the cover. Falls back to
+ * the stream processor only when the metaflac binary is absent (it can only
+ * mutate an existing block — files without one stay untagged).
  */
 export async function tagFlac(path: string, tags: TagData): Promise<void> {
-	const comments: string[] = [`TITLE=${tags.title}`, `ARTIST=${tags.artist}`];
-	if (tags.album) comments.push(`ALBUM=${tags.album}`);
-	if (tags.albumArtist) comments.push(`ALBUMARTIST=${tags.albumArtist}`);
-	if (tags.trackNumber != null) comments.push(`TRACKNUMBER=${String(tags.trackNumber)}`);
-	if (tags.discNumber != null) comments.push(`DISCNUMBER=${String(tags.discNumber)}`);
-	if (tags.year != null) comments.push(`DATE=${String(tags.year)}`);
-	if (tags.genre) comments.push(`GENRE=${tags.genre}`);
-	if (tags.lyricsPlain) comments.push(`LYRICS=${tags.lyricsPlain.replace(/\r/g, '')}`);
+	const args = ['--remove-all-tags'];
+	for (const [name, value] of buildVorbisFields(tags)) {
+		args.push(`--set-tag=${name}=${value}`);
+	}
+	let coverTmp: string | null = null;
+	if (tags.cover) {
+		coverTmp = `${path}.cover.tmp`;
+		await writeFile(coverTmp, tags.cover);
+		// Empty dimensions are accepted — metaflac fills them in.
+		args.push(`--import-picture-from=3|image/jpeg|||${coverTmp}`);
+	}
+	args.push(path);
+	try {
+		await execFileAsync('metaflac', args, { timeout: 30_000 });
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+			log.debug('metaflac not found, using stream tagger', { path });
+			await tagFlacStream(path, tags);
+		} else {
+			throw err;
+		}
+	} finally {
+		if (coverTmp) await unlink(coverTmp).catch(() => undefined);
+	}
+}
+
+/**
+ * Rewrite Vorbis comments for FLAC via the flac-metadata stream processor.
+ * The processor re-emits each metadata block; we mutate the VORBIS_COMMENT
+ * block in place. Only used when metaflac is unavailable.
+ */
+export async function tagFlacStream(path: string, tags: TagData): Promise<void> {
+	const comments: string[] = buildVorbisFields(tags).map(([name, value]) => `${name}=${value}`);
 
 	let applied = false;
 	const processor = new Processor();
@@ -101,11 +148,33 @@ export async function tagFlac(path: string, tags: TagData): Promise<void> {
 	await rename(tmpPath, path);
 
 	if (!applied) {
-		// Store files without a VORBIS_COMMENT block: audio stays valid, tags
-		// live in the DB and the sidecar files. Phase 2 can add block injection.
 		log.warn('flac had no vorbis-comment block; embedded tags skipped', { path });
 	}
 	void flacData; // namespace re-exported for future picture embedding
+}
+
+/**
+ * Ensure a library file carries usable embedded tags, repairing from
+ * canonical data when the file's own tags are missing/empty. Returns what
+ * happened — the repair flow aggregates these counts.
+ */
+export async function ensureFileTags(
+	filePath: string,
+	tags: TagData,
+): Promise<'ok' | 'skipped' | 'failed'> {
+	try {
+		const ext = filePath.toLowerCase().endsWith('.flac') ? 'flac' : 'mp3';
+		const info = await parseFile(filePath, { duration: false }).catch(() => null);
+		const c = info?.common;
+		if (c?.title && c?.artist) return 'skipped';
+		if (ext === 'flac') await tagFlac(filePath, tags);
+		else tagMp3(filePath, tags);
+		log.info('repaired missing embedded tags', { filePath });
+		return 'ok';
+	} catch (err) {
+		log.warn('tag repair failed', { filePath, error: String(err) });
+		return 'failed';
+	}
 }
 
 /** Probe real audio properties — DB stores measured values, not claims. */

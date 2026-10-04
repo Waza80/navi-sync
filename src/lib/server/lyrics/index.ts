@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { trackBaseRelativePath } from '$lib/server/library/paths';
 import { logger } from '$lib/server/logger';
@@ -27,6 +27,43 @@ export interface DownloadLyricsResult {
 	path?: string;
 	synced?: boolean;
 	error?: string;
+}
+
+export interface ExistingSidecar {
+	kind: 'synced' | 'plain';
+	path: string;
+}
+
+/**
+ * Lyrics gating helper: returns the sidecar already on disk for this song,
+ * if any. Fetch policy everywhere in the app: hit the lyrics APIs ONLY when
+ * the song misses lyrics (no sidecar) or was just upgraded. An optional root
+ * keeps unit tests off the real library.
+ */
+export async function lyricsSidecar(
+	meta: TrackMeta,
+	root: string = env.MUSIC_LIBRARY_DIR,
+): Promise<ExistingSidecar | null> {
+	const base = join(root, trackBaseRelativePath(meta));
+	const lrc = `${base}.lrc`;
+	if (
+		await stat(lrc).then(
+			() => true,
+			() => false,
+		)
+	) {
+		return { kind: 'synced', path: lrc };
+	}
+	const txt = `${base}.txt`;
+	if (
+		await stat(txt).then(
+			() => true,
+			() => false,
+		)
+	) {
+		return { kind: 'plain', path: txt };
+	}
+	return null;
 }
 
 export async function downloadLyrics(meta: TrackMeta): Promise<DownloadLyricsResult> {
