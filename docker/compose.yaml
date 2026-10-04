@@ -1,0 +1,55 @@
+# NaviSync — single-service compose (external PostgreSQL recommended).
+# Copy .env.example to .env first. Music is bind-mounted so Navidrome
+# can read the same directory (same host) or be synced to the Navidrome host.
+name: navisync
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - '7158:7158'
+    env_file: ../.env
+    environment:
+      # Inside the compose network, reach external services by name if adapted.
+      PORT: 7158
+      HOST: 0.0.0.0
+    volumes:
+      - ../music:/app/music
+      - app-logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'bun',
+          '-e',
+          "fetch('http://127.0.0.1:7158/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Optional local PostgreSQL for self-hosters without an external instance:
+  #   docker compose --profile local-db up -d
+  db:
+    image: postgres:16-alpine
+    profiles: ['local-db']
+    environment:
+      POSTGRES_PASSWORD: navisync
+      POSTGRES_DB: navisync
+    ports:
+      - '54329:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  app-logs:
+  pgdata:
