@@ -93,6 +93,21 @@ export interface Provider {
 		}>
 	>;
 	albumTrackIds?(albumId: string): Promise<string[]>;
+	/**
+	 * Track ids of a playlist. Deezer exposes this via its gateway; the Tidal
+	 * hiFi instance has no playlist endpoint at all, so a Tidal playlist URL is
+	 * recognised but cannot be expanded.
+	 */
+	playlistTrackIds?(playlistId: string, max?: number): Promise<string[]>;
+	/**
+	 * Album ids for an artist, used for artist fan-out ("download everything by
+	 * X"). Ordered by popularity so a fan-out starts with the well-known records.
+	 */
+	artistAlbumIds?(artistId: string, max?: number): Promise<string[]>;
+	/** Artist search, for fan-out entry points in the UI. */
+	searchArtists?(
+		query: string,
+	): Promise<Array<{ artistId: string; name: string; trackCount: number | null }>>;
 	/** Canonicalize any provider link (track/album/playlist) to {kind, id}. */
 	resolveLink?(
 		input: string,

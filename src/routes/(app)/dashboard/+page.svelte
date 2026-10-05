@@ -261,6 +261,14 @@
 	let searchBusy = $state(false);
 	let searchResults = $state<SearchResult[]>([]);
 	let searchAlbums = $state<AlbumResult[]>([]);
+	interface ArtistResult {
+		provider: string;
+		artistId: string;
+		name: string;
+		albumCount: number | null;
+	}
+	let searchArtists = $state<ArtistResult[]>([]);
+	let artistBusy = new SvelteSet<string>();
 	let albumBusy = new SvelteSet<string>();
 	let searchMsg = $state<string | null>(null);
 	let queuedSearch = new SvelteSet<string>();
@@ -269,6 +277,7 @@
 		searchInput = '';
 		searchResults = [];
 		searchAlbums = [];
+		searchArtists = [];
 		searchMsg = null;
 	}
 
@@ -285,14 +294,45 @@
 			const body = (await res.json()) as {
 				results?: SearchResult[];
 				albums?: AlbumResult[];
+				artists?: ArtistResult[];
 			};
 			searchResults = body.results ?? [];
 			searchAlbums = body.albums ?? [];
+			searchArtists = body.artists ?? [];
 			if (searchResults.length === 0) searchMsg = 'No results from the enabled providers.';
 		} finally {
 			searchBusy = false;
 		}
 	}
+	async function downloadArtist(a: ArtistResult) {
+		const key = a.provider + ':' + a.artistId;
+		artistBusy.add(key);
+		try {
+			const res = await fetch(
+				`/api/artists/${encodeURIComponent(a.artistId)}/download?provider=${encodeURIComponent(a.provider)}`,
+				{ method: 'POST' }
+			);
+			const body = (await res.json()) as {
+				enqueued?: number;
+				albumsScanned?: number;
+				truncated?: boolean;
+				error?: { message: string };
+			};
+			if (!res.ok) {
+				toast('error', body.error?.message ?? `HTTP ${res.status}`);
+				return;
+			}
+			const capped = body.truncated ? ' (capped)' : '';
+			toast(
+				'ok',
+				`Queued ${body.enqueued} tracks from ${body.albumsScanned} albums of “${a.name}”${capped}`
+			);
+			await invalidateAll();
+		} finally {
+			artistBusy.delete(key);
+		}
+	}
+
 	async function downloadAlbum(a: AlbumResult) {
 		const key = a.provider + ':' + a.albumId;
 		albumBusy.add(key);
@@ -680,6 +720,33 @@
 	</form>
 	{#if searchMsg}
 		<p class="mt-3 text-sm text-on-surface-variant" role="status">{searchMsg}</p>
+	{/if}
+	{#if searchArtists.length > 0}
+		<p class="mt-4 mb-2 text-xs font-medium text-on-surface-variant uppercase">Artists</p>
+		<div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+			{#each searchArtists as a (a.provider + ':' + a.artistId)}
+				{@const key = a.provider + ':' + a.artistId}
+				<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2">
+					<span class="m3-chip bg-secondary-container text-on-secondary-container uppercase">
+						{a.provider}
+					</span>
+					<div class="min-w-0 flex-1">
+						<p class="truncate text-sm">{a.name}</p>
+						<p class="truncate text-xs text-on-surface-variant">
+							{a.albumCount ?? 0} albums
+						</p>
+					</div>
+					<button
+						type="button"
+						class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm {artistBusy.has(key) ? 'opacity-50' : ''}"
+						disabled={artistBusy.has(key)}
+						onclick={() => downloadArtist(a)}
+					>
+						{artistBusy.has(key) ? 'Queueing…' : 'Download all'}
+					</button>
+				</div>
+			{/each}
+		</div>
 	{/if}
 	{#if searchAlbums.length > 0}
 		<p class="mt-4 mb-2 text-xs font-medium text-on-surface-variant uppercase">Albums</p>

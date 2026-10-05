@@ -16,7 +16,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!parsed.success) return badRequest('Query must be 2-200 characters.', 'INVALID_QUERY');
 
 	const providers = await enabledProviders();
-	const [trackLists, albumLists] = await Promise.all([
+	const [trackLists, albumLists, artistLists] = await Promise.all([
 		Promise.all(
 			providers.map(async (p) => {
 				try {
@@ -45,6 +45,28 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 				}
 			}),
 		),
+		// Artists, for fan-out ("download everything by X"). Only providers that
+		// can actually expand an artist are asked, so the UI never offers a button
+		// that cannot work.
+		Promise.all(
+			providers.map(async (p) => {
+				if (!p.searchArtists || !p.artistAlbumIds) return [];
+				try {
+					return (await p.searchArtists(parsed.data.q)).map((a) => ({
+						provider: p.id,
+						artistId: a.artistId,
+						name: a.name,
+						albumCount: a.trackCount,
+					}));
+				} catch {
+					return [];
+				}
+			}),
+		),
 	]);
-	return json({ results: trackLists.flat(), albums: albumLists.flat() });
+	return json({
+		results: trackLists.flat(),
+		albums: albumLists.flat(),
+		artists: artistLists.flat(),
+	});
 };

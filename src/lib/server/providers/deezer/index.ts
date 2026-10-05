@@ -234,6 +234,47 @@ export const deezerProvider: Provider = {
 		return rows.map((r) => String(r.SNG_ID ?? '')).filter((id) => /^\d+$/.test(id));
 	},
 
+	/**
+	 * Artist search via the public API — no gateway auth, so it works even when
+	 * the Deezer session is absent. This is the entry point for artist fan-out.
+	 */
+	async searchArtists(
+		query: string,
+	): Promise<Array<{ artistId: string; name: string; trackCount: number | null }>> {
+		const res = await fetch(
+			`https://api.deezer.com/search/artist?q=${encodeURIComponent(query)}&limit=10`,
+			{ signal: AbortSignal.timeout(10_000) },
+		).catch(() => null);
+		if (!res?.ok) return [];
+		const body = (await res.json()) as {
+			data?: Array<{ id?: number; name?: string; nb_album?: number }>;
+		};
+		return (body.data ?? [])
+			.filter((a) => typeof a.id === 'number')
+			.map((a) => ({
+				artistId: String(a.id),
+				name: a.name ?? '',
+				trackCount: typeof a.nb_album === 'number' ? a.nb_album : null,
+			}));
+	},
+
+	/**
+	 * Album ids for an artist. The public `/artist/{id}/albums` endpoint works
+	 * without auth and is enough here, so fan-out does not depend on the
+	 * gateway session being alive. Ordered by the API's own ranking.
+	 */
+	async artistAlbumIds(artistId: string, max = 50): Promise<string[]> {
+		const res = await fetch(
+			`https://api.deezer.com/artist/${encodeURIComponent(artistId)}/albums?limit=${max}`,
+			{ signal: AbortSignal.timeout(15_000) },
+		).catch(() => null);
+		if (!res?.ok) return [];
+		const body = (await res.json()) as { data?: Array<{ id?: number }> };
+		return (body.data ?? [])
+			.map((a) => (typeof a.id === 'number' ? String(a.id) : ''))
+			.filter((id) => /^[0-9]+$/.test(id));
+	},
+
 	async findByIsrc(isrc) {
 		// Public API — exact ISRC lookup, no gateway auth needed.
 		const res = await fetch(`https://api.deezer.com/track/isrc:${encodeURIComponent(isrc)}`, {
