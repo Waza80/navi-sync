@@ -24,6 +24,8 @@ export interface TrackDTO {
 	lyricsStatus: LyricsStatus;
 	/** 'completed' | 'failed' | 'pending' — failed rows have no file yet. */
 	downloadStatus: 'completed' | 'failed' | 'pending';
+	/** User has given up on ever fetching this; retries skip it. */
+	refetchBlocked?: boolean;
 	createdAt: string;
 }
 

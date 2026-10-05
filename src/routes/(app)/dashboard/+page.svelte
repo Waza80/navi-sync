@@ -183,6 +183,24 @@
 			upgrading.delete(id);
 		}
 	}
+	async function setRefetchBlock(id: string, blocked: boolean) {
+		try {
+			const res = await fetch(`/api/tracks/${id}/refetch-block`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ blocked })
+			});
+			if (!res.ok) {
+				toast('error', `Could not change refetch (HTTP ${res.status})`);
+				return;
+			}
+			toast('ok', blocked ? 'Stopped refetching this track.' : 'Refetching resumed.');
+			await invalidateAll();
+		} catch {
+			toast('error', 'Could not change refetch (network).');
+		}
+	}
+
 	async function retryFailedDownload(id: string) {
 		upgrading.add(id);
 		try {
@@ -278,7 +296,12 @@
 		const key = a.provider + ':' + a.albumId;
 		albumBusy.add(key);
 		try {
-			const res = await fetch(`/api/albums/${a.albumId}/download`, { method: 'POST' });
+			// Scope the id to the provider it came from: album ids are
+			// provider-scoped, and guessing Deezer broke Tidal albums entirely.
+			const res = await fetch(
+				`/api/albums/${encodeURIComponent(a.albumId)}/download?provider=${encodeURIComponent(a.provider)}`,
+				{ method: 'POST' }
+			);
 			const body = (await res.json()) as { enqueued?: number; error?: { message: string } };
 			if (res.ok) {
 				toast('ok', `Queued ${body.enqueued} tracks from “${a.title}”`);
@@ -985,6 +1008,7 @@
 					ondownload={downloadTrackFile}
 					onupgrade={(id: string) => void forceUpgrade(id)}
 					onretry={(id: string) => void retryFailedDownload(id)}
+					onrefetchblock={(id: string, blocked: boolean) => void setRefetchBlock(id, blocked)}
 				/>
 			{/each}
 		</div>

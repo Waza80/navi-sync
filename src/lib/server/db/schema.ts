@@ -116,6 +116,13 @@ export const tracks = pgTable(
 		/** 'completed' | 'failed' | 'pending' — failed rows are visible in the
 		 * library (no file) and auto-retried by the sweep. */
 		downloadStatus: text('download_status').notNull().default('completed'),
+		/**
+		 * When true this row is never retried again. Set from the UI's "stop
+		 * refetching" action: the user has decided this track is not obtainable, so
+		 * the retry sweeps and the manual retry must both leave it alone. Without it
+		 * a permanently unavailable track is re-attempted on every sweep forever.
+		 */
+		refetchBlocked: boolean('refetch_blocked').notNull().default(false),
 		navidromeSyncedAt: timestamp('navidrome_synced_at', { withTimezone: true }),
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

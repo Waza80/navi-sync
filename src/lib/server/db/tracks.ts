@@ -517,6 +517,14 @@ export async function markDownloadStatus(
 		.where(eq(tracks.id, id));
 }
 
+/** Permanently opt a track out of any further refetch attempt. */
+export async function setRefetchBlocked(id: string, blocked: boolean): Promise<void> {
+	await db
+		.update(tracks)
+		.set({ refetchBlocked: blocked, updatedAt: new Date() })
+		.where(eq(tracks.id, id));
+}
+
 /** Failed-download rows for the retry sweep (oldest first, 6h cooldown).
  * Pass `{ ignoreCooldown: true }` for the manual force-retry — the user
  * explicitly asked, so waiting is wrong.
@@ -547,6 +555,8 @@ export async function listFailedDownloadTracks(
 		.where(
 			and(
 				eq(tracks.downloadStatus, 'failed'),
+				// User-decided dead end: never retried by the sweep or the manual retry.
+				eq(tracks.refetchBlocked, false),
 				...(opts.ignoreCooldown
 					? []
 					: [sql`${tracks.updatedAt} < now() - interval '6 hours'`]),

@@ -2,6 +2,7 @@
 	import { qualityLabel, formatDuration } from '$lib/shared/format';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import {
+		CancelCircleIcon,
 		Delete02Icon,
 		Download01Icon,
 		PauseIcon,
@@ -17,7 +18,8 @@
 		onplay,
 		ondownload,
 		onupgrade,
-		onretry
+		onretry,
+		onrefetchblock
 	}: {
 		track: TrackDTO;
 		playing?: boolean;
@@ -26,6 +28,8 @@
 		ondownload?: (id: string) => void;
 		onupgrade?: (id: string) => void;
 		onretry?: (id: string) => void;
+		/** Permanently stop / resume refetch attempts for this track. */
+		onrefetchblock?: (id: string, blocked: boolean) => void;
 	} = $props();
 
 	const failed = $derived(track.downloadStatus === 'failed');
@@ -37,7 +41,7 @@
 				: null
 	);
 	const statusBadge = $derived(
-		failed ? { text: 'WILL RETRY', cls: 'bg-error-container text-on-error-container' } : null
+		failed ? { text: 'FAILED', cls: 'bg-error-container text-on-error-container' } : null
 	);
 	const lossless = $derived(track.isLossless || track.format === 'flac');
 </script>
@@ -66,41 +70,37 @@
 
 		<!-- Scrim: only behind the chip row, so chips stay legible on pale artwork. -->
 		<div
-			class="pointer-events-none absolute inset-x-0 top-0 h-14 bg-gradient-to-b from-black/45 to-transparent"
+			class="pointer-events-none absolute inset-x-0 top-0 z-10 h-14 bg-gradient-to-b from-black/45 to-transparent"
 			aria-hidden="true"
 		></div>
 
-		<!-- Chip row, layered above the scrim -->
-		<div class="absolute inset-x-2 top-2 flex items-start justify-between gap-1">
-			<span
-				class="m3-chip {lossless
-					? 'bg-primary-container text-on-primary-container'
-					: 'bg-secondary-container text-on-secondary-container'}"
-			>
-				{qualityLabel(track.format, track.bitrateKbps, track.bitDepth)}
-			</span>
-			{#if statusBadge}
-				<span class="m3-chip {statusBadge.cls}">{statusBadge.text}</span>
-			{:else if lyricsBadge}
-				<span class="m3-chip {lyricsBadge.cls}">{lyricsBadge.text}</span>
+		<!-- Chip row. z-20 so it sits above the scrim (z-10) and the primary
+		     action (z-30) cannot be covered. A failed row has no audio, so it
+		     shows only FAILED -- never a quality chip reading "Unknown". -->
+		<div class="absolute inset-x-2 top-2 z-20 flex items-start justify-between gap-1">
+			{#if failed}
+				<span class="m3-chip {statusBadge?.cls}">FAILED</span>
+			{:else}
+				<span
+					class="m3-chip {lossless
+						? 'bg-primary-container text-on-primary-container'
+						: 'bg-secondary-container text-on-secondary-container'}"
+				>
+					{qualityLabel(track.format, track.bitrateKbps, track.bitDepth)}
+				</span>
+				{#if lyricsBadge}
+					<span class="m3-chip {lyricsBadge.cls}">{lyricsBadge.text}</span>
+				{/if}
 			{/if}
 		</div>
 
-		<!-- Primary action, centred on the artwork -->
-		{#if failed}
+		<!-- Primary action. z-30 puts it above the scrim and chip row, and it is
+		     anchored to the cover rather than the card so it cannot drift when the
+		     cover is absent. -->
+		{#if !failed}
 			<button
 				type="button"
-				class="m3-icon-button absolute right-2 bottom-2 h-11 w-11 bg-error-container text-on-error-container shadow-[var(--md-elev-2)]"
-				title="Retry download now"
-				aria-label="Retry download of {track.title}"
-				onclick={() => onretry?.(track.id)}
-			>
-				<HugeiconsIcon icon={RefreshIcon} size={22} strokeWidth={2} aria-hidden="true" />
-			</button>
-		{:else}
-			<button
-				type="button"
-				class="m3-icon-button absolute right-2 bottom-2 h-11 w-11 bg-primary text-on-primary ring-1 ring-black/20 shadow-[var(--md-elev-3)]"
+				class="m3-icon-button absolute bottom-2 right-2 z-30 h-11 w-11 bg-primary text-on-primary ring-1 ring-black/25 shadow-[var(--md-elev-3)]"
 				aria-label={playing ? `Pause ${track.title}` : `Preview ${track.title}`}
 				onclick={() => onplay?.(track.id)}
 			>
@@ -147,6 +147,26 @@
 				onclick={() => onretry?.(track.id)}
 			>
 				<HugeiconsIcon icon={RefreshIcon} size={18} strokeWidth={2} aria-hidden="true" />
+			</button>
+			<!-- Stops the ENGINE retrying, not the row: the track stays listed as a
+			     known-unobtainable entry and can be revived from the same control. -->
+			<button
+				type="button"
+				class="m3-icon-button h-10 w-10 {track.refetchBlocked ? 'text-primary' : ''}"
+				title={track.refetchBlocked
+					? 'Resume automatic refetch attempts'
+					: 'Stop the server refetching this track'}
+				aria-label={track.refetchBlocked
+					? `Resume refetching ${track.title}`
+					: `Stop refetching ${track.title}`}
+				onclick={() => onrefetchblock?.(track.id, !track.refetchBlocked)}
+			>
+				<HugeiconsIcon
+					icon={track.refetchBlocked ? RefreshIcon : CancelCircleIcon}
+					size={18}
+					strokeWidth={2}
+					aria-hidden="true"
+				/>
 			</button>
 		{:else}
 			<button
