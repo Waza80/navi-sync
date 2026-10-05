@@ -67,6 +67,21 @@ export async function runJob(job: JobRow, ctx: JobContext): Promise<Record<strin
 
 /* ── download ─────────────────────────────────────────────────────────────── */
 
+/**
+ * True when a provider reached the track but could not hand over audio for it.
+ *
+ * Both providers raise NO_STREAM for exactly this: Deezer when the gateway
+ * refuses media for a track it still lists (`media` empty, or "no sufficient
+ * rights on requested media"), Tidal when a release has no playable master at
+ * any tier it is willing to take. Both are per-track catalogue/rights facts, so
+ * they are exactly the errors worth asking a second provider about — unlike
+ * PROVIDER_UNAVAILABLE (the whole service is down, so retrying elsewhere proves
+ * nothing) or NOT_FOUND (the track is not there to be fetched).
+ */
+function isStreamUnavailable(err: unknown): boolean {
+	return err instanceof ProviderError && err.code === 'NO_STREAM';
+}
+
 async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string, unknown>> {
 	const payload = job.payload as { url?: string; provider?: string };
 	const input = payload.url;
@@ -269,13 +284,77 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		}
 	}
 
-	// 4. Resolve stream honoring the quality policy.
+	// 4. Resolve stream honoring the quality policy, rescuing across providers.
+	//
+	// Reaching metadata is NOT reaching audio. Deezer's catalog lists a track and
+	// hands back full metadata, then refuses the stream itself — "Track token has
+	// no sufficient rights on requested media" — which is how 30 Tanger tracks
+	// across 3 albums failed while their neighbours downloaded fine. The metadata
+	// step succeeded, so nothing had ever asked the OTHER provider for the audio.
+	//
+	// Relocation was already implemented for the case where the *URL* is dead; this
+	// extends it to the case where the URL is fine and the *stream* is refused. Both
+	// providers here do answer on ISRC, so the rescue is authoritative rather than a
+	// guess by name.
 	await ctx.report(20, 'resolving stream');
-	const resolution: StreamResolution = await provider.resolve(meta, {
-		preferLossless: settings.preferLossless,
-		minBitrateKbps: settings.minBitrateKbps,
-		allowLowerFallback: settings.allowLowerFallback,
-	});
+	let activeProvider = provider;
+	let activeMeta = meta;
+	let resolution: StreamResolution;
+	try {
+		resolution = await activeProvider.resolve(activeMeta, {
+			preferLossless: settings.preferLossless,
+			minBitrateKbps: settings.minBitrateKbps,
+			allowLowerFallback: settings.allowLowerFallback,
+		});
+	} catch (err) {
+		if (!isStreamUnavailable(err)) throw err;
+		const others = new Set([...enabled].filter((id) => id !== activeProvider.id));
+		if (others.size === 0) throw err;
+		const { relocateTrack } = await import('$lib/server/queue/relocate');
+		const rescue = await relocateTrack(
+			{
+				title: activeMeta.title,
+				artist: activeMeta.artist,
+				album: activeMeta.album,
+				isrc: activeMeta.isrc,
+				durationSec: activeMeta.durationSec,
+			},
+			others,
+		);
+		if (!rescue || rescue.provider.id === activeProvider.id) {
+			log.info('no other enabled provider can supply this stream', {
+				jobId: job.id,
+				title: activeMeta.title,
+				artist: activeMeta.artist,
+				failedOn: activeProvider.id,
+				tried: [...others].join(','),
+			});
+			throw err;
+		}
+		log.info('stream refused by routed provider; rescued on the other one', {
+			jobId: job.id,
+			title: activeMeta.title,
+			artist: activeMeta.artist,
+			from: activeProvider.id,
+			to: rescue.provider.id,
+			reason: err instanceof Error ? err.message.slice(0, 120) : String(err),
+		});
+		// Adopt the rescue wholesale: its metadata, its provider, its own stream
+		// grant. The rest of the pipeline reads only `meta`, so from here on the
+		// track is treated as having come from the rescuing provider.
+		await ctx.report(
+			21,
+			`stream refused by ${activeProvider.displayName}; using ${rescue.provider.displayName}`,
+		);
+		activeProvider = rescue.provider;
+		activeMeta = rescue.meta;
+		meta = rescue.meta;
+		resolution = await activeProvider.resolve(activeMeta, {
+			preferLossless: settings.preferLossless,
+			minBitrateKbps: settings.minBitrateKbps,
+			allowLowerFallback: settings.allowLowerFallback,
+		});
+	}
 
 	// 5. Download to temp (progress 25→65). Tidal arrives as a list of
 	// fragmented-MP4 segments that must be concatenated and demuxed to FLAC;
