@@ -53,7 +53,7 @@
 	overflowed and pushed Delete outside the card's overflow-hidden.
 -->
 <div class="m3-card m3-tile group relative flex flex-col overflow-hidden {playing ? 'ring-1 ring-primary' : ''}">
-	<div class="relative aspect-square w-full bg-surface-highest">
+	<div class="relative aspect-square w-full shrink-0 self-start overflow-hidden bg-surface-highest">
 		<img
 			src={`/api/tracks/${track.id}/cover`}
 			alt=""
@@ -100,7 +100,7 @@
 		{:else}
 			<button
 				type="button"
-				class="m3-icon-button absolute right-2 bottom-2 h-11 w-11 bg-primary text-on-primary shadow-[var(--md-elev-2)]"
+				class="m3-icon-button absolute right-2 bottom-2 h-11 w-11 bg-primary text-on-primary ring-1 ring-black/20 shadow-[var(--md-elev-3)]"
 				aria-label={playing ? `Pause ${track.title}` : `Preview ${track.title}`}
 				onclick={() => onplay?.(track.id)}
 			>
@@ -132,34 +132,50 @@
 		</div>
 	</div>
 
-	<!-- Actions: three 40dp icon buttons, evenly spread, guaranteed to fit. -->
+	<!-- Actions.
+		 A failed row has no file, so it gets Retry and nothing else: Delete would
+		 target something that does not exist, and "Download file" would offer to
+		 save a file that was never written. A failed row only reaches this state once
+		 the download is genuinely exhausted, not from a failed upgrade. -->
 	<div class="flex items-center justify-around border-t border-outline-variant/30 px-1 py-1">
-		<button
-			type="button"
-			class="m3-icon-button h-10 w-10"
-			title="Download this file"
-			aria-label="Download the file for {track.title}"
-			onclick={() => ondownload?.(track.id)}
-		>
-			<HugeiconsIcon icon={Download01Icon} size={18} strokeWidth={2} aria-hidden="true" />
-		</button>
-		<button
-			type="button"
-			class="m3-icon-button h-10 w-10"
-			title="Check for a better quality now"
-			aria-label="Check for better quality of {track.title}"
-			onclick={() => onupgrade?.(track.id)}
-		>
-			<HugeiconsIcon icon={RefreshIcon} size={18} strokeWidth={2} aria-hidden="true" />
-		</button>
-		<button
-			type="button"
-			class="m3-icon-button h-10 w-10 text-error"
-			title="Delete track"
-			aria-label="Delete {track.title}"
-			onclick={() => ondelete?.(track.id)}
-		>
-			<HugeiconsIcon icon={Delete02Icon} size={18} strokeWidth={2} aria-hidden="true" />
-		</button>
+		{#if failed}
+			<button
+				type="button"
+				class="m3-icon-button h-10 w-10 text-error"
+				title="Retry download now"
+				aria-label="Retry download of {track.title}"
+				onclick={() => onretry?.(track.id)}
+			>
+				<HugeiconsIcon icon={RefreshIcon} size={18} strokeWidth={2} aria-hidden="true" />
+			</button>
+		{:else}
+			<button
+				type="button"
+				class="m3-icon-button h-10 w-10"
+				title="Download this file"
+				aria-label="Download the file for {track.title}"
+				onclick={() => ondownload?.(track.id)}
+			>
+				<HugeiconsIcon icon={Download01Icon} size={18} strokeWidth={2} aria-hidden="true" />
+			</button>
+			<button
+				type="button"
+				class="m3-icon-button h-10 w-10"
+				title="Check for a better quality now"
+				aria-label="Check for better quality of {track.title}"
+				onclick={() => onupgrade?.(track.id)}
+			>
+				<HugeiconsIcon icon={RefreshIcon} size={18} strokeWidth={2} aria-hidden="true" />
+			</button>
+			<button
+				type="button"
+				class="m3-icon-button h-10 w-10 text-error"
+				title="Delete track"
+				aria-label="Delete {track.title}"
+				onclick={() => ondelete?.(track.id)}
+			>
+				<HugeiconsIcon icon={Delete02Icon} size={18} strokeWidth={2} aria-hidden="true" />
+			</button>
+		{/if}
 	</div>
 </div>

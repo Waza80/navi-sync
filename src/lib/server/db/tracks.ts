@@ -451,6 +451,37 @@ export async function ensureFailedTrackRow(input: {
 		downloadStatus: 'failed' as const,
 		updatedAt: new Date(),
 	};
+	// Never demote a row that still owns audio.
+	//
+	// This function upserts on (provider, provider_track_id), so when a FAILED
+	// UPGRADE reports in, the conflict target matches the existing *completed* row
+	// and the write below flipped it to `failed` with a null file_path. The song
+	// was never lost — it is sitting on disk at 16-bit — but the library stopped
+	// showing it, offered it for re-download, and could fetch a duplicate over the
+	// top. A failed upgrade is an expected, silent outcome (the account may simply
+	// not have the higher tier), so it must leave the existing row alone and only
+	// record the reason.
+	const existing = input.providerTrackId
+		? await db
+				.select({ id: tracks.id, filePath: tracks.filePath })
+				.from(tracks)
+				.where(
+					and(
+						eq(tracks.provider, input.provider),
+						eq(tracks.providerTrackId, input.providerTrackId),
+					),
+				)
+				.limit(1)
+		: [];
+	if (existing[0]?.filePath) {
+		log.info('download failure ignored — track still has audio', {
+			trackId: existing[0].id,
+			error: input.error.slice(0, 120),
+		});
+		await logFailedDownload(input.error, existing[0].id);
+		return existing[0].id;
+	}
+
 	const rows = await db
 		.insert(tracks)
 		.values(values)
