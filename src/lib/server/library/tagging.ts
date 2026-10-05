@@ -45,7 +45,25 @@ export interface ProbedQuality {
 	lossless: boolean;
 }
 
-/** Tag an MP3 in place (ID3v2.4, TCON genre, USLT unsynced lyrics, APIC art). */
+/**
+ * Tag an MP3 in place (ID3v2.4, TCON genre, USLT lyrics, APIC art).
+ *
+ * Two node-id3 landmines, both hit here in anger:
+ *
+ * 1. A key present with an `undefined` value is NOT the same as an absent key.
+ *    node-id3 iterates the object's own keys and dereferences each one, so
+ *    `{ synchronisedLyrics: undefined }` throws `TypeError: undefined is not an
+ *    object (evaluating 'lycics.language')` — an upstream typo. Because the
+ *    throw escaped before any frame was written, EVERY MP3 upload was stored
+ *    completely untagged (Navidrome then could not identify the files at all).
+ *    So the frame map is filtered down to defined values before writing.
+ *
+ * 2. `synchronisedLyrics` (SYLT) is unusable in this version — it demands an
+ *    integer `timestamp` and throws `RangeError: An integer value is expected`
+ *    for any real payload. Synced lyrics are therefore carried in a USLT frame
+ *    with the LRC timestamps left inline, which is exactly what Navidrome's
+ *    `mappings.yaml` reads (`lyrics` aliases `uslt:description`).
+ */
 export function tagMp3(path: string, tags: TagData): void {
 	const frames: Record<string, unknown> = {
 		title: tags.title,
@@ -56,16 +74,19 @@ export function tagMp3(path: string, tags: TagData): void {
 		partOfSet: tags.discNumber != null ? String(tags.discNumber) : undefined,
 		year: tags.year != null ? String(tags.year) : undefined,
 		genre: tags.genre ?? undefined,
-		unsynchronisedLyrics: tags.lyricsPlain
-			? { language: 'eng', text: tags.lyricsPlain }
-			: undefined,
-		// ID3v2.4 has no synced-lyrics frame in the standard set, so the LRC
-		// text is embedded as a USLT body prefixed with its timestamps. Navidrome
-		// then has lyrics to show instead of "No lyrics".
-		synchronisedLyrics: tags.lyricsSynced
-			? { language: 'eng', descriptor: '', text: tags.lyricsSynced }
-			: undefined,
 	};
+	// Prefer synced (timestamped) lyrics when present, else the plain text.
+	//
+	// This must be the DESCRIPTOR-LESS USLT frame (`unsynchronisedLyrics`).
+	// Navidrome's mappings.yaml reads lyrics via the aliases
+	// `[uslt:description, lyrics, unsyncedlyrics]` — a USLT carrying a
+	// descriptor is keyed by that description and never reaches `lyrics`,
+	// which is why lyrics written as node-id3's `lyrics` frame were invisible.
+	// Timestamps are kept inline so Navidrome can tell synced from unsynced.
+	const lrc = tags.lyricsSynced ?? tags.lyricsPlain;
+	if (lrc) {
+		frames.unsynchronisedLyrics = { language: 'eng', text: lrc.replace(/\r/g, '') };
+	}
 	if (tags.cover) {
 		frames.image = {
 			mime: 'image/jpeg',
@@ -73,6 +94,10 @@ export function tagMp3(path: string, tags: TagData): void {
 			description: 'Cover',
 			imageBuffer: tags.cover,
 		};
+	}
+	// Drop undefined-valued keys — see landmine 1 above.
+	for (const key of Object.keys(frames)) {
+		if (frames[key] === undefined) delete frames[key];
 	}
 	NodeID3.removeTags(path);
 	const written = NodeID3.write(frames, path);

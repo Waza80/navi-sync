@@ -6,6 +6,8 @@ import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
 import { env } from '$lib/server/env';
 import { parseFile } from 'music-metadata';
 import { logger } from '$lib/server/logger';
+import { hintsFromEntryPath } from '$lib/upload/zip';
+import type { MetadataField } from '$lib/server/metadata/types';
 
 const log = logger;
 
@@ -72,6 +74,74 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!detected['title'])
 		detected['title'] = (hyphen.length >= 2 ? hyphen.slice(1).join(' - ') : base).trim();
 
+	// ZIP members arrive with their in-archive path, so the folder layout can fill
+	// gaps that neither tags nor the bare filename can. Only used as a fallback —
+	// real embedded tags always win.
+	let hints: { artist: string | null; album: string | null; trackNumber: number | null } | null =
+		null;
+	const rawEntryPath = form.get('entryPath');
+	const entryPath =
+		typeof rawEntryPath === 'string' && rawEntryPath.length > 0 ? rawEntryPath : null;
+	if (entryPath) {
+		try {
+			hints = hintsFromEntryPath(entryPath);
+			if (!detected['album'] && hints.album) detected['album'] = hints.album;
+			if (!detected['artist'] && hints.artist) detected['artist'] = hints.artist;
+			if (detected['trackNumber'] == null && hints.trackNumber != null) {
+				detected['trackNumber'] = hints.trackNumber;
+			}
+		} catch (err) {
+			log.debug('entry path hints failed', { entryPath, error: String(err) });
+		}
+	}
+
+	// ── Online metadata for whatever is still missing ──────────────────────
+	// An uploaded file is frequently untagged or sparsely tagged, and a file with
+	// no album cannot be filed into the library layout at all. Rather than making
+	// the user type what the catalog already knows, ask the metadata sources
+	// (Tidal → MusicBrainz → iTunes) using the name we just worked out.
+	let filledBy: Record<string, string> = {};
+	const isrc = typeof detected['isrc'] === 'string' ? detected['isrc'] : null;
+	const title = typeof detected['title'] === 'string' ? detected['title'] : '';
+	const artist = typeof detected['artist'] === 'string' ? detected['artist'] : '';
+	const needed = (
+		['album', 'albumArtist', 'genre', 'year', 'trackNumber', 'isrc'] as const
+	).filter(
+		(f) =>
+			detected[f] == null || (typeof detected[f] === 'string' && detected[f].trim() === ''),
+	) as MetadataField[];
+	if (title.trim() !== '' && needed.length > 0) {
+		try {
+			const { enrichTrackMetadata } = await import('$lib/server/metadata');
+			const res = await enrichTrackMetadata({
+				trackId: uploadId,
+				title,
+				artist: artist.trim(),
+				album: typeof detected['album'] === 'string' ? detected['album'] : null,
+				isrc,
+				durationSec:
+					typeof detected['durationSec'] === 'number' ? detected['durationSec'] : null,
+				year: typeof detected['year'] === 'number' ? detected['year'] : null,
+				needed,
+			});
+			for (const [k, v] of Object.entries(res.patch)) {
+				if (v == null) continue;
+				detected[k] = v;
+			}
+			filledBy = res.filledBy;
+			if (Object.keys(res.patch).length > 0) {
+				log.info('upload metadata filled from catalog', {
+					uploadId,
+					fields: Object.keys(res.patch).join(','),
+					by: Object.values(res.filledBy).join(','),
+				});
+			}
+		} catch (err) {
+			// Enrichment is a convenience; the confirmation form still works.
+			log.warn('upload metadata lookup failed', { uploadId, error: String(err) });
+		}
+	}
+
 	const missing = ['title', 'artist', 'album'].filter((k) => !detected[k]);
 	const dot = file.name.lastIndexOf('.');
 	const ext = dot >= 0 ? file.name.slice(dot) : '';
@@ -82,5 +152,13 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		bytes: file.size,
 		missing: missing.join(',') || 'none',
 	});
-	return json({ uploadId, ext, detected, embeddedLyrics: embeddedLyrics !== null, missing });
+	return json({
+		uploadId,
+		ext,
+		detected,
+		embeddedLyrics: embeddedLyrics !== null,
+		missing,
+		entryPath,
+		filledBy,
+	});
 };

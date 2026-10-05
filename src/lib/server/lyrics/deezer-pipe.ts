@@ -96,17 +96,32 @@ export const deezerPipeSource: LyricsSource = {
 	},
 };
 
+/**
+ * Deezer returns EITHER `milliseconds` OR a preformatted `lrcTimestamp`
+ * (`[mm:ss.cc]`), and in practice `milliseconds` is frequently absent while
+ * `lrcTimestamp` is present. Reading only `milliseconds` therefore stamped every
+ * line `[00:00.00]` — a syntactically valid but useless LRC, which Navidrome
+ * then discarded. So prefer the parsed integer, and fall back to the supplied
+ * timestamp string verbatim.
+ */
 function linesToLrc(lines: SyncLine[]): string | null {
 	const out: string[] = [];
 	for (const line of lines) {
 		const text = line.line ?? '';
-		const ms = line.milliseconds ?? 0;
-		const minutes = Math.floor(ms / 60000);
-		const seconds = Math.floor((ms % 60000) / 1000);
-		const hundredths = Math.floor((ms % 1000) / 10);
-		out.push(
-			`[${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(hundredths).padStart(2, '0')}]${text}`,
-		);
+		const ms = line.milliseconds;
+		let stamp: string;
+		if (typeof ms === 'number' && Number.isFinite(ms)) {
+			const minutes = Math.floor(ms / 60000);
+			const seconds = Math.floor((ms % 60000) / 1000);
+			const hundredths = Math.floor((ms % 1000) / 10);
+			stamp = `[${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(hundredths).padStart(2, '0')}]`;
+		} else if (line.lrcTimestamp && /^\[[\d:.]+\]/.test(line.lrcTimestamp)) {
+			stamp = line.lrcTimestamp.slice(0, line.lrcTimestamp.indexOf(']') + 1);
+		} else {
+			// No usable timing at all — an untimed line carries no sync value.
+			continue;
+		}
+		out.push(`${stamp}${text}`);
 	}
 	return out.length > 0 ? out.join('\n') : null;
 }

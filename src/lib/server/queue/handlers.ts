@@ -21,6 +21,7 @@ import {
 	type DownloadLyricsResult,
 } from '$lib/server/lyrics';
 import { findProviderForUrl, providers } from '$lib/server/providers/registry';
+import { enabledProviders } from '$lib/server/providers/enabled';
 import { ProviderError, type StreamResolution, type TrackMeta } from '$lib/server/providers/types';
 import { shouldSkipRefetch } from '$lib/shared/quality';
 import { cleanupTemp, moveIntoLibrary, sha256File } from '$lib/server/library/files';
@@ -69,9 +70,24 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	}
 
 	// 1. Route to a provider (registry order = graceful degradation order).
-	const provider = payload.provider
-		? providers.find((p) => p.id === payload.provider)
-		: await findProviderForUrl(input.trim());
+	//
+	// A job may name its provider, but that name is NOT authority: settings can
+	// have changed since the job was queued. Routing by a disabled provider made
+	// retries keep failing against the exact source the user had turned off
+	// (Deezer), even though the fix was simply to use Tidal. So an explicitly
+	// named provider must still be ENABLED; otherwise fall back to URL routing
+	// across the enabled set.
+	const enabled = new Set((await enabledProviders()).map((p) => p.id));
+	const named = payload.provider ? providers.find((p) => p.id === payload.provider) : undefined;
+	const provider =
+		named && enabled.has(named.id) ? named : await findProviderForUrl(input.trim(), enabled);
+	if (named && !enabled.has(named.id)) {
+		log.info('job named a disabled provider; re-routed', {
+			jobId: job.id,
+			requested: named.id,
+			enabled: [...enabled].join(','),
+		});
+	}
 	if (!provider) {
 		throw new ProviderError(
 			`No provider supports: ${input.slice(0, 100)}`,
@@ -614,19 +630,30 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 				const txt = await readFile(`${base}.txt`, 'utf8').catch(() => null);
 				if (txt) lyricsPlain = txt;
 			}
-			const outcome = await ensureFileTags(t.filePath, {
-				title: t.title,
-				artist: t.artist,
-				album: t.album,
-				albumArtist: t.albumArtist,
-				trackNumber: t.trackNumber,
-				discNumber: t.discNumber,
-				year: t.releaseYear,
-				genre: t.genre,
-				cover: null,
-				lyricsPlain,
-				lyricsSynced,
-			});
+			const outcome = await ensureFileTags(
+				t.filePath,
+				{
+					title: t.title,
+					artist: t.artist,
+					album: t.album,
+					albumArtist: t.albumArtist,
+					trackNumber: t.trackNumber,
+					discNumber: t.discNumber,
+					year: t.releaseYear,
+					genre: t.genre,
+					cover: null,
+					lyricsPlain,
+					lyricsSynced,
+				},
+				// Force is REQUIRED here. The default skips any file that already
+				// has a title+artist, which is precisely the set that is broken:
+				// metaflac wrote `#CUT4####...` from a C-locale run, and those files
+				// look "tagged" while carrying mangled album/artist values. Without
+				// force, the repair pass reported success and changed nothing, which
+				// is why the corruption survived every index repair and the album
+				// stayed split across three Navidrome entries.
+				{ force: true },
+			);
 			if (outcome === 'ok') retagged++;
 			else if (outcome === 'skipped') tagsSkipped++;
 			else tagsFailed++;

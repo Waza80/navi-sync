@@ -107,8 +107,16 @@ describe('patchKeys', () => {
 });
 
 describe('enrichTrackMetadata', () => {
-	it('queries sources in a stable order: open catalog first, artwork second', () => {
-		expect(metadataSources.map((s) => s.id)).toEqual(['musicbrainz', 'itunes']);
+	it('queries sources in a stable order: strict catalog first, artwork last', () => {
+		// Order is only the tie-break — every source is asked, and a value two of
+		// them agree on wins outright. MusicBrainz leads because it is the only
+		// strict source and the only one exposing `genre`.
+		expect(metadataSources.map((s) => s.id)).toEqual([
+			'musicbrainz',
+			'tidal',
+			'deezer',
+			'itunes',
+		]);
 	});
 
 	it('consults the file own tags before any external source', async () => {

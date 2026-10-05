@@ -1,6 +1,6 @@
 import type { RequestHandler } from './$types';
 import { readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { json, badRequest, notFound, unauthorizedResponse } from '$lib/server/api';
 import { env } from '$lib/server/env';
@@ -89,14 +89,21 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 	if (size === 0) return notFound('Upload expired — inspect the file again.');
 
 	const ext = input.ext.toLowerCase().replace(/^\./, '');
-	const container: 'mp3' | 'flac' | null = ext === 'mp3' ? 'mp3' : ext === 'flac' ? 'flac' : null;
+	// Every container the client-side picker and the inspect probe accept. Only
+	// mp3 and flac are TAGGED (node-id3 and metaflac respectively); anything else
+	// is filed with the tags it already carries, which is the honest outcome —
+	// better than refusing a file the user clearly wants in their library.
+	const TAGABLE = new Set(['mp3', 'flac']);
+	const FILABLE = new Set(['mp3', 'flac', 'm4a', 'mp4', 'aac', 'ogg', 'opus', 'wav', 'wma']);
+	const container = ext === 'mp3' || ext === 'flac' ? ext : FILABLE.has(ext) ? ext : null;
 	if (!container) {
 		await cleanupTemp(tmpPath);
 		return badRequest(
-			`Only .mp3 and .flac files can be filed currently (got .${ext}). Convert the file and retry.`,
+			`Unsupported file type (.${ext}). Supported: ${[...FILABLE].map((e) => '.' + e).join(', ')}.`,
 			'UNSUPPORTED_TYPE',
 		);
 	}
+	const taggable = TAGABLE.has(container);
 
 	// Dedupe: a song already in the library (title+artist) must never appear
 	// twice. Short-circuit politely instead of creating a second row.
@@ -132,8 +139,15 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 		streamToken: null,
 	};
 
-	// Tag (probe for DB truth after tagging).
-	await ctxTag();
+	// Album art: an upload has no provider cover URL, so fall back to a public
+	// cover-art search. Without this the file is filed with cover_path = NULL
+	// and Navidrome shows a placeholder forever (art is optional, so a miss is
+	// not an error — but a hit is worth the one request).
+	const { fetchAlbumArt } = await import('$lib/server/library/coverart');
+	const coverBytes = await fetchAlbumArt(input.artist, input.album);
+
+	// Tag the file. `cover` is embedded AND written as a canonical cover.jpg so
+	// Navidrome (which ignores embedded art for MP3 in some paths) finds it.
 	async function ctxTag() {
 		const tags = {
 			title: input.title,
@@ -144,17 +158,22 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 			discNumber: input.discNumber ?? null,
 			year: input.year ?? null,
 			genre: input.genre ?? null,
-			cover: null,
+			cover: coverBytes,
 			lyricsPlain: null,
 			lyricsSynced: null,
 		};
 		try {
 			if (container === 'flac') await tagFlac(tmpPath, tags);
-			else tagMp3(tmpPath, tags);
+			else if (container === 'mp3') tagMp3(tmpPath, tags);
 		} catch (err) {
-			log.warn('upload tagging failed, storing untagged', { error: String(err) });
+			// Tagging failing means Navidrome cannot identify the file at all, so
+			// this is worth surfacing rather than silently filing a blank file.
+			log.error('upload tagging failed', { error: String(err), path: tmpPath });
+			throw err;
 		}
 	}
+	// Containers with no tagging writer keep whatever tags they arrived with.
+	if (taggable) await ctxTag();
 
 	// Lyrics: embedded ones were already tagged by the uploader — otherwise
 	// fetch ONLY when the song misses lyrics (no sidecar at its library path).
@@ -177,12 +196,36 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 	const finalPath = await moveIntoLibrary(tmpPath, relPath);
 	await cleanupTemp(tmpPath);
 
+	// Write the canonical cover.jpg next to the track so Navidrome's folder-based
+	// artwork lookup finds it, and record the path.
+	let coverPath: string | null = null;
+	if (coverBytes) {
+		const relCover = coverRelativePath({
+			title: input.title,
+			artist: input.artist,
+			album: input.album,
+			trackNumber: input.trackNumber ?? null,
+		});
+		try {
+			const { mkdir, writeFile } = await import('node:fs/promises');
+			const dest = join(env.MUSIC_LIBRARY_DIR, relCover);
+			await mkdir(dirname(dest), { recursive: true });
+			await writeFile(dest, coverBytes);
+			coverPath = relCover;
+		} catch (err) {
+			log.warn('upload cover write failed', { error: String(err) });
+		}
+	}
+
 	const trackId = await upsertTrack({
 		meta,
+		// An upload is not a provider stream, so `StreamResolution` does not apply.
+		// The real container and losslessness come from `probed` below; these two
+		// are only fallbacks for when the probe fails.
 		resolution: {
 			url: '',
-			format: container,
-			ext: container,
+			format: container === 'flac' ? 'flac' : 'mp3',
+			ext: container === 'flac' ? 'flac' : 'mp3',
 			claimedBitrateKbps: null,
 			claimedLossless: container === 'flac',
 			cipher: 'NONE',
@@ -190,7 +233,7 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 		},
 		probed,
 		filePath: finalPath,
-		coverPath: null,
+		coverPath,
 		sizeBytes: size,
 		checksumSha256: checksum,
 		lyricsStatus,

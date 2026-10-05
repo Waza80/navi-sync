@@ -6,6 +6,7 @@
 	import JobRow from '$lib/components/JobRow.svelte';
 	import TrackCard from '$lib/components/TrackCard.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
+	import { expandZip, isZip } from '$lib/upload/zip';
 	import type { TrackDTO } from '$lib/shared/types';
 
 	import { page } from '$app/state';
@@ -295,70 +296,206 @@
 	// ── Upload (manual add) ─────────────────────────────────────────────────
 	let uploadBusy = $state(false);
 	let uploadMsg = $state<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null);
-	let up = $state<{
+
+	/** One row per inspected file. A ZIP yields many; a single file yields one. */
+	interface UploadDraft {
 		uploadId: string;
 		ext: string;
+		entryPath: string | null;
 		embeddedLyrics: boolean;
+		filledBy: Record<string, string>;
 		title: string;
 		artist: string;
 		album: string;
 		trackNumber: string;
 		year: string;
-	} | null>(null);
+	}
+	let ups = $state<UploadDraft[]>([]);
+	/** Draft currently open in the confirm form. */
+	let up = $state<UploadDraft | null>(null);
+	/** Batch progress while a multi-file upload is being saved. */
+	let batch = $state<{ done: number; total: number; failed: string[] } | null>(null);
 
+	function draftFrom(body: {
+		uploadId?: string;
+		ext?: string;
+		embeddedLyrics?: boolean;
+		entryPath?: string | null;
+		filledBy?: Record<string, string>;
+		detected?: Record<string, unknown>;
+	}): UploadDraft | null {
+		if (!body.uploadId) return null;
+		const d = body.detected ?? {};
+		const str = (k: string): string => (typeof d[k] === 'string' ? (d[k]) : '');
+		const num = (k: string): string =>
+			typeof d[k] === 'number' ? String(d[k]) : typeof d[k] === 'string' ? (d[k]) : '';
+		return {
+			uploadId: body.uploadId,
+			ext: body.ext ?? '',
+			entryPath: body.entryPath ?? null,
+			embeddedLyrics: body.embeddedLyrics ?? false,
+			filledBy: body.filledBy ?? {},
+			title: str('title'),
+			artist: str('artist'),
+			album: str('album'),
+			trackNumber: num('trackNumber'),
+			year: num('year')
+		};
+	}
+
+	async function inspectOne(file: File, entryPath: string | null): Promise<UploadDraft | null> {
+		const fd = new FormData();
+		fd.append('file', file);
+		if (entryPath) fd.append('entryPath', entryPath);
+		const res = await fetch('/api/upload/inspect', { method: 'POST', body: fd });
+		const body = (await res.json()) as {
+			uploadId?: string;
+			ext?: string;
+			embeddedLyrics?: boolean;
+			entryPath?: string | null;
+			filledBy?: Record<string, string>;
+			detected?: Record<string, unknown>;
+			error?: { message: string };
+		};
+		if (!res.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+		return draftFrom(body);
+	}
+
+	/**
+	 * Inspect a picked file. A `.zip` is expanded **in the browser** so the
+	 * server only ever receives plain audio over the existing single-file
+	 * endpoint, and a zip bomb is bounded before anything is uploaded.
+	 */
 	async function inspectUpload(e: Event) {
 		uploadMsg = null;
+		batch = null;
+		ups = [];
+		up = null;
 		const input = e.target as HTMLInputElement;
 		const file = input.files?.[0] ?? null;
 		if (!file) return;
 		uploadBusy = true;
 		try {
-			const fd = new FormData();
-			fd.append('file', file);
-			const res = await fetch('/api/upload/inspect', { method: 'POST', body: fd });
-			const body = (await res.json()) as {
-				uploadId?: string;
-				ext?: string;
-				embeddedLyrics?: boolean;
-				missing?: string[];
-				detected?: Record<string, unknown>;
-				error?: { message: string };
-			};
-			if (!res.ok || !body.uploadId) {
-				uploadMsg = { tone: 'error', text: body.error?.message ?? `Inspection failed (HTTP ${res.status})` };
-				up = null;
-				return;
+			if (isZip(file.name)) {
+				const { files, skipped } = await expandZip(file);
+				if (files.length === 0) {
+					uploadMsg = {
+						tone: 'error',
+						text: `No audio files found in ${file.name}.` + (skipped.length ? ` Skipped ${skipped.length}.` : '')
+					};
+					return;
+				}
+				ups = files.map((f) => ({
+					uploadId: '',
+					ext: f.name.slice(f.name.lastIndexOf('.')),
+					entryPath: f.entryPath,
+					embeddedLyrics: false,
+					filledBy: {},
+					title: '',
+					artist: f.hints.artist ?? '',
+					album: f.hints.album ?? '',
+					trackNumber: f.hints.trackNumber != null ? String(f.hints.trackNumber) : '',
+					year: ''
+				}));
+				// Inspect sequentially: the catalog lookup is per-file and hammering
+				// it in parallel would just earn rate limits.
+				for (let i = 0; i < files.length; i++) {
+					try {
+						const d = await inspectOne(files[i].file, files[i].entryPath);
+						if (d) ups[i] = d;
+					} catch (err) {
+						uploadMsg = { tone: 'error', text: `${files[i].name}: ${String(err).slice(0, 120)}` };
+					}
+				}
+				const autoFilled = ups.filter((d) => Object.keys(d.filledBy).length > 0).length;
+				uploadMsg = {
+					tone: 'info',
+					text:
+						`${ups.length} track(s) from ${file.name}` +
+						(autoFilled ? ` — metadata filled for ${autoFilled} from the catalog` : '') +
+						(skipped.length ? `. Skipped ${skipped.length} non-audio file(s).` : '.') +
+						' Review, then Save all.'
+				};
+			} else {
+				const d = await inspectOne(file, null);
+				ups = d ? [d] : [];
+				up = d;
+				if (d) {
+					const filled = Object.keys(d.filledBy);
+					uploadMsg = {
+						tone: 'info',
+						text: filled.length
+							? `Detected; filled ${filled.join(', ')} from the catalog. Review and save.`
+							: 'Metadata detected — review and Save to library.'
+					};
+				}
 			}
-			up = {
-				uploadId: body.uploadId,
-				ext: body.ext ?? '',
-				embeddedLyrics: body.embeddedLyrics ?? false,
-				title: typeof body.detected?.['title'] === 'string' ? body.detected['title'] : '',
-				artist: typeof body.detected?.['artist'] === 'string' ? body.detected['artist'] : '',
-				album: typeof body.detected?.['album'] === 'string' ? body.detected['album'] : '',
-				trackNumber:
-					typeof body.detected?.['trackNumber'] === 'number'
-						? String(body.detected['trackNumber'])
-						: typeof body.detected?.['trackNumber'] === 'string'
-							? body.detected['trackNumber']
-							: '',
-				year:
-					typeof body.detected?.['year'] === 'number'
-						? String(body.detected['year'])
-						: typeof body.detected?.['year'] === 'string'
-							? body.detected['year']
-							: ''
-			};
-			const missing = body.missing ?? [];
-			uploadMsg = missing.length
-				? { tone: 'info', text: `Detected. Please fill: ${missing.join(', ')}.` }
-				: { tone: 'info', text: 'Metadata detected — review and Save to library.' };
-		} catch {
-			uploadMsg = { tone: 'error', text: 'Upload inspection failed (network).' };
+		} catch (err) {
+			uploadMsg = { tone: 'error', text: `Upload inspection failed: ${String(err).slice(0, 140)}` };
+			ups = [];
+			up = null;
 		} finally {
 			uploadBusy = false;
 			if (input) input.value = '';
 		}
+	}
+
+	/** Persist one draft. Returns null on success, or an error string. */
+	async function saveDraft(d: UploadDraft): Promise<string | null> {
+		try {
+			const res = await fetch('/api/upload', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					uploadId: d.uploadId,
+					ext: d.ext,
+					title: d.title.trim(),
+					artist: d.artist.trim(),
+					album: d.album.trim(),
+					trackNumber: d.trackNumber ? Number(d.trackNumber) : null,
+					year: d.year ? Number(d.year) : null,
+					embeddedLyrics: d.embeddedLyrics,
+					fetchLyrics: !d.embeddedLyrics
+				})
+			});
+			const body = (await res.json()) as {
+				duplicate?: boolean;
+				message?: string;
+				error?: { message: string };
+			};
+			if (!res.ok) return body.error?.message ?? `HTTP ${res.status}`;
+			return null;
+		} catch (err) {
+			return String(err).slice(0, 120);
+		}
+	}
+
+	async function saveAllUploads() {
+		if (ups.length === 0) return;
+		uploadBusy = true;
+		const failed: string[] = [];
+		batch = { done: 0, total: ups.length, failed };
+		for (const d of ups) {
+			const err = await saveDraft(d);
+			if (err) failed.push(`${d.title || d.entryPath || 'track'}: ${err}`);
+			batch.done++;
+			batch = { ...batch };
+		}
+		const okCount = batch.done - failed.length;
+		batch = null;
+		ups = [];
+		up = null;
+		const summary =
+			failed.length === 0
+				? { tone: 'ok' as const, text: `${okCount} track(s) saved to library ✓` }
+				: {
+						tone: 'info' as const,
+						text: `${okCount} saved, ${failed.length} failed — ${failed[0]}`
+					};
+		uploadMsg = summary;
+		toast(summary.tone, summary.text);
+		await invalidateAll();
+		uploadBusy = false;
 	}
 
 	async function finalizeUpload() {
@@ -366,37 +503,15 @@
 		uploadBusy = true;
 		uploadMsg = null;
 		try {
-			const res = await fetch('/api/upload', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					uploadId: up.uploadId,
-					ext: up.ext,
-					title: up.title.trim(),
-					artist: up.artist.trim(),
-					album: up.album.trim(),
-					trackNumber: up.trackNumber ? Number(up.trackNumber) : null,
-					year: up.year ? Number(up.year) : null,
-					embeddedLyrics: up.embeddedLyrics,
-					fetchLyrics: !up.embeddedLyrics
-				})
-			});
-			const body = (await res.json()) as {
-				trackId?: string;
-				duplicate?: boolean;
-				message?: string;
-				error?: { message: string };
-			};
-			if (!res.ok) {
-				uploadMsg = { tone: 'error', text: body.error?.message ?? `HTTP ${res.status}` };
+			const err = await saveDraft(up);
+			if (err) {
+				uploadMsg = { tone: 'error', text: err };
 				return;
 			}
-			uploadMsg = {
-				tone: body.duplicate ? 'info' : 'ok',
-				text: body.duplicate ? (body.message ?? 'Already in library.') : 'Saved to library ✓'
-			};
-			toast(body.duplicate ? 'info' : 'ok', uploadMsg.text);
+			uploadMsg = { tone: 'ok', text: 'Saved to library ✓' };
+			toast('ok', uploadMsg.text);
 			up = null;
+			ups = [];
 			await invalidateAll();
 		} finally {
 			uploadBusy = false;
@@ -588,12 +703,13 @@
 	<h2 id="upload-h" class="mb-3 text-base font-medium">Add a local file</h2>
 	<div class="flex flex-col gap-3">
 		<label for="upload-file" class="text-sm text-on-surface-variant">
-			Audio file (.mp3 / .flac) — tags are auto-detected, you confirm before saving
+			Audio file or .zip album — tags are auto-detected and missing metadata is filled from
+			MusicBrainz/Apple, you confirm before saving
 		</label>
 		<input
 			id="upload-file"
 			type="file"
-			accept=".mp3,.flac,audio/mpeg,audio/flac"
+			accept=".mp3,.flac,.m4a,.wav,.ogg,.opus,.aac,.zip,audio/*"
 			class="m3-input file:mr-3 file:rounded-full file:border-0 file:bg-secondary-container file:px-4 file:py-2 file:text-on-secondary-container"
 			disabled={uploadBusy}
 			onchange={inspectUpload}
@@ -609,6 +725,53 @@
 			>
 				{uploadMsg.text}
 			</p>
+		{/if}
+		{#if batch}
+			<div class="flex items-center gap-3 text-sm text-on-surface-variant" role="status">
+				<progress class="progress" value={batch.done} max={batch.total}></progress>
+				<span>{batch.done} / {batch.total}</span>
+			</div>
+		{/if}
+		{#if ups.length > 1}
+			<div class="overflow-x-auto rounded-lg border border-outline-variant">
+				<table class="w-full text-left text-sm">
+					<thead class="bg-surface-highest text-on-surface-variant">
+						<tr>
+							<th class="px-2 py-1 font-medium">#</th>
+							<th class="px-2 py-1 font-medium">Title</th>
+							<th class="px-2 py-1 font-medium">Artist</th>
+							<th class="px-2 py-1 font-medium">Album</th>
+							<th class="px-2 py-1 font-medium">Metadata</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each ups as d, i (d.uploadId || i)}
+							<tr class="border-t border-outline-variant">
+								<td class="px-2 py-1 text-on-surface-variant">{d.trackNumber || '—'}</td>
+								<td class="px-2 py-1">{d.title || d.entryPath || '—'}</td>
+								<td class="px-2 py-1">{d.artist || '—'}</td>
+								<td class="px-2 py-1">{d.album || '—'}</td>
+								<td class="px-2 py-1 text-on-surface-variant">
+									{Object.keys(d.filledBy).length ? Object.keys(d.filledBy).join(', ') : 'file'}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+			<div class="flex items-center gap-3">
+				<button
+					type="button"
+					class="m3-btn m3-btn-filled"
+					disabled={uploadBusy || ups.some((d) => !d.title.trim() || !d.artist.trim() || !d.album.trim())}
+					onclick={saveAllUploads}
+				>
+					{uploadBusy ? 'Saving…' : `Save all ${ups.length} tracks`}
+				</button>
+				{#if ups.some((d) => !d.title.trim() || !d.artist.trim() || !d.album.trim())}
+					<span class="text-sm text-on-surface-variant">Fill the blank cells to continue.</span>
+				{/if}
+			</div>
 		{/if}
 		{#if up}
 			<div class="grid gap-3 sm:grid-cols-2">

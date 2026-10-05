@@ -24,8 +24,12 @@ export const providers: Provider[] = [tidalProvider, deezerProvider];
  * providers are probed SEQUENTIALLY: probing in parallel would let a slower
  * earlier provider lose a race it should have won on order.
  */
-export async function findProviderForUrl(url: string): Promise<Provider | null> {
+export async function findProviderForUrl(
+	url: string,
+	only?: ReadonlySet<string>,
+): Promise<Provider | null> {
 	for (const p of providers) {
+		if (only && !only.has(p.id)) continue;
 		if (await p.matches(url)) return p;
 	}
 	return null;

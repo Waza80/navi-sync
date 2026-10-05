@@ -8,6 +8,7 @@ import {
 import { enqueueJob } from '$lib/server/queue/jobs';
 import { trackPageUrl } from '$lib/server/providers/ids';
 import { logger } from '$lib/server/logger';
+import { enabledProviders } from '$lib/server/providers/enabled';
 import type { RequestHandler } from './$types';
 
 const log = logger;
@@ -61,8 +62,19 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			{ skipRecentCheck: true },
 		).catch(() => null);
 		if (!upgrade) {
-			// No strictly-better offer anywhere — requeue on the original
-			// provider as a plain retry (transient errors may have cleared).
+			// No strictly-better offer anywhere — retry the ORIGINAL provider, but
+			// only if the user still has it enabled. Requeueing onto a disabled
+			// provider just reproduces the same failure forever (e.g. Deezer).
+			const enabled = new Set((await enabledProviders()).map((p) => p.id));
+			if (!enabled.has(row.provider)) {
+				log.info('failed track skipped — its only provider is disabled', {
+					trackId: row.id,
+					provider: row.provider,
+					enabled: [...enabled].join(','),
+				});
+				skipped++;
+				continue;
+			}
 			const url = row.sourceUrl ?? trackPageUrl(row.provider, row.providerTrackId);
 			if (!url) {
 				skipped++;
