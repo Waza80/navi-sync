@@ -146,30 +146,35 @@ body {
 }
 
 /* ── M3-ish component classes ──────────────────────────────────────────────── */
-.m3-card {
-	background-color: var(--md-surface-container);
-	border-radius: var(--md-radius-l);
-	box-shadow: var(--md-elev-1);
+@layer components {
+	.m3-card {
+		background-color: var(--md-surface-container);
+		border-radius: var(--md-radius-l);
+		box-shadow: var(--md-elev-1);
+	}
 }
 
-.m3-btn {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	gap: 0.5rem;
-	min-height: 48px; /* touch target ≥ 48px (spec) */
-	padding: 0 1.5rem;
-	border-radius: 9999px;
-	font-size: 0.9375rem;
-	font-weight: 500;
-	letter-spacing: 0.01em;
-	cursor: pointer;
-	border: none;
-	transition:
-		filter 120ms ease,
-		background-color 120ms ease;
-	user-select: none;
+@layer components {
+	.m3-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		min-height: 48px; /* touch target ≥ 48px (spec) */
+		padding: 0 1.5rem;
+		border-radius: 9999px;
+		font-size: 0.9375rem;
+		font-weight: 500;
+		letter-spacing: 0.01em;
+		cursor: pointer;
+		border: none;
+		transition:
+			filter 120ms ease,
+			background-color 120ms ease;
+		user-select: none;
+	}
 }
+
 .m3-btn:disabled {
 	opacity: 0.45;
 	cursor: not-allowed;
@@ -230,23 +235,26 @@ body {
  * and 48dp large targets, circular shape, and a state layer on the on-surface
  * colour. Used for the logo lockup, pagination and the close-preview control.
  */
-.m3-icon-button {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	width: 40px;
-	height: 40px;
-	min-width: 40px;
-	border: none;
-	border-radius: 9999px;
-	background-color: transparent;
-	color: var(--md-on-surface-variant);
-	cursor: pointer;
-	position: relative;
-	overflow: hidden;
-	isolation: isolate;
-	transition: color var(--md-motion-short) var(--md-ease-standard);
+@layer components {
+	.m3-icon-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 40px;
+		height: 40px;
+		min-width: 40px;
+		border: none;
+		border-radius: 9999px;
+		background-color: transparent;
+		color: var(--md-on-surface-variant);
+		cursor: pointer;
+		position: relative;
+		overflow: hidden;
+		isolation: isolate;
+		transition: color var(--md-motion-short) var(--md-ease-standard);
+	}
 }
+
 .m3-icon-button-lg {
 	width: 48px;
 	height: 48px;
@@ -276,18 +284,21 @@ body {
 	cursor: not-allowed;
 }
 
-.m3-input {
-	display: block;
-	width: 100%;
-	min-height: 48px;
-	padding: 0 1rem;
-	background-color: var(--md-surface-container-highest);
-	color: var(--md-on-surface);
-	border: 1px solid var(--md-outline-variant);
-	border-radius: var(--md-radius-s);
-	font-size: 0.9375rem;
-	caret-color: var(--md-primary);
+@layer components {
+	.m3-input {
+		display: block;
+		width: 100%;
+		min-height: 48px;
+		padding: 0 1rem;
+		background-color: var(--md-surface-container-highest);
+		color: var(--md-on-surface);
+		border: 1px solid var(--md-outline-variant);
+		border-radius: var(--md-radius-s);
+		font-size: 0.9375rem;
+		caret-color: var(--md-primary);
+	}
 }
+
 .m3-input::placeholder {
 	color: var(--md-on-surface-variant);
 	opacity: 0.75;
@@ -297,21 +308,24 @@ body {
 	outline: none;
 }
 
-.m3-chip {
-	display: inline-flex;
-	align-items: center;
-	gap: 0.375rem;
-	min-height: 28px;
-	padding: 0 0.75rem;
-	border-radius: 9999px;
-	font-size: 0.75rem;
-	font-weight: 600;
-	letter-spacing: 0.02em;
-	white-space: nowrap;
-	position: relative;
-	overflow: hidden;
-	isolation: isolate;
+@layer components {
+	.m3-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.375rem;
+		min-height: 28px;
+		padding: 0 0.75rem;
+		border-radius: 9999px;
+		font-size: 0.75rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		white-space: nowrap;
+		position: relative;
+		overflow: hidden;
+		isolation: isolate;
+	}
 }
+
 /* Assist and filter chips carry a state layer like every other M3 component. */
 .m3-chip::after {
 	content: '';

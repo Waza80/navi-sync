@@ -407,12 +407,33 @@ export function ensureWorkerStarted(): void {
 	})();
 }
 
+/** Record why a job failed against a row that already exists. */
+async function logFailureForTrack(trackId: string, error: string): Promise<void> {
+	try {
+		const { auditLog } = await import('$lib/server/db/schema');
+		const { db } = await import('$lib/server/db');
+		await db
+			.insert(auditLog)
+			.values({
+				event: 'download.failed',
+				userId: null,
+				metadata: { trackId, error: error.slice(0, 300) },
+			})
+			.catch(() => undefined);
+	} catch {
+		// The failure is already reflected in the row's status; the audit entry is
+		// best-effort and must never mask it.
+	}
+}
+
 /** Best-effort placeholder row so failed downloads are visible + retryable. */
 async function recordFailedDownload(job: JobRow, error: string): Promise<void> {
 	const payload = job.payload as {
 		url?: string;
 		provider?: string;
 		meta?: Record<string, unknown>;
+		retryForTrackId?: string;
+		upgradeForTrackId?: string;
 	};
 	const providerId = typeof payload.provider === 'string' ? payload.provider : 'unknown';
 	const meta: Record<string, unknown> = payload.meta ?? {};
@@ -446,6 +467,21 @@ async function recordFailedDownload(job: JobRow, error: string): Promise<void> {
 	}
 	if (!title) title = `Failed download (${providerId})`;
 	if (!artist) artist = 'Unknown Artist';
+
+	// A retry or upgrade already knows WHICH row it was working on. Recording the
+	// failure against that row is essential: the failure is reported using the
+	// RELOCATED provider and track id, so without this the (provider,
+	// provider_track_id) conflict target misses the original row entirely and a
+	// second row is inserted for the same song. That is how pressing "Retry all
+	// failed" turned 10 failures into 47 and left "Jane!" in the library twice.
+	const targetId = payload.retryForTrackId ?? payload.upgradeForTrackId ?? null;
+	if (targetId) {
+		const { markDownloadStatus } = await import('$lib/server/db/tracks');
+		await markDownloadStatus(targetId, 'failed');
+		await logFailureForTrack(targetId, error);
+		log.info('failure recorded against existing track', { trackId: targetId, jobId: job.id });
+		return;
+	}
 
 	const { ensureFailedTrackRow } = await import('$lib/server/db/tracks');
 	const { canonicalTrackId } = await import('$lib/server/providers/ids');

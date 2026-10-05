@@ -79,7 +79,11 @@
 		     shows only FAILED -- never a quality chip reading "Unknown". -->
 		<div class="absolute inset-x-2 top-2 z-20 flex items-start justify-between gap-1">
 			{#if failed}
-				<span class="m3-chip {statusBadge?.cls}">FAILED</span>
+				{#if track.refetchBlocked}
+					<span class="m3-chip bg-surface-highest text-on-surface-variant">BLOCKED</span>
+				{:else}
+					<span class="m3-chip {statusBadge?.cls}">FAILED</span>
+				{/if}
 			{:else}
 				<span
 					class="m3-chip {lossless
@@ -152,7 +156,9 @@
 			     known-unobtainable entry and can be revived from the same control. -->
 			<button
 				type="button"
-				class="m3-icon-button h-10 w-10 {track.refetchBlocked ? 'text-primary' : ''}"
+				class="m3-icon-button h-10 w-10 {track.refetchBlocked
+					? 'bg-primary-container text-on-primary-container'
+					: ''}"
 				title={track.refetchBlocked
 					? 'Resume automatic refetch attempts'
 					: 'Stop the server refetching this track'}
