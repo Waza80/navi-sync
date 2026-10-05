@@ -94,6 +94,16 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		});
 	}
 
+	// Resolved up front so the failure messages can name the song instead of just
+	// echoing an opaque URL.
+	const rawMeta = (job.payload['meta'] ?? {}) as Partial<TrackMeta>;
+	const trackRow = typeof job.trackId === 'string' ? await getTrackById(job.trackId) : null;
+	const hintForError = {
+		title: rawMeta.title ?? trackRow?.title ?? '',
+		artist: rawMeta.artist ?? trackRow?.artist ?? '',
+		isrc: rawMeta.isrc ?? trackRow?.isrc ?? null,
+	};
+
 	// A URL that no longer routes is not the end of the road. Jobs queued before
 	// the Monochrome→Tidal migration still carry dead `tracks.monochrome.st`
 	// links, and a Deezer link is useless once Deezer is off — in both cases the
@@ -102,8 +112,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	let ref: TrackRef | null = provider ? await provider.parseRef(input) : null;
 	let relocated: { meta: TrackMeta } | null = null;
 	if (!ref) {
-		const hint = (job.payload['meta'] ?? {}) as Partial<TrackMeta>;
-		const trackRow = typeof job.trackId === 'string' ? await getTrackById(job.trackId) : null;
+		const hint = rawMeta;
 		const { relocateTrack } = await import('$lib/server/queue/relocate');
 		const found = await relocateTrack(
 			{
@@ -127,14 +136,20 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		}
 	}
 	if (!provider) {
+		const who = `${hintForError.title ?? ''} — ${hintForError.artist ?? ''}`.trim();
 		throw new ProviderError(
-			`No provider supports: ${input.slice(0, 100)}`,
+			`No enabled provider accepts ${input.slice(0, 80)}` +
+				(who
+					? `, and no enabled provider (${[...enabled].join(', ')}) has "${who}"` +
+						`${hintForError.isrc ? ` by ISRC ${hintForError.isrc}` : ''}`
+					: ''),
 			'PROVIDER_UNAVAILABLE',
 		);
 	}
 	if (!ref) {
 		throw new ProviderError(
-			`URL did not resolve to a ${provider.displayName} track, and no enabled provider has "${input.slice(0, 60)}" by name`,
+			`URL did not resolve to a ${provider.displayName} track, and no enabled provider ` +
+				`(${[...enabled].join(', ')}) has "${hintForError.title ?? input.slice(0, 60)}" by name`,
 			'NOT_FOUND',
 		);
 	}

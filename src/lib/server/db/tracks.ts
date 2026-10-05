@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { trackRelativePath } from '$lib/server/library/paths';
@@ -111,16 +111,35 @@ export async function upsertTrack(input: UpsertTrackInput): Promise<string> {
 	// (measured: 47 duplicate groups covering 220 rows, eight rows for a single
 	// track).
 	//
-	// Only a row with no file_path is reused. If the match already owns a file,
-	// inserting is correct: that file is real audio, and overwriting the row would
-	// orphan the file on disk. Those genuine multi-file cases are left to
-	// `scripts/reconcile-duplicates.ts`, which never deletes audio.
+	// Two preconditions, both required:
+	//   - the shell must own no file_path, because a row that already points at real
+	//     audio must keep pointing at it (overwriting orphans the file on disk); and
+	//   - the (provider, provider_track_id) pair we are about to write must still be
+	//     FREE. `tracks_provider_track_uq` is a unique index, and writing a taken
+	//     pair into a different row is exactly the "Failed query: update tracks set
+	//     provider = $1, provider_track_id = $2 …" failure uploads hit when the
+	//     relocated track had already been fetched successfully by its new provider.
+	//     In that case another row owns that identity, so the shell is left alone and
+	//     the normal conflict-target upsert below updates the row that owns it.
 	const existing = meta.isrc
 		? await findExistingTrack(meta)
 		: await findTrackByTitleArtist(meta.title, meta.artist);
 	if (existing && existing.filePath === null) {
-		await db.update(tracks).set(values).where(eq(tracks.id, existing.id));
-		return existing.id;
+		const owner = await db
+			.select({ id: tracks.id })
+			.from(tracks)
+			.where(
+				and(
+					eq(tracks.provider, meta.provider),
+					eq(tracks.providerTrackId, meta.providerTrackId),
+					ne(tracks.id, existing.id),
+				),
+			)
+			.limit(1);
+		if (!owner[0]) {
+			await db.update(tracks).set(values).where(eq(tracks.id, existing.id));
+			return existing.id;
+		}
 	}
 
 	const rows = await db

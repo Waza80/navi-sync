@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { qualityLabel, formatDuration } from '$lib/shared/format';
+	import { HugeiconsIcon } from '@hugeicons/svelte';
+	import { Delete02Icon, Download01Icon, RefreshIcon } from '@hugeicons/core-free-icons';
 	import type { TrackDTO } from '$lib/shared/types';
 
 	let {
@@ -52,10 +54,11 @@
 		{#if failed}
 			<button
 				type="button"
-				class="absolute right-2 bottom-2 flex h-12 w-12 items-center justify-center rounded-full bg-error-container text-on-error-container shadow-[var(--md-elev-2)]"
+				class="m3-icon-button absolute right-2 bottom-2 bg-error-container text-on-error-container shadow-[var(--md-elev-2)]"
 				title="Retry download now"
 				aria-label="Retry download {track.title}"
-				onclick={() => onretry?.(track.id)}>↻</button
+				onclick={() => onretry?.(track.id)}
+				><HugeiconsIcon icon={RefreshIcon} size={22} strokeWidth={2} aria-hidden="true" /></button
 			>
 		{:else}
 			<button
@@ -79,15 +82,16 @@
 		</span>
 	</div>
 
-	<!-- Meta -->
-	<div class="flex flex-1 flex-col gap-1 p-3">
+	<!-- Meta. The chips above are absolutely positioned over this block, so the
+		 title and artist lines reserve room for them rather than truncating underneath. -->
+	<div class="flex flex-1 flex-col gap-1 p-3 {failed ? 'pe-20' : 'pe-16'} ps-[5.5rem]">
 		<p class="truncate text-sm font-medium" title={track.title}>{track.title}</p>
 		<p class="truncate text-xs text-on-surface-variant" title="{track.artist} · {track.album ?? ''}">
 			{track.artist}
 		</p>
 		<div class="mt-1 flex flex-wrap items-center gap-1.5">
 			{#if statusBadge}
-				<span class="m3-chip {statusBadge.cls}" title="Will retry automatically, or press ↻">{statusBadge.text}</span>
+				<span class="m3-chip {statusBadge.cls}" title="Will retry automatically, or press Retry all failed">{statusBadge.text}</span>
 			{:else if lyricsBadge}
 				<span class="m3-chip {lyricsBadge.cls}">{lyricsBadge.text}</span>
 			{/if}
@@ -103,14 +107,16 @@
 				class="m3-btn m3-btn-text text-xs"
 				title="Download this file"
 				aria-label="Download {track.title}"
-				onclick={() => ondownload?.(track.id)}>⬇ File</button
+				onclick={() => ondownload?.(track.id)}
+				><HugeiconsIcon icon={Download01Icon} size={15} strokeWidth={2} aria-hidden="true" />File</button
 			>
 			<button
 				type="button"
 				class="m3-btn m3-btn-text text-xs"
 				title="Force quality check (find a better version now)"
 				aria-label="Check for better quality: {track.title}"
-				onclick={() => onupgrade?.(track.id)}>⚡ Upgrade</button
+				onclick={() => onupgrade?.(track.id)}
+				><HugeiconsIcon icon={RefreshIcon} size={15} strokeWidth={2} aria-hidden="true" />Upgrade</button
 			>
 		</div>
 		<button
@@ -118,7 +124,8 @@
 			class="m3-btn m3-btn-text text-error text-xs"
 			title="Delete track"
 			aria-label="Delete {track.title}"
-			onclick={() => ondelete?.(track.id)}>🗑</button
+			onclick={() => ondelete?.(track.id)}
+				><HugeiconsIcon icon={Delete02Icon} size={15} strokeWidth={2} aria-hidden="true" /></button
 		>
 	</div>
 </div>

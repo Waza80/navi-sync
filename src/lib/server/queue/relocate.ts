@@ -48,6 +48,22 @@ function normalize(value: string | null | undefined): string {
 		.trim();
 }
 
+/** Exact (normalized) title equality. */
+function titleMatches(want: string, got: string): boolean {
+	const w = normalize(want);
+	const g = normalize(got);
+	return w.length > 0 && w === g;
+}
+
+/** Artist equality, allowing for a featured-artist suffix on either side. */
+function artistMatches(want: string, got: string): boolean {
+	const w = normalize(want);
+	const g = normalize(got);
+	if (!w || !g) return false;
+	if (w === g) return true;
+	return w.includes(g) || g.includes(w);
+}
+
 /**
  * How well a candidate matches the wanted song.
  *
@@ -108,14 +124,16 @@ export async function relocateTrack(
 			// compilations, and without the album hint an ambiguous ISRC would
 			// file the track under the wrong release.
 			if (!provider.findByIsrc && !provider.findByIsrcInAlbum) continue;
-			const meta = await (provider.findByIsrcInAlbum
-				? provider.findByIsrcInAlbum(
-						query.isrc.trim(),
-						query.artist,
-						query.title,
-						query.album ?? null,
-					)
-				: provider.findByIsrc!(query.isrc.trim()))
+			const meta = await (
+				provider.findByIsrcInAlbum
+					? provider.findByIsrcInAlbum(
+							query.isrc.trim(),
+							query.artist,
+							query.title,
+							query.album ?? null,
+						)
+					: provider.findByIsrc!(query.isrc.trim())
+			)
 				.then((m) => m ?? null)
 				.catch((err) => {
 					log.debug('relocate isrc lookup failed', {
@@ -146,22 +164,53 @@ export async function relocateTrack(
 	}
 
 	// ── 2. Otherwise search by name, strictly ────────────────────────────────
+	//
+	// Tidal does NOT handle a combined "artist title" query reliably, and the
+	// failure is silent: it returns a full page of plausible-looking unrelated
+	// tracks instead of erroring. Measured against the instance:
+	//
+	//   "Neverlose"              -> 297 hits, all NEVERLOSE          OK
+	//   "help_urself"            ->  75 hits, the right song        OK
+	//   "Neverlose help_urself"  ->  98 hits, none by Neverlose     BROKEN
+	//   "Moskau Denez Prigent"   -> 153 hits, right artist, wrong song (partial)
+	//
+	// So each shape is searched separately and the strictest survivor wins. A
+	// title-only search must still match the artist and an artist-only search must
+	// still match the title, so relaxing the QUERY never relaxes the MATCH.
+	const shapes: Array<{ q: string; require?: 'artist' | 'title' }> = [
+		{ q: `${artist} ${title}`.trim() },
+		{ q: title.trim(), require: 'artist' },
+		{ q: artist.trim(), require: 'title' },
+	];
 	for (const provider of candidates) {
-		let results: TrackMeta[];
-		try {
-			results = await provider.search(`${artist} ${title}`.trim());
-		} catch (err) {
-			log.debug('relocate search failed', { provider: provider.id, error: String(err) });
-			continue;
-		}
-		for (const meta of results) {
-			// An ISRC that contradicts the wanted one means a different recording.
-			if (query.isrc && meta.isrc && meta.isrc.toUpperCase() !== query.isrc.toUpperCase()) {
+		const seen = new Set<string>();
+		for (const shape of shapes) {
+			if (!shape.q) continue;
+			let results: TrackMeta[];
+			try {
+				results = await provider.search(shape.q);
+			} catch (err) {
+				log.debug('relocate search failed', { provider: provider.id, error: String(err) });
 				continue;
 			}
-			const score = scoreCandidate(query, meta);
-			if (score > 0 && (!best || score > best.score)) {
-				best = { score, provider, meta };
+			for (const meta of results) {
+				if (seen.has(meta.providerTrackId)) continue;
+				seen.add(meta.providerTrackId);
+				// The other half of the identity still has to hold.
+				if (shape.require === 'artist' && !artistMatches(artist, meta.artist)) continue;
+				if (shape.require === 'title' && !titleMatches(title, meta.title)) continue;
+				// An ISRC that contradicts the wanted one means a different recording.
+				if (
+					query.isrc &&
+					meta.isrc &&
+					meta.isrc.toUpperCase() !== query.isrc.toUpperCase()
+				) {
+					continue;
+				}
+				const score = scoreCandidate(query, meta);
+				if (score > 0 && (!best || score > best.score)) {
+					best = { score, provider, meta };
+				}
 			}
 		}
 	}
