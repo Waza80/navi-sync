@@ -161,9 +161,18 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		);
 	}
 	if (!ref) {
+		// Never print an empty quoted name: a job enqueued from a bare URL carries
+		// no metadata at all, and `no provider has "" by name` reads like a bug
+		// rather than "we were given nothing to search with".
+		const who = hintForError.title
+			? `"${hintForError.title}"${hintForError.artist ? ` by ${hintForError.artist}` : ''}`
+			: null;
 		throw new ProviderError(
-			`URL did not resolve to a ${provider.displayName} track, and no enabled provider ` +
-				`(${[...enabled].join(', ')}) has "${hintForError.title ?? input.slice(0, 60)}" by name`,
+			`URL did not resolve to a ${provider.displayName} track` +
+				(who
+					? `, and no enabled provider (${[...enabled].join(', ')}) has ${who} by name`
+					: '. This job carried no title or artist, so it could not be looked up by name either — ' +
+						'if it came from a fan-out, the source listing returned an unusable track reference'),
 			'NOT_FOUND',
 		);
 	}
