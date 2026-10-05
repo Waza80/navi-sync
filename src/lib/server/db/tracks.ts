@@ -13,6 +13,8 @@ const log = logger;
 
 export interface ExistingTrack {
 	id: string;
+	/** Null when the row never downloaded anything and can be re-used. */
+	filePath: string | null;
 	isrc: string | null;
 	title: string;
 	artist: string;
@@ -35,6 +37,7 @@ export async function findExistingTrack(meta: TrackMeta): Promise<ExistingTrack 
 				bitrateKbps: tracks.bitrateKbps,
 				bitDepth: tracks.bitDepth,
 				isLossless: tracks.isLossless,
+				filePath: tracks.filePath,
 			})
 			.from(tracks)
 			.where(eq(tracks.isrc, meta.isrc))
@@ -51,6 +54,7 @@ export async function findExistingTrack(meta: TrackMeta): Promise<ExistingTrack 
 			bitrateKbps: tracks.bitrateKbps,
 			bitDepth: tracks.bitDepth,
 			isLossless: tracks.isLossless,
+			filePath: tracks.filePath,
 		})
 		.from(tracks)
 		.where(and(ilike(tracks.title, meta.title), ilike(tracks.artist, meta.artist)))
@@ -98,6 +102,27 @@ export async function upsertTrack(input: UpsertTrackInput): Promise<string> {
 		lyricsStatus: input.lyricsStatus,
 		updatedAt: new Date(),
 	};
+	// Reuse an existing shell before inserting.
+	//
+	// The conflict target is (provider, provider_track_id), which is right for a
+	// straight re-download but wrong the moment a track MOVES between providers:
+	// relocating a Deezer failure to Tidal changes both halves of the key, so the
+	// insert matched nothing and every retry added another row for the same song
+	// (measured: 47 duplicate groups covering 220 rows, eight rows for a single
+	// track).
+	//
+	// Only a row with no file_path is reused. If the match already owns a file,
+	// inserting is correct: that file is real audio, and overwriting the row would
+	// orphan the file on disk. Those genuine multi-file cases are left to
+	// `scripts/reconcile-duplicates.ts`, which never deletes audio.
+	const existing = meta.isrc
+		? await findExistingTrack(meta)
+		: await findTrackByTitleArtist(meta.title, meta.artist);
+	if (existing && existing.filePath === null) {
+		await db.update(tracks).set(values).where(eq(tracks.id, existing.id));
+		return existing.id;
+	}
+
 	const rows = await db
 		.insert(tracks)
 		.values(values)
@@ -107,6 +132,25 @@ export async function upsertTrack(input: UpsertTrackInput): Promise<string> {
 		})
 		.returning({ id: tracks.id });
 	return rows[0].id;
+}
+
+/** A row that never downloaded anything and can be safely re-used. */
+async function findTrackByTitleArtist(
+	title: string,
+	artist: string,
+): Promise<{ id: string; filePath: string | null } | null> {
+	const rows = await db
+		.select({ id: tracks.id, filePath: tracks.filePath })
+		.from(tracks)
+		.where(
+			and(
+				sql`lower(btrim(${tracks.title})) = lower(btrim(${title}))`,
+				sql`lower(btrim(${tracks.artist})) = lower(btrim(${artist}))`,
+			),
+		)
+		.limit(1);
+	const r = rows[0];
+	return r ? { id: r.id, filePath: r.filePath } : null;
 }
 
 export interface TrackListResult {
@@ -277,6 +321,7 @@ export async function listUpgradeCandidates(providerId: string, limit = 10) {
 				bitrateKbps: tracks.bitrateKbps,
 				bitDepth: tracks.bitDepth,
 				isLossless: tracks.isLossless,
+				filePath: tracks.filePath,
 				durationSec: tracks.durationSec,
 				year: tracks.releaseYear,
 				genre: tracks.genre,
