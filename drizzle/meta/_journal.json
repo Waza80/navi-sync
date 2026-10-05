@@ -36,6 +36,13 @@
       "when": 1791153191997,
       "tag": "0004_auto_upgrade_quality",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791156000000,
+      "tag": "0005_normalize_library_paths",
+      "breakpoints": true
     }
   ]
 }

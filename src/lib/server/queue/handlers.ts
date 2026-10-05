@@ -22,7 +22,12 @@ import {
 } from '$lib/server/lyrics';
 import { findProviderForUrl, providers } from '$lib/server/providers/registry';
 import { enabledProviders } from '$lib/server/providers/enabled';
-import { ProviderError, type StreamResolution, type TrackMeta } from '$lib/server/providers/types';
+import {
+	ProviderError,
+	type StreamResolution,
+	type TrackMeta,
+	type TrackRef,
+} from '$lib/server/providers/types';
 import { shouldSkipRefetch } from '$lib/shared/quality';
 import { cleanupTemp, moveIntoLibrary, sha256File } from '$lib/server/library/files';
 import { fetchCover, probeQuality, tagFlac, tagMp3 } from '$lib/server/library/tagging';
@@ -79,7 +84,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	// across the enabled set.
 	const enabled = new Set((await enabledProviders()).map((p) => p.id));
 	const named = payload.provider ? providers.find((p) => p.id === payload.provider) : undefined;
-	const provider =
+	let provider =
 		named && enabled.has(named.id) ? named : await findProviderForUrl(input.trim(), enabled);
 	if (named && !enabled.has(named.id)) {
 		log.info('job named a disabled provider; re-routed', {
@@ -88,18 +93,55 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 			enabled: [...enabled].join(','),
 		});
 	}
+
+	// A URL that no longer routes is not the end of the road. Jobs queued before
+	// the Monochrome→Tidal migration still carry dead `tracks.monochrome.st`
+	// links, and a Deezer link is useless once Deezer is off — in both cases the
+	// job still knows the title and artist, so ask the enabled providers to find
+	// the song instead of burning every attempt on an unresolvable URL.
+	let ref: TrackRef | null = provider ? await provider.parseRef(input) : null;
+	let relocated: { meta: TrackMeta } | null = null;
+	if (!ref) {
+		const hint = (job.payload['meta'] ?? {}) as Partial<TrackMeta>;
+		const trackRow = typeof job.trackId === 'string' ? await getTrackById(job.trackId) : null;
+		const { relocateTrack } = await import('$lib/server/queue/relocate');
+		const found = await relocateTrack(
+			{
+				title: hint.title ?? trackRow?.title ?? '',
+				artist: hint.artist ?? trackRow?.artist ?? '',
+				album: hint.album ?? trackRow?.album ?? null,
+				isrc: hint.isrc ?? trackRow?.isrc ?? null,
+				durationSec: hint.durationSec ?? trackRow?.durationSec ?? null,
+			},
+			enabled,
+		).catch(() => null);
+		if (found) {
+			provider = found.provider;
+			ref = found.ref;
+			relocated = found;
+			log.info('unroutable URL; track relocated by name', {
+				jobId: job.id,
+				url: input.slice(0, 120),
+				provider: provider.id,
+			});
+		}
+	}
 	if (!provider) {
 		throw new ProviderError(
 			`No provider supports: ${input.slice(0, 100)}`,
 			'PROVIDER_UNAVAILABLE',
 		);
 	}
-	const ref = await provider.parseRef(input);
-	if (!ref)
+	if (!ref) {
 		throw new ProviderError(
-			`URL did not resolve to a ${provider.displayName} track`,
+			`URL did not resolve to a ${provider.displayName} track, and no enabled provider has "${input.slice(0, 60)}" by name`,
 			'NOT_FOUND',
 		);
+	}
+	if (relocated) {
+		// The freshly-found metadata is better than whatever the stale job carried.
+		job.payload = { ...job.payload, meta: { ...(job.payload['meta'] as object), ...relocated.meta } };
+	}
 
 	// 2. Metadata. Providers without bare-id metadata receive the
 	// search snapshot via the job payload — but stream grants (TRACK_TOKEN)
@@ -902,7 +944,10 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 				const dest = join(env.MUSIC_LIBRARY_DIR, relPath);
 				await mkdir(join(dest, '..'), { recursive: true });
 				await writeFile(dest, coverBytes);
-				await setCoverPath(row.id, relPath);
+				// Store the ABSOLUTE path: cover_path is stat()'d directly by the
+				// cover route, so the relative form never resolved and left 88 rows
+				// pointing at nothing.
+				await setCoverPath(row.id, dest);
 				log.info('cover repaired', {
 					trackId: row.id,
 					path: relPath,

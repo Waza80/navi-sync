@@ -31,6 +31,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const { materialized, marked } = await reconcileDeadJobs(limit);
 	const rows = await listFailedDownloadTracks(limit, { ignoreCooldown: true });
 	const { findBestUpgrade } = await import('$lib/server/queue/upgrades');
+	const { relocateTrack } = await import('$lib/server/queue/relocate');
+	// Resolved once, not per row: this was re-reading settings for every track.
+	const enabled = new Set((await enabledProviders()).map((p) => p.id));
 	const jobIds: string[] = [];
 	let skipped = 0;
 	for (const row of rows) {
@@ -62,31 +65,65 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			{ skipRecentCheck: true },
 		).catch(() => null);
 		if (!upgrade) {
-			// No strictly-better offer anywhere — retry the ORIGINAL provider, but
-			// only if the user still has it enabled. Requeueing onto a disabled
-			// provider just reproduces the same failure forever (e.g. Deezer).
-			const enabled = new Set((await enabledProviders()).map((p) => p.id));
-			if (!enabled.has(row.provider)) {
-				log.info('failed track skipped — its only provider is disabled', {
+			// No strictly-better offer anywhere. Retry the ORIGINAL provider when it
+			// is still enabled; otherwise the URL we have is either a disabled
+			// provider's link or a dead host, so re-locate the song by name on the
+			// providers that ARE enabled. Skipping was wrong here — it turned every
+			// Deezer-era failure into a permanent one even though Tidal very likely
+			// has the track.
+			const url = row.sourceUrl ?? trackPageUrl(row.provider, row.providerTrackId);
+			if (enabled.has(row.provider) && url) {
+				const job = await enqueueJob({
+					type: 'download',
+					payload: {
+						url,
+						provider: row.provider,
+						retryForTrackId: row.id,
+						meta: { title: row.title, artist: row.artist },
+					},
 					trackId: row.id,
+					priority: 7,
+				});
+				await markDownloadStatus(row.id, 'pending');
+				jobIds.push(job.id);
+				continue;
+			}
+			const found = await relocateTrack(
+				{
+					title: full.title,
+					artist: full.artist,
+					album: full.album,
+					isrc: full.isrc,
+					durationSec: full.durationSec,
+				},
+				enabled,
+			).catch(() => null);
+			if (!found) {
+				log.info('failed track not found on any enabled provider', {
+					trackId: row.id,
+					title: full.title,
+					artist: full.artist,
 					provider: row.provider,
 					enabled: [...enabled].join(','),
 				});
 				skipped++;
 				continue;
 			}
-			const url = row.sourceUrl ?? trackPageUrl(row.provider, row.providerTrackId);
-			if (!url) {
-				skipped++;
-				continue;
-			}
 			const job = await enqueueJob({
 				type: 'download',
 				payload: {
-					url,
-					provider: row.provider,
+					url: found.meta.sourceUrl ?? found.meta.providerTrackId,
+					provider: found.provider.id,
 					retryForTrackId: row.id,
-					meta: { title: row.title, artist: row.artist },
+					meta: {
+						title: found.meta.title,
+						artist: found.meta.artist,
+						album: found.meta.album,
+						durationSec: found.meta.durationSec,
+						isrc: found.meta.isrc,
+						coverUrl: found.meta.coverUrl,
+						year: found.meta.year,
+					},
 				},
 				trackId: row.id,
 				priority: 7,

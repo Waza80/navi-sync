@@ -146,3 +146,49 @@ export function coverRelativePath(meta: PathMeta): string {
 	const album = sanitizeComponent(meta.album ?? 'Unknown Album', 'Unknown Album');
 	return `${artist}/${album}/cover.jpg`;
 }
+
+/**
+ * Canonical ABSOLUTE path for a library file.
+ *
+ * Stored paths are read straight off disk (`stat(coverPath)` in the cover
+ * route), so they must be absolute inside the runtime container. Three
+ * conventions had crept in and all three are wrong somewhere:
+ *
+ *   - `/music/Artist/Album/cover.jpg`      correct
+ *   - `Artist/Album/cover.jpg`             relative — resolves against the
+ *                                          process CWD, so it never exists
+ *   - `/home/wyzz/navi-sync/music/...`     a developer machine's path, which
+ *                                          does not exist in the container
+ *
+ * So anything that is not already under the configured library directory is
+ * re-anchored onto it, discarding whatever host prefix it carried. Storing the
+ * relative form here is what silently produced 88 cover rows Navidrome and the
+ * UI could not resolve.
+ */
+export function resolveLibraryPath(stored: string, libraryDir: string): string {
+	const root = libraryDir.replace(/\/+$/, '');
+	const rel = toLibraryRelative(stored, libraryDir);
+	// A path that IS the library root carries no file part; anchoring it to the
+	// root is the only sane answer, and returning `stored` would smuggle the
+	// foreign prefix straight back in.
+	return rel ? `${root}/${rel}` : root;
+}
+
+/**
+ * Strip any leading path segments up to and including the library directory's
+ * own name, yielding a library-root-relative path. `music/…` and
+ * `/music/…` both collapse to the part after `music`.
+ */
+export function toLibraryRelative(stored: string, libraryDir: string): string {
+	const rel = stored.trim();
+	if (!rel) return '';
+	// Drop a foreign absolute prefix: find the last `music/` (or the library
+	// dir's basename) and keep everything after it.
+	const marker = (libraryDir.replace(/\/+$/, '').split('/').pop() ?? 'music').toLowerCase();
+	const lower = rel.toLowerCase();
+	const idx = lower.lastIndexOf(`/${marker}/`);
+	if (idx !== -1) return rel.slice(idx + marker.length + 2);
+	if (lower.startsWith(`${marker}/`)) return rel.slice(marker.length + 1);
+	if (!rel.startsWith('/')) return rel.replace(/^\/+/, '');
+	return rel.replace(/^\/+/, '');
+}

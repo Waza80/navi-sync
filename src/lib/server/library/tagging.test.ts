@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { buildVorbisFields, tagMp3 } from './tagging';
+import { resolveLibraryPath } from './paths';
 
 const exec = promisify(execFile);
 
@@ -27,7 +28,8 @@ async function readTags(path: string): Promise<Record<string, unknown>> {
 		'json',
 		path,
 	]);
-	return JSON.parse(stdout).format?.tags ?? {};
+	const parsed = JSON.parse(stdout) as { format?: { tags?: Record<string, unknown> } };
+	return parsed.format?.tags ?? {};
 }
 
 describe('tagMp3', () => {
@@ -150,6 +152,50 @@ describe('buildVorbisFields', () => {
 			lyricsSynced: null,
 		});
 		expect(fields.find(([n]) => n === 'TITLE')?.[1]).toBe(zalgo);
+	});
+});
+
+describe('resolveLibraryPath', () => {
+	const LIB = '/music';
+
+	it('leaves an already-canonical path untouched', () => {
+		expect(resolveLibraryPath('/music/Ptite Soeur/Discovery/cover.jpg', LIB)).toBe(
+			'/music/Ptite Soeur/Discovery/cover.jpg',
+		);
+	});
+
+	it('re-anchors a developer machine path onto the container library', () => {
+		// 87 rows were stored as `/home/wyzz/navi-sync/music/…`, a path that does
+		// not exist inside the container, so `stat(coverPath)` failed and no cover
+		// was ever served.
+		expect(
+			resolveLibraryPath('/home/wyzz/navi-sync/music/Lomepal/Mauvais Ordre/cover.jpg', LIB),
+		).toBe('/music/Lomepal/Mauvais Ordre/cover.jpg');
+	});
+
+	it('anchors a relative path, which resolved against the process CWD', () => {
+		expect(resolveLibraryPath('The Weeknd/After Hours/cover.jpg', LIB)).toBe(
+			'/music/The Weeknd/After Hours/cover.jpg',
+		);
+	});
+
+	it('never emits a doubled separator or a foreign prefix', () => {
+		for (const input of [
+			'/music/A/B/cover.jpg',
+			'/home/me/navi-sync/music/A/B/cover.jpg',
+			'A/B/cover.jpg',
+			'/home/me/navi-sync/music/',
+		]) {
+			const out = resolveLibraryPath(input, LIB);
+			expect(out).not.toContain('//');
+			expect(out.startsWith('/music')).toBe(true);
+			expect(out).not.toContain('/home/');
+		}
+	});
+
+	it('is idempotent', () => {
+		const once = resolveLibraryPath('/home/me/x/music/A/B/cover.jpg', LIB);
+		expect(resolveLibraryPath(once, LIB)).toBe(once);
 	});
 });
 

@@ -211,7 +211,8 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 			const dest = join(env.MUSIC_LIBRARY_DIR, relCover);
 			await mkdir(dirname(dest), { recursive: true });
 			await writeFile(dest, coverBytes);
-			coverPath = relCover;
+			// Absolute, not relative: cover_path is stat()'d directly.
+			coverPath = dest;
 		} catch (err) {
 			log.warn('upload cover write failed', { error: String(err) });
 		}
