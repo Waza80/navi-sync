@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, lte, sql } from 'drizzle-orm';
 import { db, pool } from '$lib/server/db';
 import { jobs } from '$lib/server/db/schema';
 import type { JobStatus, JobType, NaviEvent } from '$lib/shared/types';
@@ -337,6 +337,32 @@ export async function nextRunnableCount(): Promise<number> {
 		.from(jobs)
 		.where(and(eq(jobs.status, 'queued'), lte(jobs.runAfter, new Date())));
 	return count;
+}
+
+/**
+ * Track ids with an unfinished job of a given type.
+ *
+ * A reindex sweep calls the enqueue endpoint in a loop, and a row's
+ * `metadata_refreshed_at` is only stamped once its job actually RUNS — so while
+ * the queue is still draining every row still looks "never refreshed" and the
+ * next call enqueues it again. With a batch loop that is a runaway: one sweep
+ * enqueued 4000 jobs for 686 tracks before this was noticed.
+ *
+ * Deduplicating against live work rather than against timestamps is what makes
+ * the sweep idempotent no matter how fast the caller loops.
+ */
+export async function tracksWithPendingJob(type: JobType): Promise<Set<string>> {
+	const rows = await db
+		.select({ trackId: jobs.trackId })
+		.from(jobs)
+		.where(
+			and(
+				eq(jobs.type, type),
+				inArray(jobs.status, ['queued', 'running']),
+				isNotNull(jobs.trackId),
+			),
+		);
+	return new Set(rows.map((r) => r.trackId).filter((v): v is string => typeof v === 'string'));
 }
 
 export { asc };

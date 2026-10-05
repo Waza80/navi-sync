@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
 import { listReindexCandidates, metadataReindexSummary } from '$lib/server/db/tracks';
-import { enqueueJob } from '$lib/server/queue/jobs';
+import { enqueueJob, tracksWithPendingJob } from '$lib/server/queue/jobs';
 import { logger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
@@ -53,6 +53,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!parsed.success) return badRequest('Invalid reindex options.', 'INVALID_BODY');
 	const { batch, freshnessHours, artist } = parsed.data;
 
+	// Skip anything already queued or running. Timestamps alone are not enough:
+	// a row's metadata_refreshed_at is only stamped when its job RUNS, so a caller
+	// looping faster than the queue drains would re-enqueue the same rows forever.
+	const busy = await tracksWithPendingJob('metadata_repair');
 	const rows = await listReindexCandidates(batch * 4);
 	const cutoff = freshnessHours === 0 ? null : Date.now() - freshnessHours * 3_600_000;
 	const wanted = artist?.toLowerCase();
@@ -60,6 +64,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const picked: string[] = [];
 	for (const row of rows) {
 		if (picked.length >= batch) break;
+		if (busy.has(row.id)) continue;
 		if (wanted && !row.artist.toLowerCase().includes(wanted)) continue;
 		// Already refreshed inside the freshness window: leave it alone, or a
 		// re-run would immediately re-do its own work.
