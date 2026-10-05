@@ -26,8 +26,8 @@ export const POST: RequestHandler = async ({ locals, params, url }) => {
 	}
 
 	const maxTracks = Math.min(
-		500,
-		Math.max(1, Number(url.searchParams.get('maxTracks') ?? 300) || 300),
+		2000,
+		Math.max(1, Number(url.searchParams.get('maxTracks') ?? 1000) || 1000),
 	);
 	const preferred = url.searchParams.get('provider') ?? undefined;
 
@@ -54,7 +54,11 @@ export const POST: RequestHandler = async ({ locals, params, url }) => {
 	try {
 		trackIds = await provider.playlistTrackIds(playlistId, maxTracks);
 	} catch (err) {
-		log.warn('playlist listing failed', { provider: provider.id, playlistId, error: String(err) });
+		log.warn('playlist listing failed', {
+			provider: provider.id,
+			playlistId,
+			error: String(err),
+		});
 		return json(
 			{ error: { code: 'PLAYLIST_LOOKUP_FAILED', message: String(err).slice(0, 200) } },
 			{ status: 502 },
@@ -62,7 +66,12 @@ export const POST: RequestHandler = async ({ locals, params, url }) => {
 	}
 	if (trackIds.length === 0) {
 		return json(
-			{ error: { code: 'EMPTY_PLAYLIST', message: `${provider.displayName} returned no tracks.` } },
+			{
+				error: {
+					code: 'EMPTY_PLAYLIST',
+					message: `${provider.displayName} returned no tracks.`,
+				},
+			},
 			{ status: 404 },
 		);
 	}

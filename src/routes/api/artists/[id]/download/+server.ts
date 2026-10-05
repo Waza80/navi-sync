@@ -28,13 +28,17 @@ export const POST: RequestHandler = async ({ locals, params, url }) => {
 		return badRequest('Invalid artist id', 'INVALID_ID');
 	}
 
+	// Defaults cover a full artist: Tanger has 67 albums and the Deezer API ranks
+	// all of them, so a 25-album default silently truncated "download everything by
+	// X" to a third of the catalogue. Ceilings still exist to bound a pathological
+	// catalogue, and `truncated` reports when they bite.
 	const maxAlbums = Math.min(
-		100,
-		Math.max(1, Number(url.searchParams.get('maxAlbums') ?? 25) || 25),
+		500,
+		Math.max(1, Number(url.searchParams.get('maxAlbums') ?? 100) || 100),
 	);
 	const maxTracks = Math.min(
-		500,
-		Math.max(1, Number(url.searchParams.get('maxTracks') ?? 200) || 200),
+		2000,
+		Math.max(1, Number(url.searchParams.get('maxTracks') ?? 1500) || 1500),
 	);
 	const preferred = url.searchParams.get('provider') ?? undefined;
 
@@ -61,7 +65,11 @@ export const POST: RequestHandler = async ({ locals, params, url }) => {
 	try {
 		albumIds = await provider.artistAlbumIds(artistId, maxAlbums);
 	} catch (err) {
-		log.warn('artist album listing failed', { provider: provider.id, artistId, error: String(err) });
+		log.warn('artist album listing failed', {
+			provider: provider.id,
+			artistId,
+			error: String(err),
+		});
 		return json(
 			{ error: { code: 'ARTIST_LOOKUP_FAILED', message: String(err).slice(0, 200) } },
 			{ status: 502 },
@@ -69,7 +77,12 @@ export const POST: RequestHandler = async ({ locals, params, url }) => {
 	}
 	if (albumIds.length === 0) {
 		return json(
-			{ error: { code: 'NO_ALBUMS', message: `${provider.displayName} returned no albums.` } },
+			{
+				error: {
+					code: 'NO_ALBUMS',
+					message: `${provider.displayName} returned no albums.`,
+				},
+			},
 			{ status: 404 },
 		);
 	}
