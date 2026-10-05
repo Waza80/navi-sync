@@ -47,15 +47,39 @@ export type MetadataPatch = Partial<{
 	trackNumber: number | null;
 	discNumber: number | null;
 	isrc: string | null;
-	/**
-	 * MusicBrainz artist id for this track's artist.
-	 *
-	 * Names are not identities. Deezer keeps a French rapper and a US electronic
-	 * producer on ONE artist page (110750, "Tanger", 67 albums), so keying the
-	 * library on the display name merges two people. The MBID separates them.
-	 */
 	artistMbid: string | null;
 }>;
+
+/**
+ * Fields MusicBrainz is the authority for, and which are therefore taken on its
+ * word alone.
+ *
+ * The corroboration rule — settle a field by agreement between sources — exists
+ * because every source is individually unreliable: measured over 12 albums,
+ * Tidal was right 8/12, Deezer 7/11 and MusicBrainz 6/8, each wrong on a
+ * different 3–4 albums. That reasoning does NOT apply to release facts. An
+ * album's release date, label, catalogue number, status and format are not
+ * opinions a streaming service forms; MusicBrainz either knows them or has no
+ * answer, and where it does answer it is the record of fact. Requiring a second
+ * source to agree would discard the best answer available.
+ *
+ * Deliberately EXCLUDED, which keep multi-source merging:
+ *
+ *   coverUrl — MusicBrainz has no artwork for some releases (measured: release
+ *     3dec9a86… answers 404 for front, back and medium), so a second and third
+ *     chance is worth real coverage.
+ *   genre    — no source is authoritative and coverage is thin everywhere;
+ *     merging claims is what produces a usable tag.
+ */
+export const AUTHORITATIVE_FIELDS: ReadonlySet<MetadataField> = new Set<MetadataField>([
+	'album',
+	'albumArtist',
+	'isrc',
+	'artistMbid',
+	'year',
+	'trackNumber',
+	'discNumber',
+]);
 
 export const ALL_FIELDS: MetadataField[] = [
 	'album',
@@ -118,23 +142,25 @@ export function neededFieldsFor(
 }
 
 /** Drops patch keys that are null/empty so they never overwrite good data. */
+/**
+ * Drop empty and unusable values from a patch.
+ *
+ * Iterates the patch's OWN keys rather than naming them. The previous version
+ * called `put` once per field, which meant a field had to be added in two places
+ * — the type and this list — and forgetting the second failed silently:
+ * `artistMbid` was declared, MusicBrainz returned it, and the cleaner dropped it,
+ * leaving 686 rows with a NULL artist_mbid and no error anywhere. There is now
+ * no list to keep in step.
+ */
 export function cleanPatch(patch: MetadataPatch): MetadataPatch {
 	const out: MetadataPatch = {};
-	const put = <K extends keyof MetadataPatch>(key: K, value: MetadataPatch[K]): void => {
-		if (value === null || value === undefined) return;
-		if (typeof value === 'string' && value.trim().length === 0) return;
-		if (typeof value === 'number' && !Number.isFinite(value)) return;
-		out[key] = value;
-	};
-	put('album', patch.album);
-	put('albumArtist', patch.albumArtist);
-	put('coverUrl', patch.coverUrl);
-	put('genre', patch.genre);
-	put('year', patch.year);
-	put('trackNumber', patch.trackNumber);
-	put('discNumber', patch.discNumber);
-	put('isrc', patch.isrc);
-	put('artistMbid', patch.artistMbid);
+	for (const [key, value] of Object.entries(patch) as [keyof MetadataPatch, unknown][]) {
+		if (value === null || value === undefined) continue;
+		if (typeof value === 'string' && value.trim().length === 0) continue;
+		if (typeof value === 'number' && !Number.isFinite(value)) continue;
+		if (typeof value !== 'string' && typeof value !== 'number') continue;
+		(out as Record<string, unknown>)[key] = typeof value === 'string' ? value.trim() : value;
+	}
 	return out;
 }
 

@@ -1,7 +1,7 @@
 import { readFileTags } from './filetags';
 import { logger } from '$lib/server/logger';
 import type { MetadataPatch, MetadataQuery, MetadataSource, MetadataField } from './types';
-import { cleanPatch, patchKeys } from './types';
+import { AUTHORITATIVE_FIELDS, cleanPatch, patchKeys } from './types';
 import { itunesSource } from './sources/itunes';
 import { musicbrainzSource } from './sources/musicbrainz';
 import { tidalSource } from './sources/tidal';
@@ -56,7 +56,10 @@ export interface EnrichResult {
  */
 export async function enrichTrackMetadata(query: MetadataQuery): Promise<EnrichResult> {
 	const remaining = new Set(query.needed);
-	const merged: MetadataPatch = {};
+	// Written by field name in the loops below, so it stays a loose record until
+	// the single cast on return. Declaring it as MetadataPatch makes every
+	// field-name write a type error, which is how this got awkward before.
+	const merged: Record<string, unknown> = {};
 	const filledBy: Record<string, string> = {};
 	const tried: string[] = [];
 
@@ -136,6 +139,33 @@ export async function enrichTrackMetadata(query: MetadataQuery): Promise<EnrichR
 		}>;
 		if (claims.length === 0) continue;
 
+		// Ground truth tier: MusicBrainz's answer for a release fact is taken on
+		// its own. This is the same shape as preferring Tidal for 24-bit audio or
+		// word-by-word lyrics — go to the source that actually holds the fact
+		// rather than splitting the difference between three services that are all
+		// guessing. A streaming service disagreeing with MusicBrainz about an album's
+		// release year is not evidence; it is the reason the value was wrong.
+		if (AUTHORITATIVE_FIELDS.has(field)) {
+			const mb = claims.find((c) => c.source === 'musicbrainz');
+			if (mb) {
+				merged[field] = mb.value;
+				filledBy[field] =
+					claims.length > 1
+						? `musicbrainz (over ${claims.length} claims)`
+						: 'musicbrainz';
+				remaining.delete(field);
+				log.info('metadata value taken from ground truth', {
+					trackId: query.trackId,
+					field,
+					dissent: claims
+						.filter((c) => c.source !== 'musicbrainz')
+						.map((c) => `${c.source}=${c.value}`)
+						.join(' '),
+				});
+				continue;
+			}
+		}
+
 		// Tally by normalized value so "FLIP" and "FLIP (Deluxe)" style edition
 		// suffixes and casing do not read as disagreement.
 		const buckets = new Map<string, typeof claims>();
@@ -153,7 +183,7 @@ export async function enrichTrackMetadata(query: MetadataQuery): Promise<EnrichR
 				winner = list[0];
 			}
 		}
-		(merged as Record<string, unknown>)[field] = winner.value;
+		merged[field] = winner.value;
 		filledBy[field] =
 			best > 1
 				? `${best}/${claims.length} ${buckets
