@@ -119,7 +119,10 @@ describe('enrichTrackMetadata', () => {
 		]);
 	});
 
-	it('consults the file own tags before any external source', async () => {
+	// NB: both of these consult every live metadata source, and MusicBrainz paces
+	// itself at ~1 request/second, so the default 5s budget is not realistic for
+	// them. They are integration tests by nature.
+	it('consults the file own tags before any external source', { timeout: 30_000 }, async () => {
 		// A real FLAC carries its own album — readFileTags wins and MusicBrainz
 		// is never asked for it.
 		const result = await enrichTrackMetadata({
@@ -139,7 +142,7 @@ describe('enrichTrackMetadata', () => {
 		expect(result.tried).toContain('musicbrainz');
 	});
 
-	it('never throws and reports what it tried', async () => {
+	it('never throws and reports what it tried', { timeout: 30_000 }, async () => {
 		const result = await enrichTrackMetadata({
 			trackId: 't1',
 			title: 'Zzqx Nonexistent Title 12345',
