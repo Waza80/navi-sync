@@ -32,6 +32,8 @@ const finalizeSchema = z.object({
 	discNumber: z.coerce.number().int().min(0).max(99).nullable().optional(),
 	year: z.coerce.number().int().min(1000).max(3000).nullable().optional(),
 	genre: z.string().max(100).nullable().optional(),
+	/** ISRC detected at inspect time; lets cover art resolve by exact release. */
+	isrc: z.string().max(64).nullable().optional(),
 	embeddedLyrics: z.boolean().optional(),
 	fetchLyrics: z.boolean().optional().default(true),
 });
@@ -76,8 +78,43 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	}
 };
 
+/**
+ * Cover bytes for an upload, preferring catalog artwork over a name search.
+ *
+ * A self-released album is typically absent from Deezer and Apple's stores while
+ * MusicBrainz still has the release and the Cover Art Archive serves its front
+ * image — so the enrichment path is what actually finds art for the uploads that
+ * need it most.
+ */
+async function resolveUploadCover(
+	input: z.infer<typeof finalizeSchema>,
+	isrc: string | null,
+): Promise<Buffer | null> {
+	const { fetchCover } = await import('$lib/server/library/tagging');
+	try {
+		const { enrichTrackMetadata } = await import('$lib/server/metadata');
+		const res = await enrichTrackMetadata({
+			trackId: input.uploadId,
+			title: input.title,
+			artist: input.artist,
+			album: input.album,
+			isrc,
+			durationSec: null,
+			year: input.year ?? null,
+			needed: ['coverUrl'],
+		});
+		if (res.patch.coverUrl) {
+			const bytes = await fetchCover(res.patch.coverUrl);
+			if (bytes) return bytes;
+		}
+	} catch (err) {
+		log.warn('upload cover enrichment failed', { error: String(err) });
+	}
+	const { fetchAlbumArt } = await import('$lib/server/library/coverart');
+	return fetchAlbumArt(input.artist, input.album);
+}
+
 async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Response> {
-	// Locate the temp file from the inspect step.
 	const prefix = `upload-${input.uploadId}.`;
 	const entries = await readdir(env.MUSIC_TMP_DIR).catch(() => [] as string[]);
 	const tmpName = entries.find((n) => n.startsWith(prefix));
@@ -139,12 +176,16 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 		streamToken: null,
 	};
 
-	// Album art: an upload has no provider cover URL, so fall back to a public
-	// cover-art search. Without this the file is filed with cover_path = NULL
-	// and Navidrome shows a placeholder forever (art is optional, so a miss is
-	// not an error — but a hit is worth the one request).
-	const { fetchAlbumArt } = await import('$lib/server/library/coverart');
-	const coverBytes = await fetchAlbumArt(input.artist, input.album);
+	// Album art.
+	//
+	// An upload has no provider cover URL, and the previous Deezer-only lookup
+	// meant a release Deezer has never heard of got NO artwork — which is exactly
+	// the case for a self-released album, even though MusicBrainz has it and the
+	// Cover Art Archive serves a real front image for it. So artwork is resolved
+	// through the same metadata enrichment used for everything else (Tidal →
+	// MusicBrainz/Cover Art Archive → Deezer → Apple), and only falls back to the
+	// bare Deezer album search if that yields nothing.
+	const coverBytes = await resolveUploadCover(input, input.isrc ?? null);
 
 	// Tag the file. `cover` is embedded AND written as a canonical cover.jpg so
 	// Navidrome (which ignores embedded art for MP3 in some paths) finds it.

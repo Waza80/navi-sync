@@ -302,6 +302,7 @@
 		uploadId: string;
 		ext: string;
 		entryPath: string | null;
+		isrc: string;
 		embeddedLyrics: boolean;
 		filledBy: Record<string, string>;
 		title: string;
@@ -333,6 +334,7 @@
 			uploadId: body.uploadId,
 			ext: body.ext ?? '',
 			entryPath: body.entryPath ?? null,
+			isrc: str('isrc'),
 			embeddedLyrics: body.embeddedLyrics ?? false,
 			filledBy: body.filledBy ?? {},
 			title: str('title'),
@@ -389,6 +391,7 @@
 					uploadId: '',
 					ext: f.name.slice(f.name.lastIndexOf('.')),
 					entryPath: f.entryPath,
+					isrc: '',
 					embeddedLyrics: false,
 					filledBy: {},
 					title: '',
@@ -454,6 +457,7 @@
 					album: d.album.trim(),
 					trackNumber: d.trackNumber ? Number(d.trackNumber) : null,
 					year: d.year ? Number(d.year) : null,
+					isrc: d.isrc.trim() || null,
 					embeddedLyrics: d.embeddedLyrics,
 					fetchLyrics: !d.embeddedLyrics
 				})
