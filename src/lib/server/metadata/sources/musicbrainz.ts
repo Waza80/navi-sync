@@ -21,6 +21,8 @@ import type { MetadataPatch, MetadataQuery, MetadataSource } from '../types';
 
 const log = logger;
 const MB = 'https://musicbrainz.org/ws/2';
+// Same organisation, different host, and it 307-redirects to archive.org.
+const CAA = 'https://coverartarchive.org';
 const UA = 'navi-sync/1.0 ( https://github.com/Waza80/navi-sync )';
 const TIMEOUT_MS = 15_000;
 /** MusicBrainz asks for <=1 req/sec from anonymous clients. */
@@ -34,6 +36,9 @@ async function politeFetch(url: string): Promise<Response | null> {
 		return await fetch(url, {
 			headers: { 'User-Agent': UA, Accept: 'application/json' },
 			signal: AbortSignal.timeout(TIMEOUT_MS),
+			// Cover Art Archive 307-redirects to archive.org; without this the
+			// release JSON comes back as a redirect stub and parses to nothing.
+			redirect: 'follow',
 		});
 	} catch (err) {
 		log.debug('musicbrainz request failed', { error: String(err) });
@@ -78,9 +83,59 @@ function yearOf(date: string | undefined): number | null {
 	return Number.isFinite(y) ? y : null;
 }
 
-function coverUrlFor(releaseId: string | undefined): string | null {
+/**
+ * A Cover Art Archive URL that has been CHECKED to exist, or null.
+ *
+ * The previous version constructed `/front-1200` from the release id and
+ * returned it as fact. Measured: for release 3dec9a86… (Tanger, "La Memoire
+ * Insoluble") CAA answers 404 for front, front-1200 and back — that release has
+ * no artwork at all — yet the resolver reported the URL as corroborated
+ * metadata. A guessed URL is worse than none, because the cover repair pass then
+ * writes it into the DB and tags it into the file.
+ *
+ * CAA redirects to archive.org (307) so the redirect must be followed, and its
+ * release JSON lists exactly which images exist and at which sizes. Verified on
+ * Daft Punk "Discovery": images[0].types = ['Front'], thumbnails 1200/250/500/
+ * large/small.
+ *
+ * Preference is Front, then Medium, then Back — a box set or a book-style
+ * release can have a spine and no front, and refusing to use it leaves the album
+ * bare for no reason.
+ */
+async function coverUrlFor(releaseId: string | undefined): Promise<string | null> {
 	if (!releaseId) return null;
-	return `https://coverartarchive.org/release/${releaseId}/front-1200`;
+	const res = await politeFetch(`${CAA}/release/${releaseId}`);
+	if (!res || !res.ok) return null;
+	const body = (await res.json().catch(() => null)) as {
+		images?: Array<{
+			types?: string[];
+			approved?: boolean;
+			thumbnails?: Record<string, { url?: string }>;
+		}>;
+	} | null;
+	const images = (body?.images ?? []).filter((i) => i.thumbnails);
+	if (images.length === 0) return null;
+
+	// Approved art only when it exists: an unapproved image is a placeholder.
+	const pool = images.filter((i) => i.approved !== false);
+	const usable = pool.length > 0 ? pool : images;
+	const rank = (types: string[] | undefined): number => {
+		const t = (types ?? []).map((x) => x.toLowerCase());
+		if (t.includes('front')) return 0;
+		if (t.includes('medium')) return 1;
+		if (t.includes('back')) return 2;
+		return 3;
+	};
+	usable.sort((a, b) => rank(a.types) - rank(b.types));
+	for (const image of usable) {
+		const thumbs = image.thumbnails ?? {};
+		// Largest first: 1200 is the useful embed size, then the rest.
+		for (const size of ['1200', 'large', '500', '250', 'small']) {
+			const url = thumbs[size]?.url;
+			if (url) return url;
+		}
+	}
+	return null;
 }
 
 function artistName(rec: MbRecording): string | null {
@@ -131,14 +186,14 @@ function releaseScore(r: MbRelease): number {
 	return score;
 }
 
-function toPatch(chosen: Chosen, needed: MetadataQuery['needed']): MetadataPatch {
+async function toPatch(chosen: Chosen, needed: MetadataQuery['needed']): Promise<MetadataPatch> {
 	const { recording: rec, release } = chosen;
 	return {
 		...(needed.includes('album') && release.title ? { album: release.title } : {}),
 		...(needed.includes('albumArtist') && chosen.albumArtist
 			? { albumArtist: chosen.albumArtist }
 			: {}),
-		...(needed.includes('coverUrl') ? { coverUrl: coverUrlFor(release.id) } : {}),
+		...(needed.includes('coverUrl') ? { coverUrl: await coverUrlFor(release.id) } : {}),
 		...(needed.includes('year') ? { year: yearOf(release.date) } : {}),
 		// Track and disc numbers are merged in by the caller, which must fetch the
 		// release's track list: they are absent from the search payload, and
@@ -308,7 +363,7 @@ async function withTrackNumbers(
 	chosen: Chosen,
 	query: MetadataQuery,
 ): Promise<MetadataPatch | null> {
-	const patch = toPatch(chosen, query.needed);
+	const patch = await toPatch(chosen, query.needed);
 	const wantsTrack = query.needed.includes('trackNumber');
 	const wantsDisc = query.needed.includes('discNumber');
 	if (!wantsTrack && !wantsDisc) return patch;
