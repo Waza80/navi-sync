@@ -7,6 +7,13 @@
 	import TrackCard from '$lib/components/TrackCard.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import { expandZip, isZip } from '$lib/upload/zip';
+	import { HugeiconsIcon } from '@hugeicons/svelte';
+	import {
+		ArrowLeft01Icon,
+		ArrowRight01Icon,
+		Cancel01Icon,
+		GlobalRefreshIcon
+	} from '@hugeicons/core-free-icons';
 	import type { TrackDTO } from '$lib/shared/types';
 
 	import { page } from '$app/state';
@@ -633,7 +640,8 @@
 					type="button"
 					class="m3-btn m3-btn-text"
 					aria-label="Clear search"
-					onclick={clearSearch}>✕ Clear</button
+					onclick={clearSearch}
+					><HugeiconsIcon icon={Cancel01Icon} size={16} strokeWidth={2} aria-hidden="true" />Clear</button
 				>
 			{/if}
 		</div>
@@ -931,7 +939,8 @@
 					class="m3-btn m3-btn-text h-10 min-h-10 px-3 text-sm"
 					disabled={currentPage <= 1}
 					onclick={() => gotoPage(currentPage - 1)}
-					aria-label="Previous page">← Prev</button
+					aria-label="Previous page"
+					><HugeiconsIcon icon={ArrowLeft01Icon} size={16} strokeWidth={2} aria-hidden="true" />Prev</button
 				>
 				<span aria-live="polite">Page {currentPage} of {pageCount}</span>
 				<button
@@ -939,7 +948,8 @@
 					class="m3-btn m3-btn-text h-10 min-h-10 px-3 text-sm"
 					disabled={currentPage >= pageCount}
 					onclick={() => gotoPage(currentPage + 1)}
-					aria-label="Next page">Next →</button
+					aria-label="Next page"
+					>Next<HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} aria-hidden="true" /></button
 				>
 			</div>
 		{/if}
@@ -951,7 +961,9 @@
 				onclick={retryAllFailed}
 				aria-label="Retry all failed downloads now"
 			>
-				{retryAllBusy ? 'Queueing…' : `↻ Retry all failed (${data.stats.failed})`}
+				{retryAllBusy
+					? 'Queueing…'
+					: `Retry all failed (${data.stats.failed})`}<HugeiconsIcon icon={GlobalRefreshIcon} size={16} strokeWidth={2} aria-hidden="true" />
 			</button>
 		{/if}
 	</div>
@@ -1039,12 +1051,13 @@
 			></audio>
 			<button
 				type="button"
-				class="m3-btn m3-btn-text text-sm"
+				class="m3-icon-button text-sm"
 				aria-label="Close preview"
 				onclick={() => {
 					audioEl?.pause();
 					nowPlaying = null;
-				}}>✕</button
+				}}
+				><HugeiconsIcon icon={Cancel01Icon} size={18} strokeWidth={2} aria-hidden="true" /></button
 			>
 		</div>
 	</div>

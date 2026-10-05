@@ -2,6 +2,8 @@
 	import { authClient } from '$lib/client/auth';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { HugeiconsIcon } from '@hugeicons/svelte';
+	import { Satellite01Icon } from '@hugeicons/core-free-icons';
 
 	let mode = $state<'signin' | 'signup'>('signin');
 	let email = $state('');
@@ -50,10 +52,10 @@
 	<div class="w-full max-w-sm">
 		<header class="mb-8 text-center">
 			<div
-				class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary-container text-3xl"
+				class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary-container text-on-primary-container"
 				aria-hidden="true"
 			>
-				🛰️
+				<HugeiconsIcon icon={Satellite01Icon} size={30} strokeWidth={1.5} />
 			</div>
 			<h1 class="text-2xl font-semibold tracking-tight">NaviSync</h1>
 			<p class="mt-1 text-sm text-on-surface-variant">Self-hosted Navidrome companion</p>

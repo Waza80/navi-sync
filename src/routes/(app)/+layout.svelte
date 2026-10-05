@@ -2,6 +2,13 @@
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import { HugeiconsIcon } from '@hugeicons/svelte';
+	import {
+		ElectricPlugsIcon,
+		ListMusicIcon,
+		Satellite01Icon,
+		Settings01Icon
+	} from '@hugeicons/core-free-icons';
 	import { resolve } from '$app/paths';
 	import { authClient } from '$lib/client/auth';
 	import { APP_VERSION_SHORT } from '$lib/version';
@@ -15,9 +22,9 @@
 	} = $props();
 
 	const nav = [
-		{ href: '/dashboard', label: 'Library', icon: '🎵' },
-		{ href: '/providers', label: 'Providers', icon: '🔌' },
-		{ href: '/settings', label: 'Settings', icon: '⚙️' }
+		{ href: '/dashboard', label: 'Library', icon: ListMusicIcon },
+		{ href: '/providers', label: 'Providers', icon: ElectricPlugsIcon },
+		{ href: '/settings', label: 'Settings', icon: Settings01Icon }
 	] as const;
 
 	const resolvedNav = $derived(nav.map((item) => ({ ...item, resolvedHref: resolve(item.href) })));
@@ -41,7 +48,9 @@
 	<header class="sticky top-0 z-40 border-b border-outline-variant/40 bg-surface-low/95 backdrop-blur">
 		<div class="mx-auto flex h-16 max-w-5xl items-center gap-4 px-4">
 			<a href={resolve('/dashboard')} class="flex items-center gap-2 font-semibold tracking-tight">
-				<span aria-hidden="true" class="text-xl">🛰️</span>
+				<span aria-hidden="true" class="text-xl text-primary"
+					><HugeiconsIcon icon={Satellite01Icon} size={22} strokeWidth={1.5} /></span
+				>
 				<span>NaviSync</span>
 				<!-- Bump APP_VERSION in src/lib/version.ts on every release. -->
 				<span
@@ -89,7 +98,9 @@
 					? 'text-primary'
 					: 'text-on-surface-variant'}"
 			>
-				<span aria-hidden="true" class="text-lg">{item.icon}</span>
+				<span aria-hidden="true" class="text-lg text-on-surface-variant"
+					><HugeiconsIcon icon={item.icon} size={20} strokeWidth={1.5} /></span
+				>
 				{item.label}
 			</a>
 		{/each}

@@ -39,13 +39,50 @@
 	--md-inverse-on-surface: #322f35;
 	--md-scrim: #000000;
 
+	--md-radius-xs: 4px;
 	--md-radius-s: 8px;
 	--md-radius-m: 12px;
 	--md-radius-l: 16px;
 	--md-radius-xl: 28px;
 
+	/* ── M3 state layers ───────────────────────────────────────────────────
+	 * The spec is explicit: "The state layer is an overlay with a fixed opacity
+	 * for each state and uses the same color as the content." These were
+	 * previously faked with `filter: brightness()`, which shifts hue, blows out
+	 * light primaries on a dark surface, and cannot express a pressed state.
+	 * Overlays are the real thing, so hover/focus/press now read identically
+	 * across filled, tonal, text and outlined components.
+	 */
+	--md-state-hover: 8%;
+	--md-state-focus: 10%;
+	--md-state-press: 10%;
+	--md-state-drag: 16%;
+	--md-state-disabled-container: 12%;
+	--md-state-disabled-content: 38%;
+
+	/* ── M3 elevation scale (levels 0–5) ─────────────────────────────────── */
+	--md-elev-0: none;
 	--md-elev-1: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px 1px rgb(0 0 0 / 0.15);
 	--md-elev-2: 0 1px 2px rgb(0 0 0 / 0.3), 0 2px 6px 2px rgb(0 0 0 / 0.15);
+	--md-elev-3: 0 4px 8px 3px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.3);
+	--md-elev-4: 0 6px 10px 4px rgb(0 0 0 / 0.15), 0 2px 3px rgb(0 0 0 / 0.3);
+	--md-elev-5: 0 8px 12px 6px rgb(0 0 0 / 0.15), 0 4px 4px rgb(0 0 0 / 0.3);
+
+	/* ── M3 type scale ─────────────────────────────────────────────────────
+	 * role / size / line-height / tracking, per the M3 typography scale.
+	 */
+	--md-type-display-lg: 700 3.5rem/4rem;
+	--md-type-headline-lg: 400 2rem/2.75rem;
+	--md-type-headline-md: 400 1.75rem/2.5rem;
+	--md-type-title-lg: 400 1.375rem/2rem;
+	--md-type-title-md: 500 1rem/1.5rem;
+	--md-type-title-sm: 500 0.875rem/1.25rem;
+	--md-type-body-lg: 400 1rem/1.5rem;
+	--md-type-body-md: 400 0.875rem/1.25rem;
+	--md-type-body-sm: 400 0.75rem/1rem;
+	--md-type-label-lg: 500 0.875rem/1.25rem;
+	--md-type-label-md: 500 0.75rem/1rem;
+	--md-type-label-sm: 500 0.6875rem/1rem;
 
 	/* M3 motion: emphasized durations + easing */
 	--md-motion-short: 150ms;
@@ -137,27 +174,106 @@ body {
 	opacity: 0.45;
 	cursor: not-allowed;
 }
+/*
+ * State layers are pseudo-element overlays tinted with the component's OWN
+ * content colour, exactly as the spec requires — so a filled button overlays
+ * `--md-on-primary`, a tonal button overlays `--md-on-secondary-container`.
+ * The overlay is a positioned ::after, which is why the button needs `position:
+ * relative` above and `overflow: hidden` to keep the tint inside its shape.
+ */
+.m3-btn {
+	position: relative;
+	overflow: hidden;
+	isolation: isolate;
+}
+.m3-btn::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background-color: currentColor;
+	opacity: 0;
+	transition: opacity var(--md-motion-short) var(--md-ease-standard);
+	pointer-events: none;
+	z-index: -1;
+}
+.m3-btn:hover:not(:disabled)::after {
+	opacity: var(--md-state-hover);
+}
+.m3-btn:focus-visible::after {
+	opacity: var(--md-state-focus);
+}
+.m3-btn:active:not(:disabled)::after {
+	opacity: var(--md-state-press);
+}
+
 .m3-btn-filled {
 	background-color: var(--md-primary);
 	color: var(--md-on-primary);
-}
-.m3-btn-filled:hover:not(:disabled) {
-	filter: brightness(1.12);
 }
 .m3-btn-tonal {
 	background-color: var(--md-secondary-container);
 	color: var(--md-on-secondary-container);
 }
-.m3-btn-tonal:hover:not(:disabled) {
-	filter: brightness(1.15);
+.m3-btn-outlined {
+	background-color: transparent;
+	color: var(--md-primary);
+	border: 1px solid var(--md-outline-variant);
 }
 .m3-btn-text {
 	background: transparent;
 	color: var(--md-primary);
 	padding: 0 0.75rem;
 }
-.m3-btn-text:hover:not(:disabled) {
-	background-color: color-mix(in srgb, var(--md-primary) 12%, transparent);
+
+/* ── M3 icon button ───────────────────────────────────────────────────────
+ * A distinct M3 component, not a text button with an icon in it: 40dp standard
+ * and 48dp large targets, circular shape, and a state layer on the on-surface
+ * colour. Used for the logo lockup, pagination and the close-preview control.
+ */
+.m3-icon-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 40px;
+	height: 40px;
+	min-width: 40px;
+	border: none;
+	border-radius: 9999px;
+	background-color: transparent;
+	color: var(--md-on-surface-variant);
+	cursor: pointer;
+	position: relative;
+	overflow: hidden;
+	isolation: isolate;
+	transition: color var(--md-motion-short) var(--md-ease-standard);
+}
+.m3-icon-button-lg {
+	width: 48px;
+	height: 48px;
+	min-width: 48px;
+}
+.m3-icon-button::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background-color: currentColor;
+	opacity: 0;
+	transition: opacity var(--md-motion-short) var(--md-ease-standard);
+	pointer-events: none;
+	z-index: -1;
+}
+.m3-icon-button:hover:not(:disabled)::after {
+	opacity: var(--md-state-hover);
+}
+.m3-icon-button:focus-visible::after {
+	opacity: var(--md-state-focus);
+}
+.m3-icon-button:active:not(:disabled)::after {
+	opacity: var(--md-state-press);
+}
+.m3-icon-button:disabled {
+	opacity: var(--md-state-disabled-content);
+	cursor: not-allowed;
 }
 
 .m3-input {
@@ -192,6 +308,37 @@ body {
 	font-weight: 600;
 	letter-spacing: 0.02em;
 	white-space: nowrap;
+	position: relative;
+	overflow: hidden;
+	isolation: isolate;
+}
+/* Assist and filter chips carry a state layer like every other M3 component. */
+.m3-chip::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background-color: currentColor;
+	opacity: 0;
+	transition: opacity var(--md-motion-short) var(--md-ease-standard);
+	pointer-events: none;
+	z-index: -1;
+}
+.m3-chip:hover:not(:disabled)::after {
+	opacity: var(--md-state-hover);
+}
+.m3-chip:active:not(:disabled)::after {
+	opacity: var(--md-state-press);
+}
+
+/* M3 outlined text field: resting and focus indicator per spec. */
+.m3-input {
+	transition:
+		border-color var(--md-motion-short) var(--md-ease-standard),
+		box-shadow var(--md-motion-short) var(--md-ease-standard);
+}
+.m3-input:focus-visible {
+	border-color: var(--md-primary);
+	box-shadow: inset 0 0 0 1px var(--md-primary);
 }
 
 /* ── M3 motion conventions ─────────────────────────────────────────────── */

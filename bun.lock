@@ -6,6 +6,8 @@
       "name": "navisync",
       "dependencies": {
         "@better-auth/drizzle-adapter": "^1.7.0",
+        "@hugeicons/core-free-icons": "^4.3.5",
+        "@hugeicons/svelte": "^1.1.5",
         "@node-rs/argon2": "^2.0.2",
         "better-auth": "^1.7.0",
         "blowfish-js": "^1.0.0",
@@ -139,6 +141,10 @@
     "@eslint/object-schema": ["@eslint/object-schema@2.1.7", "", {}, "sha512-VtAOaymWVfZcmZbp6E2mympDIHvyjXs/12LqWYjVw6qjrfF+VK+fyG33kChz3nnK+SU5/NeHOqrTEHS8sXO3OA=="],
 
     "@eslint/plugin-kit": ["@eslint/plugin-kit@0.4.1", "", { "dependencies": { "@eslint/core": "^0.17.0", "levn": "^0.4.1" } }, "sha512-43/qtrDUokr7LJqoF2c3+RInu/t4zfrpYdoSDfYyhg52rwLV6TnOvdG4fXm7IkSB3wErkcmJS9iEhjVtOSEjjA=="],
+
+    "@hugeicons/core-free-icons": ["@hugeicons/core-free-icons@4.3.5", "", {}, "sha512-Sv+NjHRPnQk+yZsGCMcGznCHdTfJR9PMMOEKcJYAQU4gy90dmlc9PwdtvYOImBZIjiheMsTLL5eMn2DmHxUiUg=="],
+
+    "@hugeicons/svelte": ["@hugeicons/svelte@1.1.5", "", { "peerDependencies": { "svelte": "^5.0.0" } }, "sha512-aau7Z9kJWi3QtakeHeFBj+TqHl7NQBO6/BWbnBTete8On3+L/CD1iSmf4vFNs90fcpQeP+567hT4wImEMNd1Fg=="],
 
     "@humanfs/core": ["@humanfs/core@0.19.2", "", { "dependencies": { "@humanfs/types": "^0.15.0" } }, "sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA=="],
 

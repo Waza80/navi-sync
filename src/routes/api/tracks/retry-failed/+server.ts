@@ -42,8 +42,16 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			skipped++;
 			continue;
 		}
-		// Hunt the best version across EVERY enabled provider (Deezer AND
-		// Tidal) — one up takes precedence, both up means best wins.
+		// Hunt the best version across EVERY enabled provider (Tidal AND
+		// Deezer) — one up takes precedence, both up means best wins.
+		//
+		// The recent-attempt guard is deliberately NOT skipped. This endpoint used
+		// to pass skipRecentCheck, on the reasoning that "the user asked now" — but
+		// that reasoning is about re-running a failed DOWNLOAD, which still happens
+		// below. Skipping it here meant an upgrade that had already failed got
+		// kicked off again on every press, failed again for the same reason, and
+		// dragged the row to `failed` in the process. The guard is time-boxed to
+		// 24h, so a genuinely new master is still picked up tomorrow.
 		const upgrade = await findBestUpgrade(
 			{
 				id: full.id,
