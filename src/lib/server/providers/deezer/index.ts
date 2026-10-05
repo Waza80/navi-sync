@@ -1,6 +1,6 @@
 import { callGateway, getDeezerSession } from './gateway';
 import { resolveStream } from './media';
-import { isDeezerShortLink, parseDeezerTrackUrl } from './parse';
+import { isDeezerShortLink, parseDeezerUrl } from './parse';
 import { ProviderError, type Provider, type TrackMeta } from '$lib/server/providers/types';
 import { logger } from '$lib/server/logger';
 
@@ -73,12 +73,22 @@ export const deezerProvider: Provider = {
 	displayName: 'Deezer',
 
 	matches(url) {
-		return parseDeezerTrackUrl(url) !== null || isDeezerShortLink(url);
+		return parseDeezerUrl(url) !== null || isDeezerShortLink(url);
 	},
 
 	async parseRef(input) {
-		const direct = parseDeezerTrackUrl(input);
+		const direct = parseDeezerUrl(input);
 		if (direct) {
+			// Only a TRACK is downloadable as audio. An album or artist link is a
+			// fan-out request, not a track ref, so parseRef must decline it — but the
+			// id and kind are still carried on the ref so a caller can route it.
+			if (direct.kind !== 'track') {
+				return {
+					provider: 'deezer',
+					id: direct.id,
+					sourceUrl: `https://www.deezer.com/${direct.kind}/${direct.id}`,
+				};
+			}
 			return {
 				provider: 'deezer',
 				id: direct.id,
@@ -96,9 +106,15 @@ export const deezerProvider: Provider = {
 					});
 					const final = res.url;
 					if (method === 'GET') await res.arrayBuffer();
-					const parsed = parseDeezerTrackUrl(final);
+					const parsed = parseDeezerUrl(final);
 					if (parsed) {
-						log.debug('resolved deezer short link', { id: parsed.id });
+						// The redirect target decides the kind: a shared ARTIST link
+						// lands on /artist/{id}, not /track/{id}, which is why these
+						// used to come back as unparseable.
+						log.debug('resolved deezer short link', {
+							id: parsed.id,
+							kind: parsed.kind,
+						});
 						return {
 							provider: 'deezer',
 							id: parsed.id,
@@ -131,7 +147,7 @@ export const deezerProvider: Provider = {
 	): Promise<{ kind: 'track' | 'album' | 'playlist'; id: string } | null> {
 		// Canonicalizes any deezer link (incl. link.deezer.com short links)
 		// into {kind, id}: track, album or playlist.
-		const direct = parseDeezerTrackUrl(input);
+		const direct = parseDeezerUrl(input);
 		if (direct) return { kind: 'track', id: direct.id };
 
 		const target = isDeezerShortLink(input) ? await resolveShortLink(input) : input;

@@ -268,6 +268,13 @@
 		albumCount: number | null;
 	}
 	let searchArtists = $state<ArtistResult[]>([]);
+	interface PastedLink {
+		provider: string;
+		kind: 'track' | 'album' | 'artist' | 'playlist';
+		id: string;
+		sourceUrl: string | null;
+	}
+	let pastedLink = $state<PastedLink | null>(null);
 	let artistBusy = new SvelteSet<string>();
 	let albumBusy = new SvelteSet<string>();
 	let searchMsg = $state<string | null>(null);
@@ -278,6 +285,7 @@
 		searchResults = [];
 		searchAlbums = [];
 		searchArtists = [];
+		pastedLink = null;
 		searchMsg = null;
 	}
 
@@ -295,15 +303,39 @@
 				results?: SearchResult[];
 				albums?: AlbumResult[];
 				artists?: ArtistResult[];
+				link?: PastedLink | null;
 			};
 			searchResults = body.results ?? [];
 			searchAlbums = body.albums ?? [];
 			searchArtists = body.artists ?? [];
+			pastedLink = body.link ?? null;
 			if (searchResults.length === 0) searchMsg = 'No results from the enabled providers.';
 		} finally {
 			searchBusy = false;
 		}
 	}
+	async function downloadPlaylist(l: PastedLink) {
+		try {
+			const res = await fetch(
+				`/api/playlists/${encodeURIComponent(l.id)}/download?provider=${encodeURIComponent(l.provider)}`,
+				{ method: 'POST' }
+			);
+			const body = (await res.json()) as {
+				enqueued?: number;
+				truncated?: boolean;
+				error?: { message: string };
+			};
+			if (!res.ok) {
+				toast('error', body.error?.message ?? `HTTP ${res.status}`);
+				return;
+			}
+			toast('ok', `Queued ${body.enqueued} tracks${body.truncated ? ' (capped)' : ''}`);
+			await invalidateAll();
+		} catch {
+			toast('error', 'Could not queue the playlist (network).');
+		}
+	}
+
 	async function downloadArtist(a: ArtistResult) {
 		const key = a.provider + ':' + a.artistId;
 		artistBusy.add(key);
@@ -746,6 +778,63 @@
 					</button>
 				</div>
 			{/each}
+		</div>
+	{/if}
+	{#if pastedLink}
+		{@const link = pastedLink}
+		<p class="mt-4 mb-2 text-xs font-medium text-on-surface-variant uppercase">Pasted link</p>
+		<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2">
+			<span class="m3-chip bg-secondary-container text-on-secondary-container uppercase">
+				{link.provider}
+			</span>
+			<div class="min-w-0 flex-1">
+				<p class="truncate text-sm">
+					{link.kind === 'track'
+						? 'Track'
+						: pastedLink.kind.charAt(0).toUpperCase() + pastedLink.kind.slice(1)}
+					{link.sourceUrl ?? link.id}
+				</p>
+			</div>
+			{#if pastedLink.kind === 'artist'}
+				<button
+					type="button"
+					class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm"
+					onclick={() =>
+						downloadArtist({
+							provider: link.provider,
+							artistId: link.id,
+							name: link.sourceUrl ?? 'this artist',
+							albumCount: null
+						})}
+				>
+					Download all
+				</button>
+			{:else if pastedLink.kind === 'album'}
+				<button
+					type="button"
+					class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm"
+					onclick={() =>
+						downloadAlbum({
+							provider: link.provider,
+							albumId: link.id,
+							title: link.sourceUrl ?? 'album',
+							artist: '',
+							year: null,
+							coverUrl: null
+						})}
+				>
+					Download album
+				</button>
+			{:else if pastedLink.kind === 'playlist'}
+				<!-- A POST fan-out, not navigation, so a button rather than a link. -->
+				<button
+					type="button"
+					class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm"
+					onclick={() => void downloadPlaylist(link)}
+				>
+					Download playlist
+				</button>
+			{/if}
 		</div>
 	{/if}
 	{#if searchAlbums.length > 0}
