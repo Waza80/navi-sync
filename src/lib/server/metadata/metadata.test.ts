@@ -77,6 +77,22 @@ describe('neededFieldsFor', () => {
 		expect(neededFieldsFor(legacy)).toEqual(['artistMbid']);
 	});
 
+	// Regression: cleanPatch whitelists keys explicitly, and artistMbid was missing
+	// from that list — so the resolver produced a perfectly good MBID and the
+	// cleaner silently dropped it, leaving every row with a NULL artist_mbid.
+	it('keeps artistMbid through cleanPatch', () => {
+		const patch = cleanPatch({
+			artistMbid: '9ba3809e-86c4-4d47-b856-bd5bb2d9fe79',
+			album: 'La Mémoire insoluble',
+		});
+		expect(patch.artistMbid).toBe('9ba3809e-86c4-4d47-b856-bd5bb2d9fe79');
+		expect(patchKeys(patch)).toContain('artistMbid');
+	});
+
+	it('drops an empty artistMbid rather than writing a blank identity', () => {
+		expect(cleanPatch({ artistMbid: '   ' }).artistMbid).toBeUndefined();
+	});
+
 	it('treats a blank album as missing (the "song with no album" case)', () => {
 		const fields = neededFieldsFor({
 			album: '   ',

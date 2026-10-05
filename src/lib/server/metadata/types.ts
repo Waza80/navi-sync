@@ -134,6 +134,7 @@ export function cleanPatch(patch: MetadataPatch): MetadataPatch {
 	put('trackNumber', patch.trackNumber);
 	put('discNumber', patch.discNumber);
 	put('isrc', patch.isrc);
+	put('artistMbid', patch.artistMbid);
 	return out;
 }
 
