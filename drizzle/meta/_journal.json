@@ -43,6 +43,13 @@
       "when": 1791156000000,
       "tag": "0005_normalize_library_paths",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791159600000,
+      "tag": "0006_force_tag_repair",
+      "breakpoints": true
     }
   ]
 }

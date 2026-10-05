@@ -10,6 +10,7 @@
 		preferLossless: boolean;
 		allowLowerFallback: boolean;
 		autoUpgradeQuality: boolean;
+		forceTagRepair: boolean;
 		enabledProviders: string[];
 		concurrentDownloads: number;
 	};
@@ -32,6 +33,8 @@
 	let allowLowerFallback = $state(data.settings.allowLowerFallback);
 	// svelte-ignore state_referenced_locally
 	let autoUpgradeQuality = $state(data.settings.autoUpgradeQuality);
+	// svelte-ignore state_referenced_locally
+	let forceTagRepair = $state(data.settings.forceTagRepair);
 	// svelte-ignore state_referenced_locally
 	let concurrentDownloads = $state(data.settings.concurrentDownloads);
 
@@ -82,6 +85,7 @@
 				preferLossless,
 				allowLowerFallback,
 				autoUpgradeQuality,
+				forceTagRepair,
 				enabledProviders: enabled.length > 0 ? enabled : ['deezer'],
 				concurrentDownloads
 			};
@@ -300,6 +304,22 @@
 					Keep hunting for better masters (hourly, up to 24-bit).
 					<span class="text-on-surface-variant">
 						Turning this off stops only the upgrade sweep — missing songs are still fetched.
+					</span>
+				</span>
+			</label>
+			<label class="flex min-h-12 items-center gap-3">
+				<input
+					type="checkbox"
+					class="h-5 w-5 accent-[var(--md-primary)]"
+					bind:checked={forceTagRepair}
+				/>
+				<span class="text-sm">
+					Force re-tag every file on repair
+					<span class="text-on-surface-variant">
+						Normally a file that already has a title and artist is left alone. Turn this on, then
+						run <strong>Repair Navidrome index</strong> on the dashboard, to rewrite every file's
+						tags from the database. Needed after a tagging bug — corrupted tags still count as
+						"tagged", so the repair would otherwise skip them and change nothing.
 					</span>
 				</span>
 			</label>

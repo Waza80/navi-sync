@@ -183,6 +183,18 @@ export const settings = pgTable('settings', {
 	 */
 	autoUpgradeQuality: boolean('auto_upgrade_quality').notNull().default(true),
 	/**
+	 * When true, the library repair rewrites embedded tags on EVERY filed file
+	 * instead of skipping any that already carry a title+artist.
+	 *
+	 * This exists because that skip is wrong for exactly the files which need
+	 * help: metaflac once wrote `#CUT4####...` from a C-locale run, and those
+	 * files look tagged while holding mangled album/artist values, so the repair
+	 * reported success while repairing nothing at all. Left off, routine scans
+	 * stay cheap; turned on, it is how a whole library gets re-tagged after a
+	 * tagging bug is fixed.
+	 */
+	forceTagRepair: boolean('force_tag_repair').notNull().default(false),
+	/**
 	 * Providers the engine may use (search, downloads, upgrades). Tidal first:
 	 * it reaches 24/192 where Deezer's catalogue tops out at 24/96.
 	 */

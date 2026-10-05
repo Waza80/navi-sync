@@ -22,6 +22,12 @@ export interface AppSettings {
 	 * fetching MISSING music — the retry sweep runs regardless of this.
 	 */
 	autoUpgradeQuality: boolean;
+	/**
+	 * Rewrite embedded tags on every filed file during repair, instead of
+	 * skipping files that already carry a title+artist. Needed after a tagging
+	 * bug, because the corrupt files look tagged.
+	 */
+	forceTagRepair: boolean;
 	/** Providers the engine may use. */
 	enabledProviders: string[];
 	concurrentDownloads: number;
@@ -33,6 +39,7 @@ const DEFAULTS = {
 	preferLossless: true,
 	allowLowerFallback: true,
 	autoUpgradeQuality: true,
+	forceTagRepair: false,
 	// Order matters: the registry keeps this order, so Tidal is asked before
 	// Deezer — it reaches 24/192 and Deezer tops out at 24/96.
 	enabledProviders: ['tidal', 'deezer'] as string[],
@@ -70,6 +77,7 @@ export async function getSettings(): Promise<AppSettings> {
 		preferLossless: row.preferLossless,
 		allowLowerFallback: row.allowLowerFallback,
 		autoUpgradeQuality: row.autoUpgradeQuality,
+		forceTagRepair: row.forceTagRepair,
 		enabledProviders: Array.isArray(row.enabledProviders)
 			? row.enabledProviders
 			: [...DEFAULTS.enabledProviders],
@@ -86,6 +94,7 @@ export interface SettingsPatch {
 	preferLossless?: boolean;
 	allowLowerFallback?: boolean;
 	autoUpgradeQuality?: boolean;
+	forceTagRepair?: boolean;
 	enabledProviders?: string[];
 	concurrentDownloads?: number;
 }
@@ -105,6 +114,7 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
 		values.allowLowerFallback = patch.allowLowerFallback;
 	if (patch.autoUpgradeQuality !== undefined)
 		values.autoUpgradeQuality = patch.autoUpgradeQuality;
+	if (patch.forceTagRepair !== undefined) values.forceTagRepair = patch.forceTagRepair;
 	if (patch.enabledProviders !== undefined) values.enabledProviders = patch.enabledProviders;
 	if (patch.concurrentDownloads !== undefined)
 		values.concurrentDownloads = patch.concurrentDownloads;
@@ -127,6 +137,7 @@ export async function getPublicSettings(): Promise<{
 	 * fetching MISSING music — the retry sweep runs regardless of this.
 	 */
 	autoUpgradeQuality: boolean;
+	forceTagRepair: boolean;
 	/** Providers the engine may use. */
 	enabledProviders: string[];
 	concurrentDownloads: number;
@@ -141,6 +152,7 @@ export async function getPublicSettings(): Promise<{
 		preferLossless: s.preferLossless,
 		allowLowerFallback: s.allowLowerFallback,
 		autoUpgradeQuality: s.autoUpgradeQuality,
+		forceTagRepair: s.forceTagRepair,
 		concurrentDownloads: s.concurrentDownloads,
 		enabledProviders: s.enabledProviders,
 	};

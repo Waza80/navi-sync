@@ -140,7 +140,10 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	}
 	if (relocated) {
 		// The freshly-found metadata is better than whatever the stale job carried.
-		job.payload = { ...job.payload, meta: { ...(job.payload['meta'] as object), ...relocated.meta } };
+		job.payload = {
+			...job.payload,
+			meta: { ...(job.payload['meta'] as object), ...relocated.meta },
+		};
 	}
 
 	// 2. Metadata. Providers without bare-id metadata receive the
@@ -657,6 +660,7 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		await updateProgress(job.id, job.type, job.trackId, 20, 'repairing embedded tags');
 		const { ensureFileTags } = await import('$lib/server/library/tagging');
 		const { readFile } = await import('node:fs/promises');
+		const { forceTagRepair } = await getSettings();
 		for (const t of await listFiledTracks()) {
 			if (!t.filePath) continue;
 			// Prefer the .lrc: Navidrome reads no sidecars, so the lyrics only
@@ -687,14 +691,13 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 					lyricsPlain,
 					lyricsSynced,
 				},
-				// Force is REQUIRED here. The default skips any file that already
-				// has a title+artist, which is precisely the set that is broken:
-				// metaflac wrote `#CUT4####...` from a C-locale run, and those files
-				// look "tagged" while carrying mangled album/artist values. Without
-				// force, the repair pass reported success and changed nothing, which
-				// is why the corruption survived every index repair and the album
-				// stayed split across three Navidrome entries.
-				{ force: true },
+				// Force is required to actually repair a whole library. The default
+				// skips any file that already has a title+artist, which is exactly
+				// the broken set: metaflac wrote `#CUT4####...` from a C-locale run,
+				// and those files look tagged while holding mangled values, so the
+				// pass reported success while changing nothing. Now a setting, so
+				// routine scans stay cheap but a full re-tag can be forced by hand.
+				{ force: forceTagRepair },
 			);
 			if (outcome === 'ok') retagged++;
 			else if (outcome === 'skipped') tagsSkipped++;

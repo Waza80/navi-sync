@@ -124,12 +124,10 @@ function toPatch(chosen: Chosen, needed: MetadataQuery['needed']): MetadataPatch
 			: {}),
 		...(needed.includes('coverUrl') ? { coverUrl: coverUrlFor(release.id) } : {}),
 		...(needed.includes('year') ? { year: yearOf(release.date) } : {}),
-		...(needed.includes('trackNumber') && release.media?.[0]?.position
-			? { trackNumber: release.media[0].position }
-			: {}),
-		...(needed.includes('discNumber') && release.media?.[0]?.position
-			? { discNumber: release.media[0].position }
-			: {}),
+		// Track and disc numbers are merged in by the caller, which must fetch the
+		// release's track list: they are absent from the search payload, and
+		// `media[].position` is the DISC number -- reading a track number from
+		// there reports 1 for every track on the album.
 		...(needed.includes('isrc') && rec.isrcs?.[0] ? { isrc: rec.isrcs[0] } : {}),
 	};
 }
@@ -188,6 +186,74 @@ async function search(query: string): Promise<MbRecording[]> {
 	return body.recordings ?? [];
 }
 
+/**
+ * True track/disc numbers for a recording on a given release.
+ *
+ * The search endpoint returns releases WITHOUT their track lists, and on a
+ * release object `media[].position` is the DISC number — not the track number.
+ * Reading a track number from there yields 1 for every track on the album, which
+ * silently scrambles album ordering. The real position lives in the medium's
+ * track list, keyed by recording id, so it costs one extra (rate-limited)
+ * request — paid only when a track number is actually wanted.
+ */
+async function fetchTrackNumbers(
+	releaseId: string | undefined,
+	recordingId: string | undefined,
+	recordingTitle?: string,
+): Promise<{ trackNumber: number | null; discNumber: number | null }> {
+	if (!releaseId || !recordingId) return { trackNumber: null, discNumber: null };
+	const res = await politeFetch(`${MB}/release/${releaseId}?inc=recordings&fmt=json`);
+	if (!res?.ok) return { trackNumber: null, discNumber: null };
+	const body = (await res.json()) as {
+		media?: Array<{
+			position?: number;
+			tracks?: Array<{
+				// `id` here is the TRACK MBID; the recording lives under `recording`.
+				id?: string;
+				position?: number;
+				title?: string;
+				recording?: { id?: string; title?: string };
+			}>;
+		}>;
+	};
+	const norm = (v: string | undefined): string =>
+		String(v ?? '')
+			.normalize('NFD')
+			.replace(/\p{Diacritic}/gu, '')
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '')
+			.trim();
+	const wantedTitle = norm(recordingTitle);
+	for (const medium of body.media ?? []) {
+		for (const track of medium.tracks ?? []) {
+			const position = typeof track.position === 'number' ? track.position : null;
+			if (position == null) continue;
+			const disc = medium.position ?? null;
+			// Prefer the recording id. `track.id` is the TRACK MBID, not the
+			// recording's, so matching on it silently found nothing and every
+			// album reported no track numbers at all.
+			if (track.recording?.id && track.recording.id === recordingId) {
+				return { trackNumber: position, discNumber: disc };
+			}
+		}
+	}
+	// Fallback by title: recordings get merged and redirected in MusicBrainz, so
+	// the id can drift while the release track list still names the song.
+	if (wantedTitle) {
+		for (const medium of body.media ?? []) {
+			for (const track of medium.tracks ?? []) {
+				const position = typeof track.position === 'number' ? track.position : null;
+				if (position == null) continue;
+				const name = norm(track.recording?.title ?? track.title);
+				if (name && name === wantedTitle) {
+					return { trackNumber: position, discNumber: medium.position ?? null };
+				}
+			}
+		}
+	}
+	return { trackNumber: null, discNumber: null };
+}
+
 export const musicbrainzSource: MetadataSource = {
 	id: 'musicbrainz',
 	displayName: 'MusicBrainz',
@@ -196,7 +262,7 @@ export const musicbrainzSource: MetadataSource = {
 		// ISRC first — authoritative, no fuzzy matching required.
 		if (query.isrc) {
 			const chosen = choose(await search(`isrc:${query.isrc}`), query);
-			if (chosen) return toPatch(chosen, query.needed);
+			if (chosen) return withTrackNumbers(chosen, query);
 		}
 		const chosen = choose(
 			await search(`recording:"${query.title}" AND artist:"${query.artist}"`),
@@ -209,6 +275,30 @@ export const musicbrainzSource: MetadataSource = {
 			});
 			return null;
 		}
-		return toPatch(chosen, query.needed);
+		return withTrackNumbers(chosen, query);
 	},
 };
+
+/**
+ * toPatch plus the release's real track/disc positions.
+ *
+ * The extra request is only made when a number is actually wanted, so the common
+ * case (album/year/artist only) stays at one call.
+ */
+async function withTrackNumbers(
+	chosen: Chosen,
+	query: MetadataQuery,
+): Promise<MetadataPatch | null> {
+	const patch = toPatch(chosen, query.needed);
+	const wantsTrack = query.needed.includes('trackNumber');
+	const wantsDisc = query.needed.includes('discNumber');
+	if (!wantsTrack && !wantsDisc) return patch;
+	const { trackNumber, discNumber } = await fetchTrackNumbers(
+		chosen.release.id,
+		chosen.recording.id,
+		chosen.recording.title,
+	);
+	if (wantsTrack && trackNumber != null) patch.trackNumber = trackNumber;
+	if (wantsDisc && discNumber != null) patch.discNumber = discNumber;
+	return patch;
+}
