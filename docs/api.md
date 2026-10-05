@@ -28,7 +28,7 @@ domain). CSRF: same-host origins are trusted; extras via `TRUSTED_ORIGINS`.
 ## Tracks
 
 | Endpoint          | Method | Body/Query                   | Response         |
-| ----------------- | ------ | ---------------------------- | ---------------- |
+| ----------------- | ------ | ---------------------------- | ---------------- | ----------- |
 | `/api/tracks`     | GET    | `?q=&page=&pageSize=` (≤100) | `{items, total}` |
 | `/api/tracks`     | POST   | `{"url": "<deezer track url  | id>"}`           | `201 {job}` |
 | `/api/tracks/:id` | GET    | —                            | `{track}`        |
@@ -41,7 +41,7 @@ are **skipped by the guardrail** (job succeeds with `result.skipped`).
 ## Jobs
 
 | Endpoint              | Method | Notes                                                |
-| --------------------- | ------ | ---------------------------------------------------- |
+| --------------------- | ------ | ---------------------------------------------------- | ------ | ---------- |
 | `/api/jobs?limit=`    | GET    | newest first (≤100)                                  |
 | `/api/jobs`           | POST   | `{"url"}` — alias of `POST /api/tracks`              |
 | `/api/jobs/:id`       | DELETE | cancel queued (immediate) or running (abort watcher) |

@@ -123,6 +123,13 @@ export const tracks = pgTable(
 		 * a permanently unavailable track is re-attempted on every sweep forever.
 		 */
 		refetchBlocked: boolean('refetch_blocked').notNull().default(false),
+		// MusicBrainz artist id. Names are not identities — Deezer files a French
+		// rapper and a US electronic producer both as "Tanger" on one artist page.
+		artistMbid: text('artist_mbid'),
+		// When metadata was last re-fetched, and how that pass went, so a reindex
+		// can report clear per-track status instead of looking like a no-op.
+		metadataRefreshedAt: timestamp('metadata_refreshed_at'),
+		metadataStatus: text('metadata_status'),
 		navidromeSyncedAt: timestamp('navidrome_synced_at', { withTimezone: true }),
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

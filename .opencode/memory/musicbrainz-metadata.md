@@ -9,11 +9,11 @@ each field by **agreement**: a value confirmed by ≥2 sources wins; source orde
 This matters because each source is individually unreliable. Measured over 12
 albums:
 
-| Source | Correct | Wrong on |
-| --- | --- | --- |
-| Tidal | 8/12 | 3–4 albums |
-| Deezer | 7/11 | 3–4 albums |
-| MusicBrainz | 6/8 | 3–4 albums |
+| Source      | Correct | Wrong on   |
+| ----------- | ------- | ---------- |
+| Tidal       | 8/12    | 3–4 albums |
+| Deezer      | 7/11    | 3–4 albums |
+| MusicBrainz | 6/8     | 3–4 albums |
 
 Any two agreeing were right every time. A single-source answer is a guess, so
 prefer three sources over one and never trust order alone.
@@ -25,7 +25,7 @@ limits) when nothing is required.
 
 - `media[].position` is the **disc** number. The real track number is the position
   of `track.recording.id` in the release's track list — and that id is the
-  *recording* MBID, not `track.id` (which is the track MBID). Fetched only when a
+  _recording_ MBID, not `track.id` (which is the track MBID). Fetched only when a
   number is actually wanted, because it costs a rate-limited request.
 - `artist-credit[0].artist.id` is the artist MBID and
   `artist-credit[0].artist.disambiguation` is a human qualifier ("French band",
@@ -43,8 +43,8 @@ limits) when nothing is required.
 
 Deezer merged two different people into artist `110750` ("Tanger"), holding all
 67 albums — a French rapper and a US electronic producer. MusicBrainz separates
-them: `7d90e27a…` (*Electronic music producer*, 77 release groups) and
-`9ba3809e…` (*French band*, 6 release groups).
+them: `7d90e27a…` (_Electronic music producer_, 77 release groups) and
+`9ba3809e…` (_French band_, 6 release groups).
 
 An independent signal agrees perfectly: **ISRC registrant prefix**. `FRZ…`/`FR…`
 is the French registry and covers exactly the French albums; `QZ…`/`US…` is the
@@ -58,16 +58,16 @@ Consequences already observed:
 ## Known bug: release year
 
 `provider.metadata` writes the provider's **album** `release_date` into
-`meta.year`, and enrichment only fills *missing* fields — so MusicBrainz's
+`meta.year`, and enrichment only fills _missing_ fields — so MusicBrainz's
 release date never gets a vote. Re-running the resolver with `year: null` returns
 the right year every time.
 
-| Album | In DB | MusicBrainz | Deezer |
-| --- | --- | --- | --- |
-| La Memoire Insoluble | 2013 | 1998 | 1998 |
-| Le Detroit | 2008 | 2000 | 2000 |
-| Archive for Thought | 2024 | 2022 | 2024 |
-| Il Est Toujours 20 Heures | 2026 | 2008 | 2012 |
+| Album                     | In DB | MusicBrainz | Deezer |
+| ------------------------- | ----- | ----------- | ------ |
+| La Memoire Insoluble      | 2013  | 1998        | 1998   |
+| Le Detroit                | 2008  | 2000        | 2000   |
+| Archive for Thought       | 2024  | 2022        | 2024   |
+| Il Est Toujours 20 Heures | 2026  | 2008        | 2012   |
 
 Some of these are genuinely ambiguous (a digital reissue has a real later date),
 but 2013 for a 1998 album is not defensible.

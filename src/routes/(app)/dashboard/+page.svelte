@@ -13,21 +13,25 @@
 		ArrowLeft01Icon,
 		ArrowRight01Icon,
 		Cancel01Icon,
-		GlobalRefreshIcon
+		GlobalRefreshIcon,
 	} from '@hugeicons/core-free-icons';
 	import type { TrackDTO } from '$lib/shared/types';
 
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 
-	let { data }: { data: {
-		jobs: Parameters<typeof live.hydrate>[0];
-		tracks: TrackDTO[];
-		tracksTotal: number;
-		failedTracks: TrackDTO[];
-		failedTotal: number;
-		stats: { total: number; lossless: number; withLyrics: number; failed: number };
-	} } = $props();
+	let {
+		data,
+	}: {
+		data: {
+			jobs: Parameters<typeof live.hydrate>[0];
+			tracks: TrackDTO[];
+			tracksTotal: number;
+			failedTracks: TrackDTO[];
+			failedTotal: number;
+			stats: { total: number; lossless: number; withLyrics: number; failed: number };
+		};
+	} = $props();
 
 	let urlInput = $state('');
 	let message = $state<{ tone: 'ok' | 'error'; text: string } | null>(null);
@@ -48,7 +52,7 @@
 	$effect(() => {
 		live.start(
 			() => void invalidateAll(),
-			() => void invalidateAll() // resync after SSE reconnect (missed events)
+			() => void invalidateAll(), // resync after SSE reconnect (missed events)
 		);
 	});
 	// Snapshot sync must NOT read live.jobs in the same tracked scope it
@@ -76,7 +80,10 @@
 			params.set('page', '1');
 			// Same-page query navigation — resolve() cannot express query-only URLs.
 			// eslint-disable-next-line svelte/no-navigation-without-resolve
-			void goto(`${page.url.pathname}?${params.toString()}`, { replaceState: true, keepFocus: true });
+			void goto(`${page.url.pathname}?${params.toString()}`, {
+				replaceState: true,
+				keepFocus: true,
+			});
 		}, 300);
 	}
 	function gotoPage(next: number) {
@@ -86,14 +93,18 @@
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		void goto(`${page.url.pathname}?${params.toString()}`, { replaceState: true });
 	}
-	const currentPage = $derived(Number.parseInt(page.url.searchParams.get('page') ?? '1', 10) || 1);
+	const currentPage = $derived(
+		Number.parseInt(page.url.searchParams.get('page') ?? '1', 10) || 1,
+	);
 	const pageCount = $derived(Math.max(1, Math.ceil(data.tracksTotal / 50)));
 	const filteredTracks = $derived(data.tracks);
 	const queueCounts = $derived({
 		all: live.recentJobs.length,
-		active: live.recentJobs.filter((j) => j.status === 'queued' || j.status === 'running').length,
-		done: live.recentJobs.filter((j) => j.status === 'succeeded' || j.status === 'cancelled').length,
-		failed: live.recentJobs.filter((j) => j.status === 'failed' || j.status === 'dead').length
+		active: live.recentJobs.filter((j) => j.status === 'queued' || j.status === 'running')
+			.length,
+		done: live.recentJobs.filter((j) => j.status === 'succeeded' || j.status === 'cancelled')
+			.length,
+		failed: live.recentJobs.filter((j) => j.status === 'failed' || j.status === 'dead').length,
 	});
 	const visibleJobs = $derived(
 		queueFilter === 'all'
@@ -103,8 +114,8 @@
 						? j.status === 'queued' || j.status === 'running'
 						: queueFilter === 'done'
 							? j.status === 'succeeded' || j.status === 'cancelled'
-							: j.status === 'failed' || j.status === 'dead'
-				)
+							: j.status === 'failed' || j.status === 'dead',
+				),
 	);
 	let clearing = $state(false);
 	async function clearFinished() {
@@ -131,7 +142,7 @@
 			const res = await fetch('/api/tracks', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ url: urlInput.trim() })
+				body: JSON.stringify({ url: urlInput.trim() }),
 			});
 			const body = (await res.json()) as {
 				job?: { id: string };
@@ -149,7 +160,7 @@
 				text:
 					body.kind === 'album' || body.kind === 'playlist'
 						? `Queued ${body.enqueued} tracks from the ${body.kind}.`
-						: 'Queued — watch the live progress below.'
+						: 'Queued — watch the live progress below.',
 			};
 			toast('ok', message.text);
 			urlInput = '';
@@ -175,10 +186,17 @@
 		upgrading.add(id);
 		try {
 			const res = await fetch(`/api/tracks/${id}/upgrade`, { method: 'POST' });
-			const body = (await res.json()) as { job?: { id: string }; message?: string; error?: { message: string } };
+			const body = (await res.json()) as {
+				job?: { id: string };
+				message?: string;
+				error?: { message: string };
+			};
 			message = res.ok
 				? { tone: 'ok', text: body.message ?? 'Quality check queued — watch the queue.' }
-				: { tone: 'error', text: body.error?.message ?? body.message ?? `HTTP ${res.status}` };
+				: {
+						tone: 'error',
+						text: body.error?.message ?? body.message ?? `HTTP ${res.status}`,
+					};
 			toast(message.tone, message.text);
 		} finally {
 			upgrading.delete(id);
@@ -189,7 +207,7 @@
 			const res = await fetch(`/api/tracks/${id}/refetch-block`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ blocked })
+				body: JSON.stringify({ blocked }),
 			});
 			if (!res.ok) {
 				toast('error', `Could not change refetch (HTTP ${res.status})`);
@@ -206,7 +224,11 @@
 		upgrading.add(id);
 		try {
 			const res = await fetch(`/api/tracks/${id}/retry-download`, { method: 'POST' });
-			const body = (await res.json()) as { job?: { id: string }; message?: string; error?: { message: string } };
+			const body = (await res.json()) as {
+				job?: { id: string };
+				message?: string;
+				error?: { message: string };
+			};
 			if (res.ok) {
 				toast('info', body.message ?? 'Retry queued.');
 				await invalidateAll();
@@ -318,7 +340,7 @@
 		try {
 			const res = await fetch(
 				`/api/playlists/${encodeURIComponent(l.id)}/download?provider=${encodeURIComponent(l.provider)}`,
-				{ method: 'POST' }
+				{ method: 'POST' },
 			);
 			const body = (await res.json()) as {
 				enqueued?: number;
@@ -342,7 +364,7 @@
 		try {
 			const res = await fetch(
 				`/api/artists/${encodeURIComponent(a.artistId)}/download?provider=${encodeURIComponent(a.provider)}`,
-				{ method: 'POST' }
+				{ method: 'POST' },
 			);
 			const body = (await res.json()) as {
 				enqueued?: number;
@@ -357,7 +379,7 @@
 			const capped = body.truncated ? ' (capped)' : '';
 			toast(
 				'ok',
-				`Queued ${body.enqueued} tracks from ${body.albumsScanned} albums of “${a.name}”${capped}`
+				`Queued ${body.enqueued} tracks from ${body.albumsScanned} albums of “${a.name}”${capped}`,
 			);
 			await invalidateAll();
 		} finally {
@@ -373,7 +395,7 @@
 			// provider-scoped, and guessing Deezer broke Tidal albums entirely.
 			const res = await fetch(
 				`/api/albums/${encodeURIComponent(a.albumId)}/download?provider=${encodeURIComponent(a.provider)}`,
-				{ method: 'POST' }
+				{ method: 'POST' },
 			);
 			const body = (await res.json()) as { enqueued?: number; error?: { message: string } };
 			if (res.ok) {
@@ -392,7 +414,7 @@
 		await fetch('/api/jobs', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ provider: r.provider, trackId: r.providerTrackId })
+			body: JSON.stringify({ provider: r.provider, trackId: r.providerTrackId }),
 		});
 	}
 
@@ -430,9 +452,9 @@
 	}): UploadDraft | null {
 		if (!body.uploadId) return null;
 		const d = body.detected ?? {};
-		const str = (k: string): string => (typeof d[k] === 'string' ? (d[k]) : '');
+		const str = (k: string): string => (typeof d[k] === 'string' ? d[k] : '');
 		const num = (k: string): string =>
-			typeof d[k] === 'number' ? String(d[k]) : typeof d[k] === 'string' ? (d[k]) : '';
+			typeof d[k] === 'number' ? String(d[k]) : typeof d[k] === 'string' ? d[k] : '';
 		return {
 			uploadId: body.uploadId,
 			ext: body.ext ?? '',
@@ -444,7 +466,7 @@
 			artist: str('artist'),
 			album: str('album'),
 			trackNumber: num('trackNumber'),
-			year: num('year')
+			year: num('year'),
 		};
 	}
 
@@ -486,7 +508,9 @@
 				if (files.length === 0) {
 					uploadMsg = {
 						tone: 'error',
-						text: `No audio files found in ${file.name}.` + (skipped.length ? ` Skipped ${skipped.length}.` : '')
+						text:
+							`No audio files found in ${file.name}.` +
+							(skipped.length ? ` Skipped ${skipped.length}.` : ''),
 					};
 					return;
 				}
@@ -501,7 +525,7 @@
 					artist: f.hints.artist ?? '',
 					album: f.hints.album ?? '',
 					trackNumber: f.hints.trackNumber != null ? String(f.hints.trackNumber) : '',
-					year: ''
+					year: '',
 				}));
 				// Inspect sequentially: the catalog lookup is per-file and hammering
 				// it in parallel would just earn rate limits.
@@ -510,7 +534,10 @@
 						const d = await inspectOne(files[i].file, files[i].entryPath);
 						if (d) ups[i] = d;
 					} catch (err) {
-						uploadMsg = { tone: 'error', text: `${files[i].name}: ${String(err).slice(0, 120)}` };
+						uploadMsg = {
+							tone: 'error',
+							text: `${files[i].name}: ${String(err).slice(0, 120)}`,
+						};
 					}
 				}
 				const autoFilled = ups.filter((d) => Object.keys(d.filledBy).length > 0).length;
@@ -518,9 +545,11 @@
 					tone: 'info',
 					text:
 						`${ups.length} track(s) from ${file.name}` +
-						(autoFilled ? ` — metadata filled for ${autoFilled} from the catalog` : '') +
+						(autoFilled
+							? ` — metadata filled for ${autoFilled} from the catalog`
+							: '') +
 						(skipped.length ? `. Skipped ${skipped.length} non-audio file(s).` : '.') +
-						' Review, then Save all.'
+						' Review, then Save all.',
 				};
 			} else {
 				const d = await inspectOne(file, null);
@@ -532,12 +561,15 @@
 						tone: 'info',
 						text: filled.length
 							? `Detected; filled ${filled.join(', ')} from the catalog. Review and save.`
-							: 'Metadata detected — review and Save to library.'
+							: 'Metadata detected — review and Save to library.',
 					};
 				}
 			}
 		} catch (err) {
-			uploadMsg = { tone: 'error', text: `Upload inspection failed: ${String(err).slice(0, 140)}` };
+			uploadMsg = {
+				tone: 'error',
+				text: `Upload inspection failed: ${String(err).slice(0, 140)}`,
+			};
 			ups = [];
 			up = null;
 		} finally {
@@ -562,8 +594,8 @@
 					year: d.year ? Number(d.year) : null,
 					isrc: d.isrc.trim() || null,
 					embeddedLyrics: d.embeddedLyrics,
-					fetchLyrics: !d.embeddedLyrics
-				})
+					fetchLyrics: !d.embeddedLyrics,
+				}),
 			});
 			const body = (await res.json()) as {
 				duplicate?: boolean;
@@ -597,7 +629,7 @@
 				? { tone: 'ok' as const, text: `${okCount} track(s) saved to library ✓` }
 				: {
 						tone: 'info' as const,
-						text: `${okCount} saved, ${failed.length} failed — ${failed[0]}`
+						text: `${okCount} saved, ${failed.length} failed — ${failed[0]}`,
 					};
 		uploadMsg = summary;
 		toast(summary.tone, summary.text);
@@ -628,7 +660,10 @@
 	// ── Playlist CSV import ─────────────────────────────────────────────────
 	let csvBusy = $state(false);
 	let csvMsg = $state<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null);
-	let csvResult = $state<{ matchedCount: number; unmatched: Array<{ title: string; artist: string; reason: string }> } | null>(null);
+	let csvResult = $state<{
+		matchedCount: number;
+		unmatched: Array<{ title: string; artist: string; reason: string }>;
+	} | null>(null);
 
 	async function importCsv(e: Event) {
 		csvMsg = null;
@@ -653,7 +688,7 @@
 			csvResult = { matchedCount: body.matchedCount ?? 0, unmatched: body.unmatched ?? [] };
 			csvMsg = {
 				tone: (body.matchedCount ?? 0) > 0 ? 'ok' : 'info',
-				text: `Matched & queued ${body.matchedCount ?? 0} songs · ${(body.unmatched ?? []).length} unmatched.`
+				text: `Matched & queued ${body.matchedCount ?? 0} songs · ${(body.unmatched ?? []).length} unmatched.`,
 			};
 			toast('ok', csvMsg.text);
 			await invalidateAll();
@@ -700,7 +735,9 @@
 <!-- Add download -->
 <form onsubmit={submitDownload} class="m3-card mb-6 flex flex-col gap-3 p-4 sm:flex-row">
 	<div class="flex-1">
-		<label for="dl-url" class="mb-1 block text-sm text-on-surface-variant">Track URL or ID</label>
+		<label for="dl-url" class="mb-1 block text-sm text-on-surface-variant"
+			>Track URL or ID</label
+		>
 		<input
 			id="dl-url"
 			type="url"
@@ -733,10 +770,20 @@
 	<form onsubmit={doSearch} class="flex flex-col gap-3 sm:flex-row">
 		<div class="flex-1">
 			<label for="q" class="mb-1 block text-sm text-on-surface-variant">Song or artist</label>
-			<input id="q" type="search" class="m3-input" placeholder="e.g. Daft Punk One More Time" bind:value={searchInput} />
+			<input
+				id="q"
+				type="search"
+				class="m3-input"
+				placeholder="e.g. Daft Punk One More Time"
+				bind:value={searchInput}
+			/>
 		</div>
 		<div class="flex items-end gap-2">
-			<button type="submit" class="m3-btn m3-btn-tonal w-full sm:w-auto" disabled={searchBusy}>
+			<button
+				type="submit"
+				class="m3-btn m3-btn-tonal w-full sm:w-auto"
+				disabled={searchBusy}
+			>
 				{searchBusy ? 'Searching…' : 'Search'}
 			</button>
 			{#if searchInput.length > 0 || searchResults.length > 0 || searchAlbums.length > 0}
@@ -745,7 +792,12 @@
 					class="m3-btn m3-btn-text"
 					aria-label="Clear search"
 					onclick={clearSearch}
-					><HugeiconsIcon icon={Cancel01Icon} size={16} strokeWidth={2} aria-hidden="true" />Clear</button
+					><HugeiconsIcon
+						icon={Cancel01Icon}
+						size={16}
+						strokeWidth={2}
+						aria-hidden="true"
+					/>Clear</button
 				>
 			{/if}
 		</div>
@@ -759,7 +811,9 @@
 			{#each searchArtists as a (a.provider + ':' + a.artistId)}
 				{@const key = a.provider + ':' + a.artistId}
 				<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2">
-					<span class="m3-chip bg-secondary-container text-on-secondary-container uppercase">
+					<span
+						class="m3-chip bg-secondary-container text-on-secondary-container uppercase"
+					>
 						{a.provider}
 					</span>
 					<div class="min-w-0 flex-1">
@@ -770,7 +824,9 @@
 					</div>
 					<button
 						type="button"
-						class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm {artistBusy.has(key) ? 'opacity-50' : ''}"
+						class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm {artistBusy.has(key)
+							? 'opacity-50'
+							: ''}"
 						disabled={artistBusy.has(key)}
 						onclick={() => downloadArtist(a)}
 					>
@@ -804,7 +860,7 @@
 							provider: link.provider,
 							artistId: link.id,
 							name: link.sourceUrl ?? 'this artist',
-							albumCount: null
+							albumCount: null,
 						})}
 				>
 					Download all
@@ -820,7 +876,7 @@
 							title: link.sourceUrl ?? 'album',
 							artist: '',
 							year: null,
-							coverUrl: null
+							coverUrl: null,
 						})}
 				>
 					Download album
@@ -842,21 +898,31 @@
 		<div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
 			{#each searchAlbums as a (a.provider + a.albumId)}
 				{@const key = a.provider + ':' + a.albumId}
-				<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2 transition-transform duration-200 hover:translate-x-0.5">
+				<div
+					class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2 transition-transform duration-200 hover:translate-x-0.5"
+				>
 					{#if a.coverUrl}
-						<img src={a.coverUrl} alt="" loading="lazy" class="h-10 w-10 rounded-md object-cover" />
+						<img
+							src={a.coverUrl}
+							alt=""
+							loading="lazy"
+							class="h-10 w-10 rounded-md object-cover"
+						/>
 					{:else}
 						<div class="h-10 w-10 rounded-md bg-surface-highest"></div>
 					{/if}
 					<div class="min-w-0 flex-1">
 						<p class="truncate text-sm">{a.title}</p>
 						<p class="truncate text-xs text-on-surface-variant">
-							{a.artist}{#if a.year} · {a.year}{/if}
+							{a.artist}{#if a.year}
+								· {a.year}{/if}
 						</p>
 					</div>
 					<button
 						type="button"
-						class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm {albumBusy.has(key) ? 'opacity-50' : ''}"
+						class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm {albumBusy.has(key)
+							? 'opacity-50'
+							: ''}"
 						disabled={albumBusy.has(key)}
 						onclick={() => downloadAlbum(a)}
 					>
@@ -871,22 +937,35 @@
 		<div class="mt-3 flex flex-col gap-2">
 			{#each searchResults as r (r.provider + r.providerTrackId)}
 				{@const key = r.provider + ':' + r.providerTrackId}
-				<div class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2 transition-transform duration-200 hover:translate-x-0.5">
+				<div
+					class="flex items-center gap-3 rounded-xl bg-surface-low px-3 py-2 transition-transform duration-200 hover:translate-x-0.5"
+				>
 					{#if r.coverUrl}
-						<img src={r.coverUrl} alt="" loading="lazy" class="h-10 w-10 rounded-md object-cover" />
+						<img
+							src={r.coverUrl}
+							alt=""
+							loading="lazy"
+							class="h-10 w-10 rounded-md object-cover"
+						/>
 					{:else}
 						<div class="h-10 w-10 rounded-md bg-surface-highest"></div>
 					{/if}
-					<span class="m3-chip bg-secondary-container text-on-secondary-container uppercase">{r.provider}</span>
+					<span
+						class="m3-chip bg-secondary-container text-on-secondary-container uppercase"
+						>{r.provider}</span
+					>
 					<div class="min-w-0 flex-1">
 						<p class="truncate text-sm">{r.title}</p>
 						<p class="truncate text-xs text-on-surface-variant">
-							{r.artist}{#if r.album} · {r.album}{/if}
+							{r.artist}{#if r.album}
+								· {r.album}{/if}
 						</p>
 					</div>
 					<button
 						type="button"
-						class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm {queuedSearch.has(key) ? 'opacity-50' : ''}"
+						class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm {queuedSearch.has(key)
+							? 'opacity-50'
+							: ''}"
 						disabled={queuedSearch.has(key)}
 						onclick={() => downloadResult(r)}
 					>
@@ -947,12 +1026,16 @@
 					<tbody>
 						{#each ups as d, i (d.uploadId || i)}
 							<tr class="border-t border-outline-variant">
-								<td class="px-2 py-1 text-on-surface-variant">{d.trackNumber || '—'}</td>
+								<td class="px-2 py-1 text-on-surface-variant"
+									>{d.trackNumber || '—'}</td
+								>
 								<td class="px-2 py-1">{d.title || d.entryPath || '—'}</td>
 								<td class="px-2 py-1">{d.artist || '—'}</td>
 								<td class="px-2 py-1">{d.album || '—'}</td>
 								<td class="px-2 py-1 text-on-surface-variant">
-									{Object.keys(d.filledBy).length ? Object.keys(d.filledBy).join(', ') : 'file'}
+									{Object.keys(d.filledBy).length
+										? Object.keys(d.filledBy).join(', ')
+										: 'file'}
 								</td>
 							</tr>
 						{/each}
@@ -963,38 +1046,64 @@
 				<button
 					type="button"
 					class="m3-btn m3-btn-filled"
-					disabled={uploadBusy || ups.some((d) => !d.title.trim() || !d.artist.trim() || !d.album.trim())}
+					disabled={uploadBusy ||
+						ups.some((d) => !d.title.trim() || !d.artist.trim() || !d.album.trim())}
 					onclick={saveAllUploads}
 				>
 					{uploadBusy ? 'Saving…' : `Save all ${ups.length} tracks`}
 				</button>
 				{#if ups.some((d) => !d.title.trim() || !d.artist.trim() || !d.album.trim())}
-					<span class="text-sm text-on-surface-variant">Fill the blank cells to continue.</span>
+					<span class="text-sm text-on-surface-variant"
+						>Fill the blank cells to continue.</span
+					>
 				{/if}
 			</div>
 		{/if}
 		{#if up}
 			<div class="grid gap-3 sm:grid-cols-2">
 				<div>
-					<label for="up-title" class="mb-1 block text-sm text-on-surface-variant">Title *</label>
+					<label for="up-title" class="mb-1 block text-sm text-on-surface-variant"
+						>Title *</label
+					>
 					<input id="up-title" class="m3-input" bind:value={up.title} />
 				</div>
 				<div>
-					<label for="up-artist" class="mb-1 block text-sm text-on-surface-variant">Artist *</label>
+					<label for="up-artist" class="mb-1 block text-sm text-on-surface-variant"
+						>Artist *</label
+					>
 					<input id="up-artist" class="m3-input" bind:value={up.artist} />
 				</div>
 				<div>
-					<label for="up-album" class="mb-1 block text-sm text-on-surface-variant">Album *</label>
+					<label for="up-album" class="mb-1 block text-sm text-on-surface-variant"
+						>Album *</label
+					>
 					<input id="up-album" class="m3-input" bind:value={up.album} />
 				</div>
 				<div class="grid grid-cols-2 gap-3">
 					<div>
-						<label for="up-track" class="mb-1 block text-sm text-on-surface-variant">Track #</label>
-						<input id="up-track" class="m3-input" type="number" min="0" bind:value={up.trackNumber} />
+						<label for="up-track" class="mb-1 block text-sm text-on-surface-variant"
+							>Track #</label
+						>
+						<input
+							id="up-track"
+							class="m3-input"
+							type="number"
+							min="0"
+							bind:value={up.trackNumber}
+						/>
 					</div>
 					<div>
-						<label for="up-year" class="mb-1 block text-sm text-on-surface-variant">Year</label>
-						<input id="up-year" class="m3-input" type="number" min="1000" max="3000" bind:value={up.year} />
+						<label for="up-year" class="mb-1 block text-sm text-on-surface-variant"
+							>Year</label
+						>
+						<input
+							id="up-year"
+							class="m3-input"
+							type="number"
+							min="1000"
+							max="3000"
+							bind:value={up.year}
+						/>
 					</div>
 				</div>
 			</div>
@@ -1002,13 +1111,18 @@
 				<button
 					type="button"
 					class="m3-btn m3-btn-filled"
-					disabled={uploadBusy || up.title.trim().length === 0 || up.artist.trim().length === 0 || up.album.trim().length === 0}
+					disabled={uploadBusy ||
+						up.title.trim().length === 0 ||
+						up.artist.trim().length === 0 ||
+						up.album.trim().length === 0}
 					onclick={finalizeUpload}
 				>
 					{uploadBusy ? 'Saving…' : 'Save to library'}
 				</button>
 				{#if up.embeddedLyrics}
-					<span class="m3-chip bg-tertiary-container text-on-tertiary-container">embedded lyrics detected</span>
+					<span class="m3-chip bg-tertiary-container text-on-tertiary-container"
+						>embedded lyrics detected</span
+					>
 				{/if}
 			</div>
 		{/if}
@@ -1020,8 +1134,8 @@
 	<h2 id="csv-h" class="mb-3 text-base font-medium">Import playlist (CSV)</h2>
 	<p class="mb-3 text-sm text-on-surface-variant">
 		Spotify-style exports (Track Name / Artist Name(s) / Duration) or simple
-		<code>Artist - Title</code> lines. Songs are matched strictly — unsure matches are
-		reported, never guessed.
+		<code>Artist - Title</code> lines. Songs are matched strictly — unsure matches are reported,
+		never guessed.
 	</p>
 	<input
 		id="csv-file"
@@ -1062,7 +1176,11 @@
 	<StatCard label="Tracks" value={data.stats.total} />
 	<StatCard label="Lossless" value={data.stats.lossless} hint="FLAC in library" />
 	<StatCard label="With lyrics" value={data.stats.withLyrics} />
-	<StatCard label="Active jobs" value={live.activeCount} hint={live.connected ? 'live · SSE' : 'connecting…'} />
+	<StatCard
+		label="Active jobs"
+		value={live.activeCount}
+		hint={live.connected ? 'live · SSE' : 'connecting…'}
+	/>
 </div>
 
 <!-- Live queue -->
@@ -1121,14 +1239,23 @@
 			oninput={onFilterInput}
 		/>
 		{#if pageCount > 1}
-			<div class="ml-auto flex items-center gap-2 text-sm text-on-surface-variant" role="navigation" aria-label="Track pages">
+			<div
+				class="ml-auto flex items-center gap-2 text-sm text-on-surface-variant"
+				role="navigation"
+				aria-label="Track pages"
+			>
 				<button
 					type="button"
 					class="m3-btn m3-btn-text h-10 min-h-10 px-3 text-sm"
 					disabled={currentPage <= 1}
 					onclick={() => gotoPage(currentPage - 1)}
 					aria-label="Previous page"
-					><HugeiconsIcon icon={ArrowLeft01Icon} size={16} strokeWidth={2} aria-hidden="true" />Prev</button
+					><HugeiconsIcon
+						icon={ArrowLeft01Icon}
+						size={16}
+						strokeWidth={2}
+						aria-hidden="true"
+					/>Prev</button
 				>
 				<span aria-live="polite">Page {currentPage} of {pageCount}</span>
 				<button
@@ -1137,7 +1264,12 @@
 					disabled={currentPage >= pageCount}
 					onclick={() => gotoPage(currentPage + 1)}
 					aria-label="Next page"
-					>Next<HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} aria-hidden="true" /></button
+					>Next<HugeiconsIcon
+						icon={ArrowRight01Icon}
+						size={16}
+						strokeWidth={2}
+						aria-hidden="true"
+					/></button
 				>
 			</div>
 		{/if}
@@ -1151,19 +1283,26 @@
 			>
 				{retryAllBusy
 					? 'Queueing…'
-					: `Retry all failed (${data.stats.failed})`}<HugeiconsIcon icon={GlobalRefreshIcon} size={16} strokeWidth={2} aria-hidden="true" />
+					: `Retry all failed (${data.stats.failed})`}<HugeiconsIcon
+					icon={GlobalRefreshIcon}
+					size={16}
+					strokeWidth={2}
+					aria-hidden="true"
+				/>
 			</button>
 		{/if}
 	</div>
 	{#if filteredTracks.length === 0}
 		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
-			{trackFilter ? `No tracks match "${trackFilter}".` : 'Nothing here yet — queue your first download above.'}
+			{trackFilter
+				? `No tracks match "${trackFilter}".`
+				: 'Nothing here yet — queue your first download above.'}
 		</p>
 	{:else}
 		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
 			{#each filteredTracks as track (track.id)}
 				<TrackCard
-					track={track}
+					{track}
 					playing={nowPlaying?.id === track.id}
 					ondelete={deleteTrack}
 					onplay={(id: string) => {
@@ -1173,7 +1312,8 @@
 					ondownload={downloadTrackFile}
 					onupgrade={(id: string) => void forceUpgrade(id)}
 					onretry={(id: string) => void retryFailedDownload(id)}
-					onrefetchblock={(id: string, blocked: boolean) => void setRefetchBlock(id, blocked)}
+					onrefetchblock={(id: string, blocked: boolean) =>
+						void setRefetchBlock(id, blocked)}
 				/>
 			{/each}
 		</div>
@@ -1182,7 +1322,9 @@
 	{#if data.failedTracks.length > 0}
 		<div class="mt-8 mb-3 flex flex-wrap items-center gap-2">
 			<h2 class="text-base font-medium">
-				Failed downloads <span class="text-sm text-on-surface-variant">({data.failedTotal})</span>
+				Failed downloads <span class="text-sm text-on-surface-variant"
+					>({data.failedTotal})</span
+				>
 			</h2>
 			<p class="w-full text-xs text-on-surface-variant">
 				These have no file yet. Retry one, or retry them all at once.
@@ -1191,7 +1333,7 @@
 		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
 			{#each data.failedTracks as track (track.id)}
 				<TrackCard
-					track={track}
+					{track}
 					playing={false}
 					ondelete={deleteTrack}
 					onplay={(id: string) => {
@@ -1225,7 +1367,9 @@
 
 <!-- Preview player -->
 {#if nowPlaying}
-	<div class="fixed inset-x-0 bottom-14 z-40 border-t border-outline-variant/40 bg-surface-container/95 px-4 py-2 backdrop-blur sm:bottom-0">
+	<div
+		class="fixed inset-x-0 bottom-14 z-40 border-t border-outline-variant/40 bg-surface-container/95 px-4 py-2 backdrop-blur sm:bottom-0"
+	>
 		<div class="mx-auto flex max-w-5xl items-center gap-3">
 			<div class="min-w-0 flex-1">
 				<p class="truncate text-sm font-medium">{nowPlaying.title}</p>
@@ -1246,7 +1390,12 @@
 					audioEl?.pause();
 					nowPlaying = null;
 				}}
-				><HugeiconsIcon icon={Cancel01Icon} size={18} strokeWidth={2} aria-hidden="true" /></button
+				><HugeiconsIcon
+					icon={Cancel01Icon}
+					size={18}
+					strokeWidth={2}
+					aria-hidden="true"
+				/></button
 			>
 		</div>
 	</div>

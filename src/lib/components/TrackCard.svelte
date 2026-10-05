@@ -7,7 +7,7 @@
 		Download01Icon,
 		PauseIcon,
 		PlayIcon,
-		RefreshIcon
+		RefreshIcon,
 	} from '@hugeicons/core-free-icons';
 	import type { TrackDTO } from '$lib/shared/types';
 
@@ -19,7 +19,7 @@
 		ondownload,
 		onupgrade,
 		onretry,
-		onrefetchblock
+		onrefetchblock,
 	}: {
 		track: TrackDTO;
 		playing?: boolean;
@@ -38,10 +38,10 @@
 			? { text: 'LYRICS', cls: 'bg-tertiary-container text-on-tertiary-container' }
 			: track.lyricsStatus === 'failed'
 				? { text: 'LYRICS', cls: 'bg-surface-highest text-on-surface-variant' }
-				: null
+				: null,
 	);
 	const statusBadge = $derived(
-		failed ? { text: 'FAILED', cls: 'bg-error-container text-on-error-container' } : null
+		failed ? { text: 'FAILED', cls: 'bg-error-container text-on-error-container' } : null,
 	);
 	const lossless = $derived(track.isLossless || track.format === 'flac');
 </script>
@@ -56,8 +56,14 @@
 	card; as full text buttons at 48px min-height with 24px side padding they
 	overflowed and pushed Delete outside the card's overflow-hidden.
 -->
-<div class="m3-card m3-tile group relative flex flex-col overflow-hidden {playing ? 'ring-1 ring-primary' : ''}">
-	<div class="relative aspect-square w-full shrink-0 self-start overflow-hidden bg-surface-highest">
+<div
+	class="m3-card m3-tile group relative flex flex-col overflow-hidden {playing
+		? 'ring-1 ring-primary'
+		: ''}"
+>
+	<div
+		class="relative aspect-square w-full shrink-0 self-start overflow-hidden bg-surface-highest"
+	>
 		<img
 			src={`/api/tracks/${track.id}/cover`}
 			alt=""
@@ -104,7 +110,7 @@
 		{#if !failed}
 			<button
 				type="button"
-				class="m3-icon-button absolute bottom-2 right-2 z-30 h-11 w-11 bg-primary text-on-primary ring-1 ring-black/25 shadow-[var(--md-elev-3)]"
+				class="m3-icon-button absolute right-2 bottom-2 z-30 h-11 w-11 bg-primary text-on-primary shadow-[var(--md-elev-3)] ring-1 ring-black/25"
 				aria-label={playing ? `Pause ${track.title}` : `Preview ${track.title}`}
 				onclick={() => onplay?.(track.id)}
 			>
@@ -121,7 +127,10 @@
 	<!-- Meta: full width, nothing overlaid, so titles truncate on their own terms. -->
 	<div class="flex min-w-0 flex-1 flex-col gap-0.5 p-3">
 		<p class="truncate text-sm font-medium" title={track.title}>{track.title}</p>
-		<p class="truncate text-xs text-on-surface-variant" title="{track.artist} · {track.album ?? ''}">
+		<p
+			class="truncate text-xs text-on-surface-variant"
+			title="{track.artist} · {track.album ?? ''}"
+		>
 			{track.artist}
 		</p>
 		<div class="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">

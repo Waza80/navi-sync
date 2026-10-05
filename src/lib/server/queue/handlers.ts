@@ -976,7 +976,7 @@ async function enrichInline(meta: TrackMeta): Promise<TrackMeta> {
  * All three are best-effort: the job succeeds and reports what it fixed.
  */
 async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<string, unknown>> {
-	const payload = job.payload as { trackId?: string; reason?: string };
+	const payload = job.payload as { trackId?: string; reason?: string; force?: boolean };
 	if (typeof payload.trackId !== 'string') throw new Error('metadata_repair missing trackId');
 	const row = await getTrackById(payload.trackId);
 	if (!row) throw new Error(`Track not found: ${payload.trackId}`);
@@ -987,19 +987,29 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 
 	const { enrichTrackMetadata, neededFieldsFor } = await import('$lib/server/metadata');
 	const { fetchFirstImage } = await import('$lib/server/metadata/cover');
-	const { applyMetadataPatch, setCoverPath } = await import('$lib/server/db/tracks');
+	const { applyMetadataPatch, setCoverPath, markMetadataStatus } = await import(
+		'$lib/server/db/tracks'
+	);
 	const { coverRelativePath, trackBaseRelativePath } = await import('$lib/server/library/paths');
 
-	const needed = neededFieldsFor({
-		album: row.album,
-		albumArtist: row.albumArtist,
-		coverPath: row.coverPath,
-		genre: row.genre,
-		releaseYear: row.releaseYear,
-		trackNumber: row.trackNumber,
-		discNumber: row.discNumber,
-		isrc: row.isrc,
-	});
+	const force = payload.force === true;
+	const needed = neededFieldsFor(
+		{
+			album: row.album,
+			albumArtist: row.albumArtist,
+			coverPath: row.coverPath,
+			genre: row.genre,
+			releaseYear: row.releaseYear,
+			trackNumber: row.trackNumber,
+			discNumber: row.discNumber,
+			isrc: row.isrc,
+			artistMbid: row.artistMbid,
+		},
+		// A forced pass re-asks for every field. This is the whole point of a
+		// reindex: the gap-only rule can never correct a value that is present but
+		// wrong, which is how releaseYear stayed 2013 on a 1998 album.
+		{ force },
+	);
 
 	// ── 1. Metadata pass ────────────────────────────────────────────────────
 	let patch: Awaited<ReturnType<typeof enrichTrackMetadata>>['patch'] = {};
@@ -1138,12 +1148,31 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 		retagged = outcome === 'ok';
 	}
 
+	// ── 4. Record the outcome ───────────────────────────────────────────────
+	//
+	// A reindex that changes nothing and a reindex that never ran must not look
+	// alike, so each pass stamps a status the sweep can count. `corrected` is the
+	// one that matters: it means a field the row already had was found to be wrong
+	// and overwritten.
+	const filledKeys = Object.keys(patch);
+	const corrected = filledKeys.filter((k) => {
+		const before = row[k as keyof typeof row];
+		const after = patch[k as keyof typeof patch];
+		return after != null && before != null && String(before) !== String(after);
+	});
+	const status =
+		tried.length === 0 ? 'no-source' : corrected.length > 0 ? 'corrected' : 'verified';
+	await markMetadataStatus(row.id, status);
+
 	return {
 		trackId: row.id,
 		reason: payload.reason ?? 'sweep',
+		forced: force,
 		tried,
-		filled: Object.keys(patch),
+		filled: filledKeys,
+		corrected,
 		filledBy,
+		status,
 		coverFixed: coverBytes !== null,
 		retagged,
 		movedTo,

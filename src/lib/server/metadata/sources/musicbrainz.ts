@@ -56,7 +56,10 @@ interface MbRecording {
 	length?: number;
 	isrcs?: string[];
 	releases?: MbRelease[];
-	'artist-credit'?: Array<{ name?: string; artist?: { name?: string } }>;
+	'artist-credit'?: Array<{
+		name?: string;
+		artist?: { id?: string; name?: string; disambiguation?: string };
+	}>;
 }
 
 /** Primary types that represent a real, canonical studio release. */
@@ -82,6 +85,19 @@ function coverUrlFor(releaseId: string | undefined): string | null {
 
 function artistName(rec: MbRecording): string | null {
 	return rec['artist-credit']?.[0]?.name ?? rec['artist-credit']?.[0]?.artist?.name ?? null;
+}
+
+/**
+ * The artist's MusicBrainz id, which is the only stable identity we have.
+ *
+ * Two different artists can share a name — Deezer files a French rapper and a US
+ * electronic producer both as "Tanger" on one artist page (110750), and
+ * MusicBrainz separates them as 9ba3809e… ("French band") and 7d90e27a…
+ * ("Electronic music producer"). Everything that groups tracks into artists must
+ * key on this rather than on the display string.
+ */
+function artistMbid(rec: MbRecording): string | null {
+	return rec['artist-credit']?.[0]?.artist?.id ?? null;
 }
 
 /**
@@ -129,6 +145,9 @@ function toPatch(chosen: Chosen, needed: MetadataQuery['needed']): MetadataPatch
 		// `media[].position` is the DISC number -- reading a track number from
 		// there reports 1 for every track on the album.
 		...(needed.includes('isrc') && rec.isrcs?.[0] ? { isrc: rec.isrcs[0] } : {}),
+		...(needed.includes('artistMbid') && artistMbid(rec)
+			? { artistMbid: artistMbid(rec) }
+			: {}),
 	};
 }
 

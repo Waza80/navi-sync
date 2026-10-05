@@ -20,7 +20,7 @@ Push to `main`; a webhook builds and deploys. Poll `/api/health` until
 
 **Never deploy through the Coolify API.** Project `jnmaubqjxevu1xhxv3gcvzqg`; app
 `v9xesowzl3icpzhi1hvpnmrp`; HiFi instance `idddhwsebnmpz2sbgaytqzrw`. These IDs
-are for *reading* status only.
+are for _reading_ status only.
 
 ## Verification recipes
 
@@ -47,7 +47,7 @@ There is no `psql` on this host — use a throwaway `bun` script with `pg` from
 
 Live provider probes: import `providers` from
 `src/lib/server/providers/registry` and run with `.env` sourced. Load order
-matters — source `.env` *before* `bun`, or `env.ts` throws on a missing
+matters — source `.env` _before_ `bun`, or `env.ts` throws on a missing
 `APP_SECRET`.
 
 ## Known unreconciled items

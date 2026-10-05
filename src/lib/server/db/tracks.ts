@@ -638,6 +638,7 @@ export async function applyMetadataPatch(
 		trackNumber?: number | null;
 		discNumber?: number | null;
 		isrc?: string | null;
+		artistMbid?: string | null;
 	},
 ): Promise<boolean> {
 	const set: Partial<typeof tracks.$inferInsert> = { updatedAt: new Date() };
@@ -649,6 +650,10 @@ export async function applyMetadataPatch(
 	if (patch.trackNumber != null) set.trackNumber = patch.trackNumber;
 	if (patch.discNumber != null) set.discNumber = patch.discNumber;
 	if (patch.isrc != null && patch.isrc.trim() !== '') set.isrc = patch.isrc;
+	// Identity, not description: two artists can share a display name, so the
+	// MusicBrainz id is what keeps them apart.
+	if (patch.artistMbid != null && patch.artistMbid.trim() !== '')
+		set.artistMbid = patch.artistMbid;
 	// coverPath is written by the caller once the image is actually on disk.
 	const rows = await db
 		.update(tracks)
@@ -661,6 +666,63 @@ export async function applyMetadataPatch(
 /** Record the on-disk cover path after a cover image is written. */
 export async function setCoverPath(id: string, coverPath: string | null): Promise<void> {
 	await db.update(tracks).set({ coverPath, updatedAt: new Date() }).where(eq(tracks.id, id));
+}
+
+/**
+ * Stamp the outcome of a metadata pass on a row.
+ *
+ * `corrected` is the interesting one: it means a field the row ALREADY had was
+ * found to be wrong and overwritten. Without this stamp a full reindex and a
+ * no-op are indistinguishable, which is exactly what made wrong release years
+ * sit unnoticed.
+ */
+export async function markMetadataStatus(
+	id: string,
+	status: 'corrected' | 'verified' | 'no-source',
+): Promise<void> {
+	await db
+		.update(tracks)
+		.set({ metadataStatus: status, metadataRefreshedAt: new Date(), updatedAt: new Date() })
+		.where(eq(tracks.id, id));
+}
+
+/**
+ * Filed rows eligible for a reindex pass, oldest refresh first.
+ *
+ * `limit` keeps one sweep bounded; the caller loops until it comes back empty.
+ * Rows never refreshed sort first (NULLs first in ASC), so a library that has
+ * never been indexed is fully covered before anything is re-done.
+ */
+export async function listReindexCandidates(limit = 50) {
+	return db
+		.select({
+			id: tracks.id,
+			title: tracks.title,
+			artist: tracks.artist,
+			metadataStatus: tracks.metadataStatus,
+			metadataRefreshedAt: tracks.metadataRefreshedAt,
+		})
+		.from(tracks)
+		.where(isNotNull(tracks.filePath))
+		.orderBy(asc(tracks.metadataRefreshedAt), asc(tracks.id))
+		.limit(limit);
+}
+
+/** Counts for the reindex status report, keyed by last pass outcome. */
+export async function metadataReindexSummary() {
+	const rows = await db
+		.select({ status: tracks.metadataStatus, n: count() })
+		.from(tracks)
+		.where(isNotNull(tracks.filePath))
+		.groupBy(tracks.metadataStatus);
+	const byStatus: Record<string, number> = {};
+	let refreshed = 0;
+	for (const r of rows) {
+		byStatus[r.status ?? 'never'] = Number(r.n);
+		if (r.status != null) refreshed += Number(r.n);
+	}
+	const [total] = await db.select({ n: count() }).from(tracks).where(isNotNull(tracks.filePath));
+	return { filedTracks: Number(total?.n ?? 0), refreshed, byStatus };
 }
 
 /**

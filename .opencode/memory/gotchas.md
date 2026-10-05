@@ -20,7 +20,7 @@ Hit twice. Silent, and it looks like a path bug.
 `bg-primary` no matter the specificity. Component classes must live in
 `@layer components`. This is why the play button was invisible.
 
-## `node-id3` dereferences *present* keys
+## `node-id3` dereferences _present_ keys
 
 Passing `synchronisedLyrics: undefined` made node-id3 dereference an upstream typo
 (`'lycics.language'`) and throw, which killed the entire tag write — untagged MP3s.
@@ -42,7 +42,7 @@ the `{#if}` block exists.
 
 ## Pasting a link is not a search query
 
-`/api/search` must classify a pasted URL *before* searching. Forwarding a Deezer
+`/api/search` must classify a pasted URL _before_ searching. Forwarding a Deezer
 artist link to every provider's text search is why it appeared to be unparseable.
 
 ## Making `parseRef` succeed is not the same as routing correctly

@@ -1,7 +1,12 @@
 /** DTOs and event contracts shared between server routes and the browser. */
 
 export type JobType =
-	'download' | 'lyrics' | 'navidrome_scan' | 'export' | 'upgrade_check' | 'metadata_repair';
+	| 'download'
+	| 'lyrics'
+	| 'navidrome_scan'
+	| 'export'
+	| 'upgrade_check'
+	| 'metadata_repair';
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'cancelled';
 export type LyricsStatus = 'none' | 'synced' | 'plain' | 'failed';
 

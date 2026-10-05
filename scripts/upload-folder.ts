@@ -20,8 +20,9 @@ import type { TrackMeta } from '../src/lib/server/providers/types';
 
 // Imported after dotenv/config so env validation sees the right values.
 const { env } = await import('../src/lib/server/env');
-const { cleanupTemp, moveIntoLibrary, sha256File } =
-	await import('../src/lib/server/library/files');
+const { cleanupTemp, moveIntoLibrary, sha256File } = await import(
+	'../src/lib/server/library/files'
+);
 const { probeQuality, tagFlac, tagMp3 } = await import('../src/lib/server/library/tagging');
 const { trackBaseRelativePath } = await import('../src/lib/server/library/paths');
 const { findLibraryDuplicate, upsertTrack } = await import('../src/lib/server/db/tracks');

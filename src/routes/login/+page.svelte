@@ -21,7 +21,7 @@
 				const res = await authClient.signUp.email({
 					name: name.trim() || email.split('@')[0],
 					email: email.trim(),
-					password
+					password,
 				});
 				if (res.error) {
 					error = res.error.message ?? 'Sign-up failed.';
@@ -62,19 +62,27 @@
 		</header>
 
 		<div class="m3-card p-6">
-			<div class="mb-6 flex rounded-full bg-surface-highest p-1" role="tablist" aria-label="Authentication mode">
+			<div
+				class="mb-6 flex rounded-full bg-surface-highest p-1"
+				role="tablist"
+				aria-label="Authentication mode"
+			>
 				<button
 					type="button"
 					role="tab"
 					aria-selected={mode === 'signin'}
-					class="m3-btn flex-1 text-sm {mode === 'signin' ? 'm3-btn-filled' : 'm3-btn-text'}"
+					class="m3-btn flex-1 text-sm {mode === 'signin'
+						? 'm3-btn-filled'
+						: 'm3-btn-text'}"
 					onclick={() => (mode = 'signin')}>Sign in</button
 				>
 				<button
 					type="button"
 					role="tab"
 					aria-selected={mode === 'signup'}
-					class="m3-btn flex-1 text-sm {mode === 'signup' ? 'm3-btn-filled' : 'm3-btn-text'}"
+					class="m3-btn flex-1 text-sm {mode === 'signup'
+						? 'm3-btn-filled'
+						: 'm3-btn-text'}"
 					onclick={() => (mode = 'signup')}>Create account</button
 				>
 			</div>
@@ -82,12 +90,23 @@
 			<form onsubmit={submit} class="flex flex-col gap-4" novalidate>
 				{#if mode === 'signup'}
 					<div>
-						<label for="name" class="mb-1 block text-sm text-on-surface-variant">Name</label>
-						<input id="name" name="name" type="text" class="m3-input" autocomplete="name" bind:value={name} />
+						<label for="name" class="mb-1 block text-sm text-on-surface-variant"
+							>Name</label
+						>
+						<input
+							id="name"
+							name="name"
+							type="text"
+							class="m3-input"
+							autocomplete="name"
+							bind:value={name}
+						/>
 					</div>
 				{/if}
 				<div>
-					<label for="email" class="mb-1 block text-sm text-on-surface-variant">Email</label>
+					<label for="email" class="mb-1 block text-sm text-on-surface-variant"
+						>Email</label
+					>
 					<input
 						id="email"
 						name="email"
@@ -100,7 +119,9 @@
 				</div>
 				<div>
 					<label for="password" class="mb-1 block text-sm text-on-surface-variant">
-						Password {#if mode === 'signup'}<span class="text-xs">(min 10 characters)</span>{/if}
+						Password {#if mode === 'signup'}<span class="text-xs"
+								>(min 10 characters)</span
+							>{/if}
 					</label>
 					<input
 						id="password"
@@ -115,7 +136,10 @@
 				</div>
 
 				{#if error}
-					<p class="rounded-lg bg-error-container px-3 py-2 text-sm text-on-error-container" role="alert">
+					<p
+						class="rounded-lg bg-error-container px-3 py-2 text-sm text-on-error-container"
+						role="alert"
+					>
 						{error}
 					</p>
 				{/if}

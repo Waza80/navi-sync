@@ -4,10 +4,10 @@
 
 `src/lib/server/providers/` — registry order is precedence.
 
-| Provider | Streams | Notes |
-| --- | --- | --- |
-| `tidal` | Yes | Self-hosted `hifi-api` instance. fMP4 demuxed to FLAC in pure TS (`tidal/mp4.ts`) — the production image has no ffmpeg. No artist-track or playlist endpoint (`/artist/albums/`, `/playlist/` → 404). |
-| `deezer` | Yes | Needs a gateway (`DEEZER_RESOLVER_URL`) for album→track and artist album listings; the public API returns `InvalidQueryException` for song ids. |
+| Provider | Streams | Notes                                                                                                                                                                                                 |
+| -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tidal`  | Yes     | Self-hosted `hifi-api` instance. fMP4 demuxed to FLAC in pure TS (`tidal/mp4.ts`) — the production image has no ffmpeg. No artist-track or playlist endpoint (`/artist/albums/`, `/playlist/` → 404). |
+| `deezer` | Yes     | Needs a gateway (`DEEZER_RESOLVER_URL`) for album→track and artist album listings; the public API returns `InvalidQueryException` for song ids.                                                       |
 
 A `Provider` exposes: `parseRef`, `matches`, `metadata`, `search`, `resolve`,
 optional `findByIsrc` / `findByIsrcInAlbum` / `albumTracks` / `albumTrackIds` /
@@ -31,7 +31,7 @@ lyrics → file into library → embed lyrics → persist row.
 Two rescue paths exist, and they are different bugs:
 
 - **Dead URL** → relocate by ISRC, then by strict name.
-- **Refused stream** (`NO_STREAM`) → relocate on the *other* enabled provider.
+- **Refused stream** (`NO_STREAM`) → relocate on the _other_ enabled provider.
   Reaching metadata is not reaching audio: Deezer lists a track, returns full
   metadata, then refuses the stream. Only `NO_STREAM` qualifies — `PROVIDER_UNAVAILABLE`
   is the whole service down (retrying elsewhere proves nothing) and `NOT_FOUND`
@@ -41,7 +41,7 @@ Relocation searches ISRC first (authoritative), then three separate query shapes
 `artist title`, title-only (requiring the artist), artist-only (requiring the
 title). Tidal silently returns unrelated results for a combined query — measured:
 `"Neverlose"` → 297 correct, `"Neverlose help_urself"` → 98 unrelated — so
-relaxing the *query* must never relax the *match*.
+relaxing the _query_ must never relax the _match_.
 
 ## DB
 

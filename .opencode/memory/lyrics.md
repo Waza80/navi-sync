@@ -19,7 +19,7 @@ An earlier "0 lyrics" report here was a measurement error — it read the legacy
 `getLyrics` `value`/`synced` fields, which Navidrome does not populate. Verify
 against its SQLite DB, not the Subsonic API.
 
-So lyrics are present and parseable; what is unproven is *why* Navidrome
+So lyrics are present and parseable; what is unproven is _why_ Navidrome
 classifies our LRC as `kind: null` with no cues. Default `LyricsPriority` is
 `".ttml,.yaml,.yml,.elrc,.lrc,.srt,.txt,embedded"` with no override, so sidecars
 and embedded tags are both in scope. Start from the Navidrome DB as the lens.
@@ -33,7 +33,7 @@ The agreed spec, still unimplemented:
 3. The periodic sweep must **never** upgrade synced → word-by-word. That is a
    manual button only.
 4. Toggle `auto_upgrade_lyrics`, mirroring `auto_upgrade_quality` semantics: off
-   stops *upgrades*, missing lyrics are still fetched.
+   stops _upgrades_, missing lyrics are still fetched.
 5. A manual button that does manage word-by-word.
 
 ## Deezer LRC timestamps

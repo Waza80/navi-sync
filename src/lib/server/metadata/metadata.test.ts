@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanPatch, neededFieldsFor, patchKeys } from './types';
+import { ALL_FIELDS, cleanPatch, neededFieldsFor, patchKeys } from './types';
 import { enrichTrackMetadata, metadataSources } from './index';
 
 describe('neededFieldsFor', () => {
@@ -24,6 +24,7 @@ describe('neededFieldsFor', () => {
 			'trackNumber',
 			'discNumber',
 			'isrc',
+			'artistMbid',
 		]);
 	});
 
@@ -38,8 +39,42 @@ describe('neededFieldsFor', () => {
 				trackNumber: 1,
 				discNumber: 1,
 				isrc: 'FR123400001',
+				artistMbid: 'a74b1b7f-71a5-4011-9441-d0b5e4122711',
 			}),
 		).toEqual([]);
+	});
+
+	// A filled-but-wrong field is invisible to the gap rule, and that is how a
+	// wrong release year became permanent: the provider's album date occupied
+	// `year` at download time, so enrichment skipped it forever.
+	it('re-asks for every field when forced, however complete the row is', () => {
+		const complete = {
+			album: 'La Memoire Insoluble',
+			albumArtist: 'Tanger',
+			coverPath: 'Tanger/La Memoire Insoluble/cover.jpg',
+			genre: 'Rap',
+			releaseYear: 2013,
+			trackNumber: 4,
+			discNumber: 1,
+			isrc: 'FRZ039800080',
+			artistMbid: '9ba3809e-86c4-4d47-b856-bd5bb2d9fe79',
+		};
+		expect(neededFieldsFor(complete)).toEqual([]);
+		expect(neededFieldsFor(complete, { force: true })).toEqual(ALL_FIELDS);
+	});
+
+	it('tolerates rows written before the artist MBID column existed', () => {
+		const legacy = {
+			album: 'Discovery',
+			albumArtist: 'Daft Punk',
+			coverPath: 'x.jpg',
+			genre: 'Electronic',
+			releaseYear: 2001,
+			trackNumber: 1,
+			discNumber: 1,
+			isrc: 'FR123400001',
+		};
+		expect(neededFieldsFor(legacy)).toEqual(['artistMbid']);
 	});
 
 	it('treats a blank album as missing (the "song with no album" case)', () => {
@@ -66,6 +101,7 @@ describe('neededFieldsFor', () => {
 			trackNumber: 1,
 			discNumber: 1,
 			isrc: 'FR123400001',
+			artistMbid: 'a74b1b7f-71a5-4011-9441-d0b5e4122711',
 		});
 		expect(fields).toEqual(['coverUrl']);
 	});

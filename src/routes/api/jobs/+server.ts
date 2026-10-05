@@ -106,8 +106,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return json({ job: { id: job.id, type: job.type, status: job.status } }, { status: 201 });
 	}
 
-	const { findProviderForUrl, getProvider, providers } =
-		await import('$lib/server/providers/registry');
+	const { findProviderForUrl, getProvider, providers } = await import(
+		'$lib/server/providers/registry'
+	);
 	const input = parsed.data.url.trim();
 	const byUrl = await findProviderForUrl(input);
 	const providerId =

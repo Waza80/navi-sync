@@ -4,7 +4,7 @@
 	let {
 		job,
 		oncancel,
-		onretry
+		onretry,
 	}: {
 		job: JobDTO;
 		oncancel?: (id: string) => void;
@@ -15,7 +15,7 @@
 		download: 'Download',
 		lyrics: 'Lyrics',
 		navidrome_scan: 'Navidrome scan',
-		export: 'Export'
+		export: 'Export',
 	};
 
 	const statusTone: Record<string, string> = {
@@ -24,7 +24,7 @@
 		succeeded: 'bg-tertiary-container text-on-tertiary-container',
 		failed: 'bg-error-container text-on-error-container',
 		dead: 'bg-error-container text-on-error-container',
-		cancelled: 'bg-surface-highest text-on-surface-variant'
+		cancelled: 'bg-surface-highest text-on-surface-variant',
 	};
 
 	const cancellable = $derived(job.status === 'queued' || job.status === 'running');
@@ -48,17 +48,32 @@
 			{/if}
 		</p>
 		{#if job.status === 'running' || (job.status === 'queued' && job.progress > 0)}
-			<div class="m3-progress mt-2" role="progressbar" aria-valuenow={job.progress} aria-valuemin="0" aria-valuemax="100" aria-label="Job progress">
+			<div
+				class="m3-progress mt-2"
+				role="progressbar"
+				aria-valuenow={job.progress}
+				aria-valuemin="0"
+				aria-valuemax="100"
+				aria-label="Job progress"
+			>
 				<div class="bar" style:width="{job.progress}%"></div>
 			</div>
 		{/if}
 	</div>
 	<div class="flex gap-2">
 		{#if cancellable}
-			<button type="button" class="m3-btn m3-btn-text text-sm" onclick={() => oncancel?.(job.id)}>Cancel</button>
+			<button
+				type="button"
+				class="m3-btn m3-btn-text text-sm"
+				onclick={() => oncancel?.(job.id)}>Cancel</button
+			>
 		{/if}
 		{#if retryable}
-			<button type="button" class="m3-btn m3-btn-text text-sm" onclick={() => onretry?.(job.id)}>Retry</button>
+			<button
+				type="button"
+				class="m3-btn m3-btn-text text-sm"
+				onclick={() => onretry?.(job.id)}>Retry</button
+			>
 		{/if}
 	</div>
 </div>

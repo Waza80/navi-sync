@@ -7,7 +7,7 @@
 		ElectricPlugsIcon,
 		ListMusicIcon,
 		Satellite01Icon,
-		Settings01Icon
+		Settings01Icon,
 	} from '@hugeicons/core-free-icons';
 	import { resolve } from '$app/paths';
 	import { authClient } from '$lib/client/auth';
@@ -15,7 +15,7 @@
 
 	let {
 		children,
-		data
+		data,
 	}: {
 		children: Snippet;
 		data: { user: { email: string } };
@@ -24,10 +24,12 @@
 	const nav = [
 		{ href: '/dashboard', label: 'Library', icon: ListMusicIcon },
 		{ href: '/providers', label: 'Providers', icon: ElectricPlugsIcon },
-		{ href: '/settings', label: 'Settings', icon: Settings01Icon }
+		{ href: '/settings', label: 'Settings', icon: Settings01Icon },
 	] as const;
 
-	const resolvedNav = $derived(nav.map((item) => ({ ...item, resolvedHref: resolve(item.href) })));
+	const resolvedNav = $derived(
+		nav.map((item) => ({ ...item, resolvedHref: resolve(item.href) })),
+	);
 
 	async function signOut() {
 		await authClient.signOut();
@@ -39,15 +41,23 @@
 	<title>NaviSync</title>
 </svelte:head>
 
-<a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-primary focus:px-4 focus:py-2 focus:text-on-primary">
+<a
+	href="#main"
+	class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-primary focus:px-4 focus:py-2 focus:text-on-primary"
+>
 	Skip to content
 </a>
 
 <div class="flex min-h-dvh flex-col">
 	<!-- Top app bar -->
-	<header class="sticky top-0 z-40 border-b border-outline-variant/40 bg-surface-low/95 backdrop-blur">
+	<header
+		class="sticky top-0 z-40 border-b border-outline-variant/40 bg-surface-low/95 backdrop-blur"
+	>
 		<div class="mx-auto flex h-16 max-w-5xl items-center gap-4 px-4">
-			<a href={resolve('/dashboard')} class="flex items-center gap-2 font-semibold tracking-tight">
+			<a
+				href={resolve('/dashboard')}
+				class="flex items-center gap-2 font-semibold tracking-tight"
+			>
 				<span aria-hidden="true" class="text-xl text-primary"
 					><HugeiconsIcon icon={Satellite01Icon} size={22} strokeWidth={1.5} /></span
 				>
@@ -72,8 +82,14 @@
 				{/each}
 			</nav>
 			<div class="ml-auto flex items-center gap-2">
-				<span class="hidden text-xs text-on-surface-variant md:inline">{data.user.email}</span>
-				<button type="button" class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm" onclick={signOut}>
+				<span class="hidden text-xs text-on-surface-variant md:inline"
+					>{data.user.email}</span
+				>
+				<button
+					type="button"
+					class="m3-btn m3-btn-tonal h-10 min-h-10 px-4 text-sm"
+					onclick={signOut}
+				>
 					Sign out
 				</button>
 			</div>
@@ -93,8 +109,8 @@
 			<a
 				href={item.resolvedHref}
 				aria-current={page.url.pathname === item.href ? 'page' : undefined}
-				class="flex min-h-14 flex-1 flex-col items-center justify-center gap-0.5 py-2 text-xs {page.url
-					.pathname === item.href
+				class="flex min-h-14 flex-1 flex-col items-center justify-center gap-0.5 py-2 text-xs {page
+					.url.pathname === item.href
 					? 'text-primary'
 					: 'text-on-surface-variant'}"
 			>

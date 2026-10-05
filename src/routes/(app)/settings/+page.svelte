@@ -64,7 +64,7 @@
 			aliveResult = {
 				id,
 				ok: Boolean(body.ok),
-				text: body.ok ? (body.detail ?? 'alive') : (body.detail ?? 'unreachable')
+				text: body.ok ? (body.detail ?? 'alive') : (body.detail ?? 'unreachable'),
 			};
 		} catch {
 			aliveResult = { id, ok: false, text: 'network error' };
@@ -87,15 +87,16 @@
 				autoUpgradeQuality,
 				forceTagRepair,
 				enabledProviders: enabled.length > 0 ? enabled : ['deezer'],
-				concurrentDownloads
+				concurrentDownloads,
 			};
 			if (navidromeUrl.trim().length > 0) payload.navidromeUrl = navidromeUrl.trim();
-			if (navidromeUsername.trim().length > 0) payload.navidromeUsername = navidromeUsername.trim();
+			if (navidromeUsername.trim().length > 0)
+				payload.navidromeUsername = navidromeUsername.trim();
 			if (navidromePassword.length > 0) payload.navidromePassword = navidromePassword;
 			const res = await fetch('/api/navidrome', {
 				method: 'PUT',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify(payload)
+				body: JSON.stringify(payload),
 			});
 			const body = (await res.json()) as { error?: { message: string } };
 			if (!res.ok) {
@@ -104,7 +105,7 @@
 			}
 			navidromePassword = '';
 			message = { tone: 'ok', text: 'Settings saved.' };
-				await invalidateAll();
+			await invalidateAll();
 		} finally {
 			busy = false;
 		}
@@ -117,11 +118,18 @@
 			const res = await fetch('/api/navidrome/scan', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ pingOnly: true })
+				body: JSON.stringify({ pingOnly: true }),
 			});
-			const body = (await res.json()) as { ok?: boolean; serverVersion?: string; error?: string };
+			const body = (await res.json()) as {
+				ok?: boolean;
+				serverVersion?: string;
+				error?: string;
+			};
 			message = body.ok
-				? { tone: 'ok', text: `Connected. Server version: ${body.serverVersion ?? 'unknown'}` }
+				? {
+						tone: 'ok',
+						text: `Connected. Server version: ${body.serverVersion ?? 'unknown'}`,
+					}
 				: { tone: 'error', text: `Connection failed: ${body.error ?? 'unknown error'}` };
 		} finally {
 			pingBusy = false;
@@ -135,7 +143,7 @@
 			const res = await fetch('/api/navidrome/scan', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({})
+				body: JSON.stringify({}),
 			});
 			const body = (await res.json()) as { error?: { message: string } };
 			message = res.ok
@@ -160,7 +168,7 @@
 			message = res.ok
 				? {
 						tone: 'ok',
-						text: `Repair started — ${body.filesOnDisk ?? '?'} files on disk, ${body.tracksInDb ?? '?'} tracks in DB (Navidrome ${body.serverVersion ?? '?'}). Watch the queue; the job reports when indexing finishes.`
+						text: `Repair started — ${body.filesOnDisk ?? '?'} files on disk, ${body.tracksInDb ?? '?'} tracks in DB (Navidrome ${body.serverVersion ?? '?'}). Watch the queue; the job reports when indexing finishes.`,
 					}
 				: { tone: 'error', text: body.error?.message ?? `HTTP ${res.status}` };
 		} finally {
@@ -184,17 +192,35 @@
 		<h2 id="navidrome-h" class="mb-4 text-base font-medium">Navidrome</h2>
 		<div class="flex flex-col gap-4">
 			<div>
-				<label for="nd-url" class="mb-1 block text-sm text-on-surface-variant">Server URL</label>
-				<input id="nd-url" type="url" class="m3-input" placeholder="https://navi.example.com" bind:value={navidromeUrl} />
+				<label for="nd-url" class="mb-1 block text-sm text-on-surface-variant"
+					>Server URL</label
+				>
+				<input
+					id="nd-url"
+					type="url"
+					class="m3-input"
+					placeholder="https://navi.example.com"
+					bind:value={navidromeUrl}
+				/>
 			</div>
 			<div class="grid gap-4 sm:grid-cols-2">
 				<div>
-					<label for="nd-user" class="mb-1 block text-sm text-on-surface-variant">Username</label>
-					<input id="nd-user" type="text" class="m3-input" autocomplete="off" bind:value={navidromeUsername} />
+					<label for="nd-user" class="mb-1 block text-sm text-on-surface-variant"
+						>Username</label
+					>
+					<input
+						id="nd-user"
+						type="text"
+						class="m3-input"
+						autocomplete="off"
+						bind:value={navidromeUsername}
+					/>
 				</div>
 				<div>
 					<label for="nd-pass" class="mb-1 block text-sm text-on-surface-variant">
-						Password {data.settings.hasNavidromePassword ? '(saved — leave blank to keep)' : ''}
+						Password {data.settings.hasNavidromePassword
+							? '(saved — leave blank to keep)'
+							: ''}
 					</label>
 					<input
 						id="nd-pass"
@@ -207,13 +233,28 @@
 				</div>
 			</div>
 			<div class="flex flex-wrap gap-2">
-				<button type="button" class="m3-btn m3-btn-tonal" disabled={pingBusy} onclick={testConnection}>
+				<button
+					type="button"
+					class="m3-btn m3-btn-tonal"
+					disabled={pingBusy}
+					onclick={testConnection}
+				>
 					{pingBusy ? 'Testing…' : 'Test connection'}
 				</button>
-				<button type="button" class="m3-btn m3-btn-tonal" disabled={scanBusy} onclick={triggerScan}>
+				<button
+					type="button"
+					class="m3-btn m3-btn-tonal"
+					disabled={scanBusy}
+					onclick={triggerScan}
+				>
 					{scanBusy ? 'Queueing…' : 'Trigger scan now'}
 				</button>
-				<button type="button" class="m3-btn m3-btn-tonal" disabled={repairBusy} onclick={repairIndexation}>
+				<button
+					type="button"
+					class="m3-btn m3-btn-tonal"
+					disabled={repairBusy}
+					onclick={repairIndexation}
+				>
 					{repairBusy ? 'Repairing…' : 'Repair indexation'}
 				</button>
 			</div>
@@ -224,15 +265,12 @@
 	<section class="m3-card p-5" aria-labelledby="providers-h">
 		<h2 id="providers-h" class="mb-4 text-base font-medium">Providers</h2>
 		<p class="mb-4 text-sm text-on-surface-variant">
-			Turn providers on/off for search, downloads and quality upgrades. The upgrade
-			sweep only hunts across <em>enabled</em> providers — with both on, the best
-			quality always wins. Manage credentials on the Providers page.
+			Turn providers on/off for search, downloads and quality upgrades. The upgrade sweep only
+			hunts across <em>enabled</em> providers — with both on, the best quality always wins. Manage
+			credentials on the Providers page.
 		</p>
 		<div class="flex flex-col gap-3">
-			{#each [
-				{ id: 'deezer', label: 'Deezer', desc: 'FLAC 16-bit · 320/128 MP3' },
-				{ id: 'tidal', label: 'Tidal (hiFi instance)', desc: 'FLAC up to 24/192 — fastest option, needs your instance URL' }
-			] as prov (prov.id)}
+			{#each [{ id: 'deezer', label: 'Deezer', desc: 'FLAC 16-bit · 320/128 MP3' }, { id: 'tidal', label: 'Tidal (hiFi instance)', desc: 'FLAC up to 24/192 — fastest option, needs your instance URL' }] as prov (prov.id)}
 				<div class="flex min-h-14 items-center gap-3 rounded-xl bg-surface-low px-3">
 					<label class="flex flex-1 cursor-pointer items-center gap-3">
 						<input
@@ -246,7 +284,11 @@
 							<span class="block text-xs text-on-surface-variant">{prov.desc}</span>
 						</span>
 					</label>
-					<span class="m3-chip {enabled.includes(prov.id) ? 'bg-tertiary-container text-on-tertiary-container' : 'bg-surface-highest text-on-surface-variant'}">
+					<span
+						class="m3-chip {enabled.includes(prov.id)
+							? 'bg-tertiary-container text-on-tertiary-container'
+							: 'bg-surface-highest text-on-surface-variant'}"
+					>
 						{enabled.includes(prov.id) ? 'ON' : 'OFF'}
 					</span>
 					<button
@@ -287,12 +329,26 @@
 				</select>
 			</div>
 			<label class="flex min-h-12 items-center gap-3">
-				<input type="checkbox" class="h-5 w-5 accent-[var(--md-primary)]" bind:checked={preferLossless} />
-				<span class="text-sm">Prefer lossless (FLAC). Hard ceiling: 24-bit — never fetches above or re-fetches below.</span>
+				<input
+					type="checkbox"
+					class="h-5 w-5 accent-[var(--md-primary)]"
+					bind:checked={preferLossless}
+				/>
+				<span class="text-sm"
+					>Prefer lossless (FLAC). Hard ceiling: 24-bit — never fetches above or
+					re-fetches below.</span
+				>
 			</label>
 			<label class="flex min-h-12 items-center gap-3">
-				<input type="checkbox" class="h-5 w-5 accent-[var(--md-primary)]" bind:checked={allowLowerFallback} />
-				<span class="text-sm">Allow lower-quality fallback when the preferred tier is unavailable for the account</span>
+				<input
+					type="checkbox"
+					class="h-5 w-5 accent-[var(--md-primary)]"
+					bind:checked={allowLowerFallback}
+				/>
+				<span class="text-sm"
+					>Allow lower-quality fallback when the preferred tier is unavailable for the
+					account</span
+				>
 			</label>
 			<label class="flex min-h-12 items-center gap-3">
 				<input
@@ -303,12 +359,17 @@
 				<span class="text-sm">
 					Keep hunting for better masters (hourly, up to 24-bit).
 					<span class="text-on-surface-variant">
-						Turning this off stops only the upgrade sweep — missing songs are still fetched.
+						Turning this off stops only the upgrade sweep — missing songs are still
+						fetched.
 					</span>
 				</span>
 			</label>
 			<label class="flex min-h-12 items-center gap-3">
-				<input type="checkbox" class="h-5 w-5 accent-[var(--md-primary)]" bind:checked={forceTagRepair} />
+				<input
+					type="checkbox"
+					class="h-5 w-5 accent-[var(--md-primary)]"
+					bind:checked={forceTagRepair}
+				/>
 				<span class="text-sm">Force re-tag every file on repair</span>
 			</label>
 		</div>
@@ -348,12 +409,16 @@
 	{/if}
 
 	<!-- Sticky save bar: always visible, no scrolling, no Enter needed -->
-	<div class="sticky bottom-20 z-30 -mx-1 mt-2 rounded-2xl border border-outline-variant/40 bg-surface-low/95 p-3 backdrop-blur sm:bottom-2">
+	<div
+		class="sticky bottom-20 z-30 -mx-1 mt-2 rounded-2xl border border-outline-variant/40 bg-surface-low/95 p-3 backdrop-blur sm:bottom-2"
+	>
 		<div class="flex items-center gap-3 px-1">
 			<button type="submit" class="m3-btn m3-btn-filled" disabled={busy}>
 				{busy ? 'Saving…' : 'Save settings'}
 			</button>
-			<span class="text-xs text-on-surface-variant">Changes apply to new downloads immediately.</span>
+			<span class="text-xs text-on-surface-variant"
+				>Changes apply to new downloads immediately.</span
+			>
 		</div>
 	</div>
 </form>

@@ -30,9 +30,9 @@
 		Object.fromEntries(
 			data.providers.map((p) => [
 				p.id,
-				{ ...Object.fromEntries(p.fields.map((f) => [f.key, ''])), ...p.prefill }
-			])
-		)
+				{ ...Object.fromEntries(p.fields.map((f) => [f.key, ''])), ...p.prefill },
+			]),
+		),
 	);
 	let status = $state<Record<string, { tone: 'ok' | 'error' | 'info'; text: string } | null>>({});
 	let busy = $state<Record<string, boolean>>({});
@@ -54,7 +54,7 @@
 			const res = await fetch(`/api/providers/${p.id}/credentials`, {
 				method: 'PUT',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify(payload)
+				body: JSON.stringify(payload),
 			});
 			const body = (await res.json()) as { ok?: boolean; detail?: string; error?: string };
 			if (res.ok && body.ok) {
@@ -87,7 +87,8 @@
 
 <h1 class="mb-1 text-xl font-semibold">Providers</h1>
 <p class="mb-6 text-sm text-on-surface-variant">
-	Choose a provider, add its credentials, Save — values are encrypted at rest and never echoed back.
+	Choose a provider, add its credentials, Save — values are encrypted at rest and never echoed
+	back.
 </p>
 
 <div class="flex flex-col gap-6">
@@ -100,7 +101,9 @@
 						CONFIGURED{p.via === 'env' ? ' · via env' : ''}
 					</span>
 				{:else}
-					<span class="m3-chip bg-surface-highest text-on-surface-variant">NOT CONFIGURED</span>
+					<span class="m3-chip bg-surface-highest text-on-surface-variant"
+						>NOT CONFIGURED</span
+					>
 				{/if}
 			</div>
 			<p class="mb-4 text-sm text-on-surface-variant">{p.description}</p>
@@ -108,7 +111,10 @@
 			<div class="flex flex-col gap-4">
 				{#each p.fields as f (f.key)}
 					<div>
-						<label for={p.id + '-' + f.key} class="mb-1 block text-sm text-on-surface-variant">
+						<label
+							for={p.id + '-' + f.key}
+							class="mb-1 block text-sm text-on-surface-variant"
+						>
 							{f.label}{f.required ? '' : ' (optional)'}
 						</label>
 						<input
@@ -125,7 +131,7 @@
 					</div>
 				{/each}
 
-					{#if status[p.id]}
+				{#if status[p.id]}
 					{@const st = status[p.id]!}
 					<p
 						class="rounded-lg px-3 py-2 text-sm {st.tone === 'ok'
@@ -140,11 +146,21 @@
 				{/if}
 
 				<div class="flex flex-wrap gap-2">
-					<button type="button" class="m3-btn m3-btn-filled" disabled={busy[p.id]} onclick={() => save(p)}>
+					<button
+						type="button"
+						class="m3-btn m3-btn-filled"
+						disabled={busy[p.id]}
+						onclick={() => save(p)}
+					>
 						{busy[p.id] ? 'Saving…' : 'Save & verify'}
 					</button>
 					{#if p.configured && p.via === 'ui'}
-						<button type="button" class="m3-btn m3-btn-text text-error" disabled={busy[p.id]} onclick={() => clear(p)}>
+						<button
+							type="button"
+							class="m3-btn m3-btn-text text-error"
+							disabled={busy[p.id]}
+							onclick={() => clear(p)}
+						>
 							Remove stored credentials
 						</button>
 					{/if}

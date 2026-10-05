@@ -27,7 +27,15 @@ export interface MetadataQuery {
 
 /** Fields an enrichment source may fill. */
 export type MetadataField =
-	'album' | 'albumArtist' | 'coverUrl' | 'genre' | 'year' | 'trackNumber' | 'discNumber' | 'isrc';
+	| 'album'
+	| 'albumArtist'
+	| 'coverUrl'
+	| 'genre'
+	| 'year'
+	| 'trackNumber'
+	| 'discNumber'
+	| 'isrc'
+	| 'artistMbid';
 
 /** A partial metadata update — every key is optional and only set when known. */
 export type MetadataPatch = Partial<{
@@ -39,7 +47,27 @@ export type MetadataPatch = Partial<{
 	trackNumber: number | null;
 	discNumber: number | null;
 	isrc: string | null;
+	/**
+	 * MusicBrainz artist id for this track's artist.
+	 *
+	 * Names are not identities. Deezer keeps a French rapper and a US electronic
+	 * producer on ONE artist page (110750, "Tanger", 67 albums), so keying the
+	 * library on the display name merges two people. The MBID separates them.
+	 */
+	artistMbid: string | null;
 }>;
+
+export const ALL_FIELDS: MetadataField[] = [
+	'album',
+	'albumArtist',
+	'coverUrl',
+	'genre',
+	'year',
+	'trackNumber',
+	'discNumber',
+	'isrc',
+	'artistMbid',
+];
 
 export interface MetadataSource {
 	id: string;
@@ -50,19 +78,32 @@ export interface MetadataSource {
 	lookup(query: MetadataQuery): Promise<MetadataPatch | null>;
 }
 
-export function neededFieldsFor(row: {
-	album: string | null;
-	albumArtist: string | null;
-	coverPath: string | null;
-	genre: string | null;
-	releaseYear: number | null;
-	trackNumber: number | null;
-	discNumber: number | null;
-	isrc: string | null;
-}): MetadataField[] {
+export function neededFieldsFor(
+	row: {
+		album: string | null;
+		albumArtist: string | null;
+		coverPath: string | null;
+		genre: string | null;
+		releaseYear: number | null;
+		trackNumber: number | null;
+		discNumber: number | null;
+		isrc: string | null;
+		/** Absent on rows written before the MBID column existed. */
+		artistMbid?: string | null;
+	},
+	opts: { force?: boolean } = {},
+): MetadataField[] {
+	// A forced pass re-asks for EVERY field, not just the empty ones.
+	//
+	// The gap-only rule is what made wrong values permanent: the provider's album
+	// release date is written into `year` at download time, and since the field was
+	// then occupied, enrichment skipped it and MusicBrainz's date never got a vote.
+	// La Memoire Insoluble sat at 2013 against a true 1998. Re-asking is the only
+	// way a filled-but-wrong field can ever be corrected.
+	if (opts.force) return ALL_FIELDS;
 	// Whitespace-only strings count as missing — the "song with no album" case
 	// often arrives as '' or '   ' rather than NULL.
-	const missing = (v: string | null): boolean => v == null || v.trim() === '';
+	const missing = (v: string | null | undefined): boolean => v == null || v.trim() === '';
 	const out: MetadataField[] = [];
 	if (missing(row.album)) out.push('album');
 	if (missing(row.albumArtist)) out.push('albumArtist');
@@ -72,6 +113,7 @@ export function neededFieldsFor(row: {
 	if (row.trackNumber === null) out.push('trackNumber');
 	if (row.discNumber === null) out.push('discNumber');
 	if (missing(row.isrc)) out.push('isrc');
+	if (missing(row.artistMbid)) out.push('artistMbid');
 	return out;
 }
 

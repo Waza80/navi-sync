@@ -3,9 +3,9 @@
 ## Environment variables
 
 | Variable              | Required | Default                  | Notes                                                                                 |
-| --------------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------- |
-| `DATABASE_URL`        | ✔        | —                        | `postgres://user:pass@host:5432/navisync`                                             |
-| `APP_SECRET`          | ✔        | —                        | ≥32 chars (`openssl rand -hex 32`); signs sessions + derives AES key                  |
+| --------------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------- | ---- | ---- | ------ |
+| `DATABASE_URL`        | ✔       | —                        | `postgres://user:pass@host:5432/navisync`                                             |
+| `APP_SECRET`          | ✔       | —                        | ≥32 chars (`openssl rand -hex 32`); signs sessions + derives AES key                  |
 | `BETTER_AUTH_URL`     |          | `http://localhost:$PORT` | Public base URL; must match what browsers use                                         |
 | `ORIGIN`              | rec.     | —                        | Pins adapter-node origin (required under Bun; set to same value as `BETTER_AUTH_URL`) |
 | `TRUSTED_ORIGINS`     |          | empty                    | Comma-separated extra origins allowed for auth CSRF                                   |

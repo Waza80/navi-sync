@@ -20,7 +20,7 @@ in code; no user-controlled URL fetch except provider-track URLs).
 ## Controls (Phase 1 — implemented)
 
 | Threat                      | Control                                                                                                                              |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
 | Credential theft at rest    | AES-256-GCM (key = SHA-256(APP_SECRET)) for Navidrome + Deezer sessions; APP_SECRET ≥32 chars enforced at boot                       |
 | Credential theft in logs    | Structured logger **redacts** keys matching password/token/arl/secret/email/cookie; no external transports                           |
 | Credential theft in VCS     | `.env` gitignored (verified before first commit); `.env.example` placeholders only                                                   |
@@ -29,7 +29,7 @@ in code; no user-controlled URL fetch except provider-track URLs).
 | XSS                         | Svelte auto-escaping; CSP `default-src 'self'`, script nonce (`mode:'auto'`), `object-src 'none'`, `frame-ancestors 'none'`          |
 | Clickjacking                | `X-Frame-Options: DENY` + `frame-ancestors`                                                                                          |
 | SQL injection               | Drizzle parameterized queries exclusively; the only dynamic SQL (job claim) uses bound parameters                                    |
-| Path traversal (library)    | `sanitizeComponent()` strips `/\:*?"<>                                                                                               | `, control chars, leading dots, Windows reserved names; unit-tested |
+| Path traversal (library)    | `sanitizeComponent()` strips `/\:\*?"<>                                                                                              | `, control chars, leading dots, Windows reserved names; unit-tested |
 | Session theft               | HttpOnly SameSite=Lax cookies, Argon2id password hashing (19MiB/t=2/p=1), 7-day expiry + daily refresh, DB-stored sessions revocable |
 | Malicious provider response | Downloaded media only written under sanitized library paths; cover art size-clamped (1KB–15MB); no response content executed         |
 | Supply chain (crypto)       | Node stdlib only for AES/MD5/SHA; pure-JS Blowfish isolated in one swappable module (GPL-2.0 note in README)                         |

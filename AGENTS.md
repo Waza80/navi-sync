@@ -7,13 +7,13 @@ metadata, fetches lyrics, and scans into Navidrome.
 Read these before touching anything — they record decisions that are expensive to
 rediscover the hard way.
 
-| File | Covers |
-| --- | --- |
-| `.opencode/memory/architecture.md` | Providers, queue, job lifecycle, DB, routes |
-| `.opencode/memory/musicbrainz-metadata.md` | Corroboration resolver, artist identity, source quirks |
-| `.opencode/memory/lyrics.md` | Navidrome findings and the unbuilt lyrics priority work |
-| `.opencode/memory/operations.md` | Production access, deploy rule, verification recipes |
-| `.opencode/memory/gotchas.md` | Traps that have each cost a debugging session |
+| File                                       | Covers                                                  |
+| ------------------------------------------ | ------------------------------------------------------- |
+| `.opencode/memory/architecture.md`         | Providers, queue, job lifecycle, DB, routes             |
+| `.opencode/memory/musicbrainz-metadata.md` | Corroboration resolver, artist identity, source quirks  |
+| `.opencode/memory/lyrics.md`               | Navidrome findings and the unbuilt lyrics priority work |
+| `.opencode/memory/operations.md`           | Production access, deploy rule, verification recipes    |
+| `.opencode/memory/gotchas.md`              | Traps that have each cost a debugging session           |
 
 ## Gates
 
@@ -36,7 +36,7 @@ verify with `git stash && bun run format` before believing you broke it. Check c
   `opencode.jsonc` are gitignored. Scrub the diff for `postgres://` and API keys
   before committing.
 - **Commit and push only when explicitly asked.**
-- Tidal takes precedence over Deezer; registry order *is* the precedence order.
+- Tidal takes precedence over Deezer; registry order _is_ the precedence order.
 
 ## Verifying a fix
 
