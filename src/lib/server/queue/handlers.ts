@@ -110,6 +110,20 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	// job still knows the title and artist, so ask the enabled providers to find
 	// the song instead of burning every attempt on an unresolvable URL.
 	let ref: TrackRef | null = provider ? await provider.parseRef(input) : null;
+
+	// A link can resolve to something that is not a track at all. A Deezer artist
+	// link resolves to an id shaped exactly like a song id, so without this check
+	// the pipeline fetched `song.getData` with an ARTIST id and reported
+	// "Deezer gateway error on song.getData: No song data" — which says nothing
+	// about the real problem and looks like a gateway fault.
+	if (ref && ref.kind && ref.kind !== 'track') {
+		log.info('link is not a track; refusing to download it as one', {
+			jobId: job.id,
+			kind: ref.kind,
+			provider: provider?.id,
+		});
+		ref = null;
+	}
 	let relocated: { meta: TrackMeta } | null = null;
 	if (!ref) {
 		const hint = rawMeta;

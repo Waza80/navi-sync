@@ -82,17 +82,11 @@ export const deezerProvider: Provider = {
 			// Only a TRACK is downloadable as audio. An album or artist link is a
 			// fan-out request, not a track ref, so parseRef must decline it — but the
 			// id and kind are still carried on the ref so a caller can route it.
-			if (direct.kind !== 'track') {
-				return {
-					provider: 'deezer',
-					id: direct.id,
-					sourceUrl: `https://www.deezer.com/${direct.kind}/${direct.id}`,
-				};
-			}
 			return {
 				provider: 'deezer',
 				id: direct.id,
-				sourceUrl: `https://www.deezer.com/track/${direct.id}`,
+				kind: direct.kind,
+				sourceUrl: `https://www.deezer.com/${direct.kind}/${direct.id}`,
 			};
 		}
 		if (isDeezerShortLink(input)) {
@@ -118,6 +112,7 @@ export const deezerProvider: Provider = {
 						return {
 							provider: 'deezer',
 							id: parsed.id,
+							kind: parsed.kind,
 							sourceUrl: final.split('?')[0],
 						};
 					}

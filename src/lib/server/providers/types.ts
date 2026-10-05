@@ -10,6 +10,15 @@ export interface TrackRef {
 	/** Canonical provider-native id (e.g. Deezer SNG_ID). */
 	id: string;
 	sourceUrl?: string;
+	/**
+	 * What that id actually refers to. Defaults to 'track'.
+	 *
+	 * This is load-bearing: a Deezer ARTIST link resolves to an id that looks
+	 * exactly like a song id, so without it the download pipeline fetched
+	 * `song.getData` with an artist id and failed with "No song data" instead of
+	 * recognising the link as a fan-out request.
+	 */
+	kind?: 'track' | 'album' | 'artist' | 'playlist';
 }
 
 export interface TrackMeta {
