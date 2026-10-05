@@ -194,6 +194,9 @@ export async function listTracks(opts: {
 			or(ilike(tracks.title, like), ilike(tracks.artist, like), ilike(tracks.album, like)),
 		);
 	}
+	// A row the user gave up on is not part of the library any more — they asked
+	// for it to stop being refetched, so it should also stop being listed.
+	conditions.push(eq(tracks.refetchBlocked, false));
 	if (scope === 'filed') conditions.push(isNotNull(tracks.filePath));
 	else if (scope === 'failed')
 		conditions.push(and(eq(tracks.downloadStatus, 'failed'), isNull(tracks.filePath)));

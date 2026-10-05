@@ -111,10 +111,38 @@ async function main(): Promise<void> {
 		}
 	}
 
+	// Stale placeholders: `pending` rows with no file and no job left to run.
+	// These are what the retry churn left behind -- a row flipped to pending, its
+	// job died, and nothing ever moved it on. They carry no audio and generic
+	// titles ("Failed download" / "Unknown Artist"), so they are not real tracks.
+	const stale = await db.query<{ n: number }>(
+		`SELECT count(*)::int AS n FROM tracks t
+		 WHERE t.file_path IS NULL
+		   AND t.download_status = 'pending'
+		   AND NOT EXISTS (
+		     SELECT 1 FROM jobs j
+		     WHERE j.track_id = t.id
+		       AND j.status IN ('queued','running')
+		   )`,
+	);
+	console.log(`stale pending placeholders: ${stale.rows[0].n}`);
+
 	if (!APPLY) {
 		console.log('\nDRY RUN — pass --apply to delete.');
 		await db.end();
 		return;
+	}
+
+	if (APPLY) {
+		await db.query(
+			`DELETE FROM tracks t
+			 WHERE t.file_path IS NULL
+			   AND t.download_status = 'pending'
+			   AND NOT EXISTS (
+			     SELECT 1 FROM jobs j
+			     WHERE j.track_id = t.id AND j.status IN ('queued','running')
+			   )`,
+		);
 	}
 
 	const before = rows.length;

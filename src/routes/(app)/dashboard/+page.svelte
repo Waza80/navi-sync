@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
+	import { tick } from 'svelte';
 	import { untrack } from 'svelte';
 	import { SvelteSet, SvelteURLSearchParams } from 'svelte/reactivity';
 	import { live } from '$lib/stores/events.svelte';
@@ -593,17 +594,25 @@
 	// ── Preview player ──────────────────────────────────────────────────────
 	let nowPlaying = $state<{ id: string; title: string; artist: string } | null>(null);
 	let audioEl: HTMLAudioElement | null = $state(null);
-	function togglePlay(t: TrackDTO) {
+
+	async function togglePlay(t: TrackDTO) {
 		if (nowPlaying?.id === t.id) {
 			audioEl?.pause();
 			nowPlaying = null;
+			await invalidateAll();
 			return;
 		}
 		nowPlaying = { id: t.id, title: t.title, artist: t.artist };
-		// src change triggers load; autoplay after metadata is ready
-		queueMicrotask(() => {
-			void audioEl?.play().catch(() => undefined);
-		});
+		// The <audio> element lives inside an {#if nowPlaying} block, so it does
+		// not exist until Svelte has flushed this state change. A queueMicrotask
+		// runs BEFORE that flush, so audioEl was still null and playback silently
+		// never started — which read as "the button does nothing".
+		await tick();
+		try {
+			await audioEl?.play();
+		} catch {
+			// Autoplay can be refused; the card still reflects the paused state.
+		}
 	}
 </script>
 
@@ -1003,7 +1012,7 @@
 					ondelete={deleteTrack}
 					onplay={(id: string) => {
 						const t = filteredTracks.find((x) => x.id === id);
-						if (t) togglePlay(t);
+						if (t) void togglePlay(t);
 					}}
 					ondownload={downloadTrackFile}
 					onupgrade={(id: string) => void forceUpgrade(id)}
@@ -1031,7 +1040,7 @@
 					ondelete={deleteTrack}
 					onplay={(id: string) => {
 						const t = data.failedTracks.find((x) => x.id === id);
-						if (t) togglePlay(t);
+						if (t) void togglePlay(t);
 					}}
 					ondownload={downloadTrackFile}
 					onupgrade={(id: string) => void forceUpgrade(id)}
