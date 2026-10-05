@@ -86,6 +86,14 @@ export interface PathMeta {
 	artist: string;
 	album: string | null;
 	trackNumber?: number | null;
+	/**
+	 * Accepted for convenience by callers that hold album-artist/disc data, but
+	 * NOT part of the path: the layout is `<artist>/<album>/<track> - <title>`, so
+	 * these are ignored. Present so a full metadata row can be passed through
+	 * without being reshaped first.
+	 */
+	albumArtist?: string | null;
+	discNumber?: number | null;
 }
 
 /** Sanitize a single path component. Never returns '', '/', or '.'-prefixed. */

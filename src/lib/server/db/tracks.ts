@@ -1,10 +1,15 @@
 import { and, asc, count, desc, eq, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { trackRelativePath } from '$lib/server/library/paths';
 import { jobs } from './schema';
 import { db } from '$lib/server/db';
 import { tracks } from '$lib/server/db/schema';
 import type { TrackMeta, StreamResolution } from '$lib/server/providers/types';
 import type { ProbedQuality } from '$lib/server/library/tagging';
+import { logger } from '$lib/server/logger';
+
+const log = logger;
 
 export interface ExistingTrack {
 	id: string;
@@ -627,6 +632,219 @@ export async function findMissingFiles(
 		(r): r is { id: string; title: string; artist: string; filePath: string } =>
 			typeof r.filePath === 'string' && !existsSync(r.filePath),
 	);
+}
+
+/**
+ * The inverse of `findMissingFiles`: failed/pending rows whose audio is actually
+ * still on disk.
+ *
+ * A retry marks a row `failed` the moment a download attempt gives up, but it
+ * does not delete the file — so a track that downloaded successfully once and
+ * later failed an *upgrade* keeps its audio while its row claims to have none.
+ * Those rows then show up in the UI as missing, get offered for re-download, and
+ * can be re-fetched into a duplicate. So when reconciling, look for the file the
+ * metadata says should exist and adopt it if it does.
+ *
+ * Only rows with no `file_path` are considered: if one is set, `findMissingFiles`
+ * already owns the decision.
+ */
+export async function findOrphanedFiles(libraryDir: string): Promise<
+	Array<{
+		id: string;
+		title: string;
+		artist: string;
+		filePath: string;
+		sizeBytes: number;
+	}>
+> {
+	const { readdirSync } = await import('node:fs');
+	const rows = await db
+		.select({
+			id: tracks.id,
+			title: tracks.title,
+			artist: tracks.artist,
+			album: tracks.album,
+			albumArtist: tracks.albumArtist,
+			trackNumber: tracks.trackNumber,
+			discNumber: tracks.discNumber,
+		})
+		.from(tracks)
+		.where(
+			and(
+				sql`${tracks.downloadStatus} IN ('failed','pending')`,
+				isNull(tracks.filePath),
+				isNotNull(tracks.album),
+			),
+		);
+
+	/** Comparable form of a filename: no track prefix, no "(2)" dedup suffix. */
+	const stem = (name: string): string =>
+		name
+			.replace(/\.[^.]+$/, '')
+			.replace(/^\s*\d{1,3}\s*[-._)\]]*\s+/, '')
+			.replace(/\s*\(\d+\)\s*$/, '')
+			.normalize('NFD')
+			.replace(/\p{Diacritic}/gu, '')
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '')
+			.trim();
+
+	// One directory listing per album, reused across its tracks.
+	const dirCache = new Map<string, Array<{ name: string; path: string; size: number }>>();
+	const out: Array<{
+		id: string;
+		title: string;
+		artist: string;
+		filePath: string;
+		sizeBytes: number;
+	}> = [];
+	const claimed = new Set<string>();
+
+	for (const r of rows) {
+		const meta = {
+			title: r.title,
+			artist: r.artist,
+			album: r.album,
+			albumArtist: r.albumArtist ?? r.artist,
+			trackNumber: r.trackNumber,
+			discNumber: r.discNumber,
+		};
+		// The album folder is reliable (artist + album are both known), but the
+		// FILENAME is not: a row that failed before numbering was resolved has
+		// track_number = NULL, which would derive `00 - Title.flac` and match
+		// nothing. So resolve the folder, then match the title against what is
+		// actually in it.
+		const dir = join(
+			libraryDir,
+			trackRelativePath(meta, 'flac').split('/').slice(0, -1).join('/'),
+		);
+		let entries = dirCache.get(dir);
+		if (!entries) {
+			// A row can name an album folder that does not exist on disk (the
+			// download never got that far), so a missing directory is expected
+			// rather than exceptional.
+			let listing: Array<{ name: string; path: string; size: number }> = [];
+			try {
+				listing = readdirSync(dir, { withFileTypes: true })
+					.filter((e) => e.isFile() && /\.(flac|mp3)$/i.test(e.name))
+					.map((e) => {
+						const p = join(dir, e.name);
+						return {
+							name: e.name,
+							path: p,
+							size: statSync(p, { throwIfNoEntry: false })?.size ?? 0,
+						};
+					})
+					.filter((e) => e.size > 0);
+			} catch {
+				listing = [];
+			}
+			entries = listing;
+			dirCache.set(dir, entries);
+		}
+		if (entries.length === 0) continue;
+
+		const wanted = stem(r.title);
+		if (!wanted) continue;
+		const match =
+			// Prefer an exact numbered match when the row does know its number.
+			(r.trackNumber != null
+				? entries.find(
+						(e) =>
+							e.name.startsWith(`${String(r.trackNumber).padStart(2, '0')} - `) &&
+							stem(e.name) === wanted,
+					)
+				: undefined) ??
+			entries.find((e) => stem(e.name) === wanted && !claimed.has(e.path));
+		if (!match || claimed.has(match.path)) continue;
+		claimed.add(match.path);
+		out.push({
+			id: r.id,
+			title: r.title,
+			artist: r.artist,
+			filePath: match.path,
+			sizeBytes: match.size,
+		});
+	}
+	return out;
+}
+
+/**
+ * Adopt a file that is already on disk for a row that lost its `file_path`.
+ *
+ * Re-probes real audio properties rather than trusting the row, so quality,
+ * bitrate and losslessness describe the bytes that are actually there — the same
+ * reason the download path probes after tagging.
+ */
+export async function adoptExistingFile(
+	id: string,
+	filePath: string,
+	sizeBytes: number,
+): Promise<boolean> {
+	try {
+		const { probeQuality, ensureFileTags } = await import('$lib/server/library/tagging');
+		const row = await db
+			.select({
+				title: tracks.title,
+				artist: tracks.artist,
+				album: tracks.album,
+				albumArtist: tracks.albumArtist,
+				trackNumber: tracks.trackNumber,
+				discNumber: tracks.discNumber,
+				releaseYear: tracks.releaseYear,
+				genre: tracks.genre,
+			})
+			.from(tracks)
+			.where(eq(tracks.id, id))
+			.limit(1);
+		const r = row[0];
+		if (!r) return false;
+
+		// Re-tag from canonical data so an adopted file is not left with whatever
+		// half-written state the failed attempt left behind.
+		await ensureFileTags(
+			filePath,
+			{
+				title: r.title,
+				artist: r.artist,
+				album: r.album,
+				albumArtist: r.albumArtist,
+				trackNumber: r.trackNumber,
+				discNumber: r.discNumber,
+				year: r.releaseYear,
+				genre: r.genre,
+				cover: null,
+				lyricsPlain: null,
+				lyricsSynced: null,
+			},
+			{ force: true },
+		);
+
+		const probed = await probeQuality(filePath).catch(() => null);
+		await db
+			.update(tracks)
+			.set({
+				filePath,
+				sizeBytes,
+				downloadStatus: 'completed',
+				...(probed
+					? {
+							format: probed.container,
+							bitrateKbps: probed.bitrateKbps,
+							bitDepth: probed.bitDepth,
+							sampleRateHz: probed.sampleRateHz,
+							isLossless: probed.lossless,
+							durationSec: probed.durationSec,
+						}
+					: {}),
+				updatedAt: new Date(),
+			})
+			.where(eq(tracks.id, id));
+		return true;
+	} catch (err) {
+		log.warn('adopting on-disk file failed', { id, filePath, error: String(err) });
+		return false;
+	}
 }
 
 /**

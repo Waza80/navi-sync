@@ -165,7 +165,9 @@ export class TidalClient {
 		const raw = await this.#get<{ items?: RawTrack[] }>(
 			`/search/?s=${encodeURIComponent(query)}&limit=${limit}`,
 		);
-		return (raw.items ?? []).filter((t) => t?.id != null).map((t) => toTidalTrack(t));
+		return (raw.items ?? [])
+			.filter((t) => t?.id != null)
+			.map((t) => toTidalTrack(t, '', this.base));
 	}
 
 	/**
@@ -222,7 +224,9 @@ export class TidalClient {
 				`/search/?i=${encodeURIComponent(wanted)}&limit=10`,
 			);
 			const hit = pick(
-				(direct.items ?? []).filter((t) => t?.id != null).map((t) => toTidalTrack(t)),
+				(direct.items ?? [])
+					.filter((t) => t?.id != null)
+					.map((t) => toTidalTrack(t, '', this.base)),
 			);
 			if (hit) return hit;
 		} catch {
@@ -240,7 +244,7 @@ export class TidalClient {
 	/** Full metadata for one track, including its album. */
 	async track(trackId: string): Promise<TidalTrack> {
 		const raw = await this.#get<RawTrack>(`/info/?id=${encodeURIComponent(trackId)}`);
-		return toTidalTrack(raw, trackId);
+		return toTidalTrack(raw, trackId, this.base);
 	}
 
 	/**
@@ -266,7 +270,7 @@ export class TidalClient {
 		return (raw.items ?? [])
 			.map((entry) => entry?.item)
 			.filter((t): t is RawTrack => t?.id != null)
-			.map((t) => toTidalTrack({ ...t, album: t.album ?? inherited }));
+			.map((t) => toTidalTrack({ ...t, album: t.album ?? inherited }, '', this.base));
 	}
 
 	/**
@@ -369,7 +373,27 @@ function yearOf(date: string | null | undefined): number | null {
 	return m?.[1] ? Number(m[1]) : null;
 }
 
-export function toTidalTrack(raw: RawTrack, idFallback = ''): TidalTrack {
+/**
+ * Canonical page URL for a track id.
+ *
+ * Built from the CONFIGURED instance, not a hardcoded `tidal.com`. The stream
+ * URLs and search API live on the self-hosted hiFi instance, so a `tidal.com`
+ * link is a page this deployment never touches — and a job queued with one could
+ * not be resolved back to a ref when the instance URL was the only authority.
+ * `parseRef` accepts both shapes, but the instance is the one that is actually
+ * reachable and is what `instanceTrackId` matches on origin.
+ */
+export function tidalTrackUrl(id: string, instanceUrl?: string | null): string | null {
+	if (!id) return null;
+	const base = instanceUrl?.replace(/\/+$/, '');
+	return base ? `${base}/track/?id=${encodeURIComponent(id)}` : `https://tidal.com/track/${id}`;
+}
+
+export function toTidalTrack(
+	raw: RawTrack,
+	idFallback = '',
+	instanceUrl?: string | null,
+): TidalTrack {
 	const id = String(raw.id ?? idFallback ?? '');
 	const artists = Array.isArray(raw.artists) ? raw.artists : [];
 	// Album fan-out items arrive with no artist of their own, so the album's
@@ -397,7 +421,7 @@ export function toTidalTrack(raw: RawTrack, idFallback = ''): TidalTrack {
 		discNumber: typeof raw.volumeNumber === 'number' ? raw.volumeNumber : null,
 		// Track-level releaseDate is usually null; the album carries it.
 		year: yearOf(raw.releaseDate) ?? yearOf(raw.album?.releaseDate),
-		sourceUrl: id ? `https://tidal.com/track/${id}` : null,
+		sourceUrl: tidalTrackUrl(id, instanceUrl),
 	};
 }
 
