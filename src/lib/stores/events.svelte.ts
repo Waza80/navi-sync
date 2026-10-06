@@ -258,10 +258,14 @@ class LiveEventClient {
 	#bump(from: string | undefined, to: string): void {
 		if (!this.#countAuthoritative) return;
 		const byStatus = { ...this.#counts.byStatus };
+		// No previous status means this job was never seen: a genuinely NEW row, so
+		// `total` has to grow. Without that the "All" badge sat frozen while jobs were
+		// being created, which reads as "nothing is happening".
+		const isNew = from === undefined;
 		if (from) byStatus[from] = Math.max(0, (byStatus[from] ?? 0) - 1);
 		byStatus[to] = (byStatus[to] ?? 0) + 1;
 		this.#counts = {
-			total: this.#counts.total,
+			total: this.#counts.total + (isNew ? 1 : 0),
 			active: (byStatus['queued'] ?? 0) + (byStatus['running'] ?? 0),
 			byStatus,
 		};

@@ -11,7 +11,19 @@
 	} from '@hugeicons/core-free-icons';
 	import { resolve } from '$app/paths';
 	import { authClient } from '$lib/client/auth';
+	import { live } from '$lib/stores/events.svelte';
 	import { APP_VERSION_SHORT } from '$lib/version';
+	import { onMount } from 'svelte';
+
+	// Open the SSE stream. Nothing in the app was ever calling live.start(), so the
+	// EventSource was never created: the queue rendered its SSR snapshot and then sat
+	// frozen. `live.connected` was referenced on the dashboard, which made it look
+	// wired up while no events could arrive. Started here, in the layout, so every
+	// authenticated page shares one connection and it closes on navigation away.
+	onMount(() => {
+		live.start();
+		return () => live.stop();
+	});
 
 	let {
 		children,

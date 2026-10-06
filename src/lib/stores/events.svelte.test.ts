@@ -99,8 +99,8 @@ describe('LiveEventClient reactivity', () => {
 		lastES().onmessage?.({ data: statusEvt('job.queued', 'job-a') });
 		expect(live.jobCounts.byStatus['queued']).toBe(1);
 		expect(live.jobCounts.active).toBe(1);
-		// total is the server's number of rows, not a local tally, so it holds.
-		expect(live.jobCounts.total).toBe(100);
+		// A job the store had never seen IS a new row, so total grows by one.
+		expect(live.jobCounts.total).toBe(101);
 
 		lastES().onmessage?.({ data: progressEvt('job-a', 5, 'working') });
 		expect(live.jobCounts.byStatus['queued']).toBe(0);
@@ -111,6 +111,9 @@ describe('LiveEventClient reactivity', () => {
 		expect(live.jobCounts.byStatus['running']).toBe(0);
 		expect(live.jobCounts.byStatus['succeeded']).toBe(101);
 		expect(live.jobCounts.active).toBe(0);
+		// A second job is another new row.
+		lastES().onmessage?.({ data: statusEvt('job.queued', 'job-c') });
+		expect(live.jobCounts.total).toBe(102);
 	});
 
 	it('ignores deltas until the server has supplied real totals', async () => {
