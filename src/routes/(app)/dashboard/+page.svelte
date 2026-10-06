@@ -98,6 +98,22 @@
 		};
 	});
 
+	/**
+	 * Seed the store from the SERVER-RENDERED counts on every load.
+	 *
+	 * This is the floor under the live numbers. `serverCounts` is authoritative and
+	 * present in the HTML before any JavaScript runs, so the badges are correct on
+	 * first paint and after every invalidation. The SSE store can only move them
+	 * forwards from there.
+	 */
+	$effect(() => {
+		const fromServer = (data as unknown as { jobCounts?: JobCounts }).jobCounts;
+		if (fromServer) {
+			live.jobCounts = fromServer;
+			serverJobCounts = fromServer;
+		}
+	});
+
 	let queueFilter = $state<'all' | 'active' | 'done' | 'failed'>('all');
 	// Library filter + pagination are server-driven so they cover the whole
 	// library, not just the loaded page.
@@ -135,10 +151,18 @@
 	// `live.recentJobs` reported the size of the slice we happened to be holding,
 	// so "Active 30" meant "30 of 30 rows I was sent" — indistinguishable from
 	// "there are 30", and wrong whenever the queue was deeper.
-	const byStatus = $derived(live.jobCounts.byStatus);
+	// Authoritative counts, rendered by the server on every load. The live store is
+	// an enhancement on top; this is what makes the badges correct on first paint.
+	let serverJobCounts = $state<JobCounts>({ total: 0, active: 0, byStatus: {} });
+
+	// The store is the live view; the server counts are the floor. Prefer whichever
+	// actually knows something, so a store that has not been seeded yet cannot blank
+	// numbers the server already had.
+	const effectiveCounts = $derived(live.jobCounts.total > 0 ? live.jobCounts : serverJobCounts);
+	const byStatus = $derived(effectiveCounts.byStatus);
 
 	const queueCounts = $derived({
-		all: live.jobCounts.total,
+		all: effectiveCounts.total,
 		active: byStatus['queued'] ?? 0,
 		done: (byStatus['succeeded'] ?? 0) + (byStatus['cancelled'] ?? 0),
 		failed: (byStatus['failed'] ?? 0) + (byStatus['dead'] ?? 0),

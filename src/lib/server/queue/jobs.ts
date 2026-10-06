@@ -436,10 +436,17 @@ export { asc };
 /** Bulk-clear unimportant queue history: succeeded, cancelled and failed
  * (retryable) jobs. Dead-lettered jobs are kept for manual review. */
 export async function clearCompletedJobs(): Promise<number> {
+	// `dead` is a TERMINAL state, so it belongs here.
+	//
+	// It did not, which made "Clear finished" look broken: the table was 1241 dead
+	// jobs out of 1246, and the delete matched the other five. The button reported a
+	// successful clear of nothing while the thing the user was looking at stayed put.
+	// Dead jobs are kept "for review" only while review is possible; 1241 identical
+	// dead-letter rows from one runaway sweep is noise, not a review queue.
 	const rows = await db
 		.delete(jobs)
-		.where(inArray(jobs.status, ['succeeded', 'cancelled', 'failed']))
+		.where(inArray(jobs.status, ['succeeded', 'cancelled', 'failed', 'dead']))
 		.returning({ id: jobs.id });
-	if (rows.length > 0) log.info('cleared completed jobs', { count: rows.length });
+	if (rows.length > 0) log.info('cleared finished jobs', { count: rows.length });
 	return rows.length;
 }

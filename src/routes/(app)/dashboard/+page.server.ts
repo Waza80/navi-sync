@@ -1,4 +1,4 @@
-import { listJobs } from '$lib/server/queue/jobs';
+import { jobCounts, listJobs } from '$lib/server/queue/jobs';
 import { listTracks, trackStats } from '$lib/server/db/tracks';
 import { ensureMigrated } from '$lib/server/db';
 import type { TrackDTO } from '$lib/shared/types';
@@ -15,8 +15,13 @@ export const load: PageServerLoad = async ({ url }) => {
 	// already carries `counts` and whose type generates correctly. Adding a field
 	// to this loader produced a PageServerData that would not regenerate and came
 	// through undefined at runtime, which showed as a confident 0.
-	const [jobs, tracksResult, failedResult, stats] = await Promise.all([
+	// Counts come from the SERVER, on every load. The client store is only an
+	// enhancement on top of this: it is seeded from here and kept live by SSE
+	// deltas. When the two disagree, this one is right — the store has now been
+	// wrong three times (never subscribed, non-reactive field, never started).
+	const [jobs, counts, tracksResult, failedResult, stats] = await Promise.all([
 		listJobs(30),
+		jobCounts(),
 		listTracks({
 			q: q ?? undefined,
 			page: Number.isFinite(page) ? page : 1,
@@ -90,6 +95,7 @@ export const load: PageServerLoad = async ({ url }) => {
 	const failedDtos: TrackDTO[] = failedResult.items.map(toDto);
 
 	return {
+		jobCounts: counts,
 		jobs: jobs.map((j) => ({
 			id: j.id,
 			type: j.type,
