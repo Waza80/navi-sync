@@ -599,7 +599,7 @@ worth doing as a check even though it could not be the mechanism:
   undecided.**
 
 The useful result is the **zero**: nothing in the database, and nothing keyed on
-ISRC, knows any of these titles *only* in its suffixed form. There is no evidence
+ISRC, knows any of these titles _only_ in its suffixed form. There is no evidence
 for the `(n)` being part of a title, and the user knows these are artefacts of
 old bugs. Undecided means "no counter-evidence", not "unsafe" — do not read an
 absence of a witness as a reason to keep a known artefact.
@@ -619,6 +619,7 @@ reverse. A stray rename with no row is an orphan nobody will notice; a row with 
 file is loudly broken and self-documenting.
 
 Two bugs worth remembering from the recovery:
+
 - `ssh host "test -e '<path>'"` **breaks on an apostrophe or a backtick**, and the
   resulting non-zero exit reads as "file does not exist" in a try/catch — so the
   guard passed and `mv` would have clobbered a real file. Check occupancy against

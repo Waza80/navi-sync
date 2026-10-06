@@ -302,7 +302,21 @@ export async function tagFlacStream(path: string, tags: TagData): Promise<void> 
  * NFC on both sides: the tag writer canonicalises, and comparing raw bytes would
  * re-flag every Zalgo title as a disagreement forever.
  */
-export function tagsDisagree(tags: TagData, file: Record<string, unknown> | null): string[] {
+export function tagsDisagree(
+	tags: TagData,
+	file: Record<string, unknown> | null,
+	opts: { fileHasCover?: boolean } = {},
+): string[] {
+	// Missing artwork is a disagreement in its own right.
+	//
+	// Without this, a file whose TEXT tags are all correct but which carries no
+	// picture is 'skipped' forever — and a repair then does nothing at all, which
+	// is exactly what a non-force repair did: retagged 0, no art, and the album
+	// stayed bare on Navidrome while 213 others had covers. The caller supplies the
+	// bytes; we only compare presence, never the image data.
+	if (tags.cover && opts.fileHasCover === false) {
+		return ['cover', ...tagsDisagree(tags, file, { fileHasCover: true })];
+	}
 	if (!file)
 		return [
 			'title',
@@ -375,7 +389,9 @@ export async function ensureFileTags(
 ): Promise<'ok' | 'skipped' | 'failed'> {
 	try {
 		const ext = filePath.toLowerCase().endsWith('.flac') ? 'flac' : 'mp3';
-		const info = await parseFile(filePath, { duration: false }).catch(() => null);
+		const info = await parseFile(filePath, { duration: false, skipCovers: false }).catch(
+			() => null,
+		);
 		const common = (info?.common ?? null) as Record<string, unknown> | null;
 
 		// Carry forward whatever this pass was NOT asked to change.
@@ -415,7 +431,9 @@ export async function ensureFileTags(
 
 		let disagreeing: string[] = [];
 		if (!opts.force) {
-			disagreeing = tagsDisagree(carried, common);
+			// music-metadata parses covers into common.picture unless skipped.
+			const pics = (common?.picture as unknown[] | undefined) ?? [];
+			disagreeing = tagsDisagree(carried, common, { fileHasCover: pics.length > 0 });
 			if (disagreeing.length === 0) return 'skipped';
 		}
 		if (ext === 'flac') await tagFlac(filePath, carried);

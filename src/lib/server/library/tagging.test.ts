@@ -4,7 +4,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { buildVorbisFields, tagMp3, type TagData } from './tagging';
+import { buildVorbisFields, tagMp3, tagsDisagree, type TagData } from './tagging';
 import { resolveLibraryPath } from './paths';
 
 const exec = promisify(execFile);
@@ -255,5 +255,56 @@ describe('NFC normalisation of written tag values', () => {
 
 	it('leaves absent fields absent rather than empty', () => {
 		expect(buildVorbisFields(mk()).map(([k]) => k)).toEqual(['TITLE', 'ARTIST']);
+	});
+});
+
+const mkTags = (over: Partial<TagData> = {}): TagData => ({
+	title: 't',
+	artist: 'a',
+	album: null,
+	albumArtist: null,
+	trackNumber: null,
+	discNumber: null,
+	year: null,
+	genre: null,
+	cover: null,
+	lyricsPlain: null,
+	lyricsSynced: null,
+	...over,
+});
+
+describe('tagsDisagree treats missing artwork as a disagreement', () => {
+	const file = { title: 't', artist: 'a', album: 'al', albumartist: 'aa' };
+	const tags = mkTags({ album: 'al', albumArtist: 'aa', cover: Buffer.from([0xff, 0xd8, 0xff]) });
+
+	it('flags the cover when we hold bytes and the file has none', () => {
+		// THE bug: a non-force repair found no text disagreement, skipped, and so
+		// never embedded the art. PRETTY DOLLCORPSE stayed bare while 213 albums
+		// had covers.
+		expect(tagsDisagree(tags, file, { fileHasCover: false })).toContain('cover');
+	});
+
+	it('reports nothing when the file already has the picture', () => {
+		expect(tagsDisagree(tags, file, { fileHasCover: true })).toEqual([]);
+	});
+
+	it('does not mention a cover we do not hold', () => {
+		const noCover = mkTags({ album: 'al', albumArtist: 'aa' });
+		expect(tagsDisagree(noCover, file, { fileHasCover: false })).toEqual([]);
+	});
+
+	it('still reports text fields alongside the cover', () => {
+		expect(tagsDisagree(tags, { ...file, album: 'WRONG' }, { fileHasCover: false })).toEqual(
+			expect.arrayContaining(['cover', 'album']),
+		);
+	});
+
+	it('defaults to not complaining when cover presence is unknown', () => {
+		// Unknown must not invent a rewrite, or every pass re-tags the library.
+		expect(tagsDisagree(tags, file)).toEqual([]);
+	});
+
+	it('treats a non-empty picture array as present art', () => {
+		expect(tagsDisagree(tags, { ...file, picture: [{}] }, { fileHasCover: true })).toEqual([]);
 	});
 });
