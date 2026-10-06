@@ -505,3 +505,50 @@ be the last word.
 Order that works: pure function -> unit tests -> dry run with exact expected
 counts asserted -> sandbox on copies of the real files -> single apply with the
 same assertions -> independent verification that reads the result back.
+
+## Navidrome's index is a SEPARATE store, and it lags our writes
+
+After a full library re-tag (`retagged: 401`, `scanCompleted: true`,
+`lastScanCount: 675`) Navidrome's SQLite still held rows our database had already
+fixed:
+
+```
+media_file rows whose file is GONE on disk: 4   (all flagged missing=1)
+albums Navidrome shows more than once: 1       (don dada, the real mixtape)
+```
+
+The 4 ghosts are all files my own earlier passes deleted or renamed on disk
+without telling Navidrome:
+- `.../09 - SADDAM&SODOME (2).flac` — the duplicate the reconciler deleted, and
+  the reason NODA still appeared twice: the ghost row carries the OLD album
+  spelling `NODA le monde et les humains`, so it forms its own 1-track album_id
+  alongside the correct 16-track one.
+- `Ptite Soeur/#CUT4…/…flac` — same album, hence the 12 media_file rows for 11
+  files, and the reason the album appeared to contain a track twice.
+- `Wallace Cleaver/merci/11 - marcel (2).flac`, `disiz/L'Amour…/10 - CATCHEUR.flac`.
+
+**A full scan never removes these.** It only sets `missing = 1`. They must be
+deleted in the Navidrome UI, or Navidrome must be given
+`Scan.PurgeMissing = "always"`. Verify with
+`select count(*) from media_file where missing=1` — the row COUNT matches disk
+and still proves nothing.
+
+Consequence for verification: **three stores, not one.** Our Postgres, the files
+on disk, and Navidrome's SQLite each have to be checked. After the 0.8.x passes
+the first two were perfect while the third still showed splits, which reads as
+"the fix did nothing".
+
+## Cover art lives in `embed_art_path` / `artwork`, and MB covers need a scan
+
+There is no `cover_art` table; querying it errors. Use
+`album.embed_art_path`, and `artwork` / `item_artwork` / `artwork_queue` for the
+cache. At v0.8.2: **213 albums with embedded art, 8 without.**
+
+An album gets art only if some track's cover bytes were EMBEDDED. A `cover_path`
+in our database is not enough. So the MusicBrainz cover fix has a prerequisite:
+the `metadata_repair` re-tag path passes `cover: null`, so even a resolved
+`coverUrl` never reaches the file. MB-linked albums currently show an EMPTY
+`mbz_album_id` for both PRETTY DOLLCORPSE and CUT4ZALGO.
+
+`Expunged` releases are also invisible to Navidrome's own MB sync, so it will not
+fetch art for one on its own — which is exactly the case DOLLCORPSE is.
