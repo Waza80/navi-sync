@@ -102,3 +102,74 @@ export function safeValidateTrackRow(input: unknown): ValidatedTrackRow | null {
 	const parsed = trackRowSchema.safeParse(input);
 	return parsed.success ? parsed.data : null;
 }
+
+/* ── jobs ─────────────────────────────────────────────────────────────────── */
+
+/**
+ * Payload shapes, keyed by job type.
+ *
+ * A job payload is `jsonb`, so nothing constrains it at the database and a handler
+ * that reads `payload.url` gets `undefined` at best. `url` used to arrive as an
+ * artist link — which is why a whole afternoon went into a "Deezer gateway fault"
+ * that was really a fan-out request — so the shape is asserted rather than assumed.
+ */
+export const jobPayloadSchemas = {
+	download: z.object({
+		url: z.string().min(1).max(2048),
+		provider: z.string().min(1).max(50).optional(),
+		meta: z.record(z.string(), z.unknown()).optional(),
+		retryForTrackId: z.string().uuid().optional(),
+		upgradeForTrackId: z.string().uuid().optional(),
+	}),
+	metadata_repair: z.object({
+		trackId: z.string().uuid(),
+		reason: z.string().max(60).optional(),
+		force: z.boolean().optional(),
+	}),
+	upgrade_check: z.object({ trackId: z.string().uuid() }),
+	lyrics: z.object({
+		trackId: z.string().uuid(),
+		force: z.boolean().optional(),
+		upgradeForTrackId: z.string().uuid().optional(),
+	}),
+	navidrome_scan: z.object({ full: z.boolean().optional() }).partial(),
+} as const;
+
+export type ValidatedJobType = keyof typeof jobPayloadSchemas;
+
+export const JOB_TYPES: readonly ValidatedJobType[] = Object.keys(
+	jobPayloadSchemas,
+) as ValidatedJobType[];
+
+/** Validate a payload for a known job type; unknown types pass through untouched. */
+export function validateJobPayload(type: string, payload: unknown): unknown {
+	const schema = (jobPayloadSchemas as Record<string, z.ZodTypeAny | undefined>)[type];
+	if (!schema) return payload;
+	const parsed = schema.safeParse(payload);
+	if (!parsed.success) {
+		throw new DbInvariantError(
+			`Refusing to run a ${type} job with an invalid payload: ${parsed.error.issues
+				.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+				.join('; ')}`,
+			parsed.error.issues,
+		);
+	}
+	return parsed.data;
+}
+
+/* ── settings ────────────────────────────────────────────────────────────── */
+
+/** A file extension we will write into the library. Never trust a request-supplied one. */
+export const libraryExtension = z
+	.string()
+	.regex(/^[a-z0-9]{1,5}$/, { message: 'extension must be a short lowercase token' });
+
+/** Seconds. Guards against a negative duration reaching a tag writer. */
+export const seconds = z
+	.number()
+	.finite()
+	.min(0)
+	.max(60 * 60 * 12);
+
+/** kbps, for the quality policy. */
+export const bitrateKbps = z.number().finite().min(0).max(3200);

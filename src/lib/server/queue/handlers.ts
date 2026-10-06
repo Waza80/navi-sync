@@ -49,6 +49,17 @@ export interface JobContext {
 }
 
 export async function runJob(job: JobRow, ctx: JobContext): Promise<Record<string, unknown>> {
+	// Assert the payload shape before doing anything with it.
+	//
+	// Payloads are jsonb, so the database constrains nothing and a handler reading
+	// `payload.url` gets `undefined` at best — or a fan-out URL treated as a track,
+	// which is what produced "Deezer gateway error on song.getData" for an ARTIST
+	// link. Validating here means the job fails with the real reason instead.
+	{
+		const { validateJobPayload } = await import('$lib/server/db/validate');
+		job.payload = validateJobPayload(job.type, job.payload) as JobRow['payload'];
+	}
+
 	switch (job.type) {
 		case 'download':
 			return runDownload(job, ctx);
