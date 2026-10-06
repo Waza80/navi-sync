@@ -1,6 +1,6 @@
 {
 	"name": "navisync",
-	"version": "0.7.0",
+	"version": "0.7.1",
 	"private": true,
 	"type": "module",
 	"description": "Self-hosted, privacy-first Navidrome download & synchronization hub (Phase 1: Node monolith)",
