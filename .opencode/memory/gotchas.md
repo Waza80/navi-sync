@@ -318,7 +318,7 @@ rest depends on, and it catches the mistake in the fixture itself.
 ## ffprobe lies three different ways. Verify the probe before believing it.
 
 Three separate audits of this library reported confident, entirely false findings
-because the *probe* was wrong. Each was a case where I believed a number instead
+because the _probe_ was wrong. Each was a case where I believed a number instead
 of checking the tool that produced it.
 
 1. **`-show_entries` may be repeated but only the LAST section wins.**
@@ -414,6 +414,7 @@ retagged: 401
 ```
 
 **Known remaining, unfixed:**
+
 - 13 files still carry the repeated credits in their ARTIST tag (the
   album_artist was unified; `artist` was not). Same duplication artefact.
 - Two artist DIRECTORIES still hold that corrupt name. navi-sync owns them, so
