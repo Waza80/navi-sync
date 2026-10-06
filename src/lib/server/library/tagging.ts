@@ -329,10 +329,24 @@ export function tagsDisagree(tags: TagData, file: Record<string, unknown> | null
 		}
 		return null;
 	};
+	// Non-canonical text in the FILE is a defect in its own right, independent of
+	// what the database says. Comparing NFC on both sides — which is what stops a
+	// zalgo title being re-tagged for ever — also hides it: a file holding the
+	// marks in the wrong order normalises to the same string as the row, so the
+	// two agree and nothing is ever rewritten. That is why #CUT4ZALGO stayed
+	// broken after the writer was fixed: the writer only affects future writes.
+	// The raw form is therefore compared as well, and the rewrite it triggers
+	// settles the disagreement permanently.
+	const nonCanonical = (v: unknown): boolean => {
+		const text = asText(v);
+		return text != null && text !== text.normalize('NFC');
+	};
 	const same = (a: string | number | null | undefined, b: unknown): boolean => {
 		const left = a == null || a === '' ? null : String(a);
 		const right = asText(b);
 		if (left === null && right === null) return true;
+		if (nonCanonical(b)) return false;
+		if (left === right) return true;
 		if (left === null || right === null) return false;
 		return left.normalize('NFC') === right.normalize('NFC');
 	};

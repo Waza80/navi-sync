@@ -74,6 +74,12 @@ interface Chosen {
 	recording: MbRecording;
 	release: MbRelease;
 	albumArtist: string | null;
+	/**
+	 * True when the release is Expunged and was accepted for its artwork ONLY.
+	 * Every identity field is then withheld: the Cover Art Archive has the picture,
+	 * but an expunged release must not decide this album's name, year or numbering.
+	 */
+	artworkOnly?: boolean;
 }
 
 function yearOf(date: string | undefined): number | null {
@@ -181,6 +187,28 @@ function canonicalReleases(rec: MbRecording): MbRelease[] {
 	return (rec.releases ?? []).filter(isCanonicalRelease);
 }
 
+/**
+ * Releases allowed to supply ARTWORK only.
+ *
+ * Expunged is MusicBrainz's "this entity was removed" status, and the canonical
+ * rule rightly excludes it — an expunged release must never decide an album's
+ * identity, year or track numbers. But the artwork on such a release is still
+ * real, often verified, and frequently the ONLY artwork anywhere: PRETTY
+ * DOLLCORPSE is release 5cfb3294, Expunged, with approved front and back images
+ * in the Cover Art Archive, and no Official alternative. Excluding it entirely
+ * left the album permanently uncoverable.
+ *
+ * So: artwork is allowed to fall back to a release that identity will not touch.
+ * `status: Expunged` is included deliberately; a `Pseudo-Release` or deleted
+ * entry is not.
+ */
+function artworkReleases(rec: MbRecording): MbRelease[] {
+	return (rec.releases ?? []).filter((r) => {
+		if (isCanonicalRelease(r)) return true;
+		return r.status === 'Expunged';
+	});
+}
+
 /** Prefer the release that looks like the definitive studio edition. */
 function releaseScore(r: MbRelease): number {
 	let score = 0;
@@ -195,6 +223,10 @@ function releaseScore(r: MbRelease): number {
 
 async function toPatch(chosen: Chosen, needed: MetadataQuery['needed']): Promise<MetadataPatch> {
 	const { recording: rec, release } = chosen;
+	if (chosen.artworkOnly) {
+		// Cover and nothing else — see `artworkOnly`.
+		return needed.includes('coverUrl') ? { coverUrl: await coverUrlFor(release.id) } : {};
+	}
 	return {
 		...(needed.includes('album') && release.title ? { album: release.title } : {}),
 		...(needed.includes('albumArtist') && chosen.albumArtist
@@ -254,6 +286,35 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 			releaseScore(r) > releaseScore(best) ? r : best,
 		);
 		return { recording: rec, release, albumArtist: artistName(rec) };
+	}
+	// No canonical release, so the strict path above returns nothing. Before
+	// giving up, look for a recording matched by title+artist whose only release
+	// is Expunged — enough to lend us its cover art, not its identity.
+	if (!wanted) {
+		const lenient = pickStrict(
+			{ title: query.title, artist: query.artist, durationSec: query.durationSec },
+			recs
+				.filter((r) => r.title && artworkReleases(r).length > 0)
+				.map((r) => ({
+					title: r.title ?? '',
+					artist: artistName(r) ?? '',
+					durationSec: typeof r.length === 'number' ? Math.round(r.length / 1000) : null,
+				})),
+		);
+		if (lenient) {
+			const rec = recs.find((r) => r.title === lenient.title);
+			if (rec) {
+				const art = artworkReleases(rec).reduce((best, r) =>
+					releaseScore(r) > releaseScore(best) ? r : best,
+				);
+				return {
+					recording: rec,
+					release: art,
+					albumArtist: artistName(rec),
+					artworkOnly: true,
+				};
+			}
+		}
 	}
 	return null;
 }

@@ -775,6 +775,32 @@ export async function updateTrackAlbumArtist(id: string, albumArtist: string): P
 	await db.update(tracks).set({ albumArtist, updatedAt: new Date() }).where(eq(tracks.id, id));
 }
 
+/**
+ * Rewrite a row's text fields to their canonical form.
+ *
+ * Only ever called with values that are already NFC-normalised by the caller, and
+ * only when they differ — the point is that the DATABASE must hold the same bytes
+ * the tag writer produces. If the row keeps a non-canonical album while the file
+ * is rewritten canonically, the next comparison disagrees forever and the file is
+ * re-tagged on every single pass.
+ */
+export async function updateTrackTextFields(
+	id: string,
+	fields: {
+		title?: string | null;
+		artist?: string | null;
+		album?: string | null;
+		albumArtist?: string | null;
+	},
+): Promise<void> {
+	const set: Record<string, unknown> = { updatedAt: new Date() };
+	if (fields.title !== undefined) set.title = fields.title;
+	if (fields.artist !== undefined) set.artist = fields.artist;
+	if (fields.album !== undefined) set.album = fields.album;
+	if (fields.albumArtist !== undefined) set.albumArtist = fields.albumArtist;
+	await db.update(tracks).set(set).where(eq(tracks.id, id));
+}
+
 /** Rows whose album cover is missing or points at a file that no longer exists. */
 export async function listBrokenCoverCandidates(limit = 25) {
 	return db

@@ -846,9 +846,11 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		const { unifyAlbumArtistsByAlbum, canonicalArtistList } = await import(
 			'$lib/server/metadata/artists'
 		);
-		const { listFiledTracks: listForUnify, updateTrackAlbumArtist } = await import(
-			'$lib/server/db/tracks'
-		);
+		const {
+			listFiledTracks: listForUnify,
+			updateTrackAlbumArtist,
+			updateTrackTextFields,
+		} = await import('$lib/server/db/tracks');
 		const filedForUnify = await listForUnify();
 		const byTitle = new Map<string, typeof filedForUnify>();
 		for (const t of filedForUnify) {
@@ -880,6 +882,34 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 			}
 			if (group.some((t) => t.albumArtist !== target)) albumsUnified++;
 		}
+		// Canonicalise the row text itself. The tag writer emits NFC, so a row still
+		// holding the marks in the wrong order disagrees with its own file for ever
+		// once the file is fixed. #CUT4ZALGO is exactly this: 11 files, 6 tagged
+		// chars=62 and 5 tagged chars=60, one album, two Navidrome entries.
+		let rowsCanonicalised = 0;
+		for (const t of filedForUnify) {
+			const want = {
+				title: t.title.normalize('NFC'),
+				artist: t.artist.normalize('NFC'),
+				album: t.album?.normalize('NFC') ?? null,
+			};
+			const current = {
+				title: t.title,
+				artist: t.artist,
+				album: t.album,
+			};
+			if (
+				want.title === current.title &&
+				want.artist === current.artist &&
+				want.album === current.album
+			) {
+				continue;
+			}
+			await updateTrackTextFields(t.id, want);
+			rowsCanonicalised++;
+		}
+
+		log.info('navidrome repair text canonicalised', { rows: rowsCanonicalised });
 		log.info('navidrome repair album artists unified', {
 			titles: byTitle.size,
 			albumsUnified,
