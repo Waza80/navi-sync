@@ -3,7 +3,8 @@
 	import { tick } from 'svelte';
 	import { untrack } from 'svelte';
 	import { SvelteSet, SvelteURLSearchParams } from 'svelte/reactivity';
-	import { live } from '$lib/stores/events.svelte';
+	import { live, type JobCounts } from '$lib/stores/events.svelte';
+
 	import JobRow from '$lib/components/JobRow.svelte';
 	import TrackCard from '$lib/components/TrackCard.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
@@ -60,40 +61,40 @@
 	$effect(() => {
 		const snapshot = data.jobs;
 		untrack(() => {
-			// Seed from what we were handed so the badges are never a flash of 0, then
-			// replace with the server's real totals. Counting the snapshot is only a
-			// floor — it cannot know about jobs older than the window — so it is
-			// immediately corrected rather than trusted.
-			live.jobCounts = countFrom(snapshot);
 			live.hydrate(snapshot);
 			live.pruneNotIn(snapshot);
 		});
 	});
 
-	// Authoritative totals come from /api/jobs, whose `counts` is grouped over the
-	// whole table. Not from the loader: adding a field there produced a
-	// PageServerData that would not regenerate AND came through undefined at
-	// runtime, so the panel rendered a confident zero.
-	async function refreshJobCounts() {
-		try {
-			const res = await fetch('/api/jobs?limit=100');
-			if (!res.ok) return;
-			const body = (await res.json()) as {
-				counts?: { total: number; active: number; byStatus: Record<string, number> };
-			};
-			if (body.counts) live.jobCounts = body.counts;
-		} catch {
-			// Offline or aborted: the snapshot-seeded counts stay on screen, which is
-			// a lower bound rather than a wrong total.
-		}
-	}
+	/**
+	 * Totals come from GET /api/jobs, which groups the `jobs` table server-side.
+	 *
+	 * Not from the loader: adding a key to +page.server.ts does not reach the page.
+	 * PageServerData resolves through `.svelte-kit/…/proxy+page.server.js`, and that
+	 * mirror is current and does contain the key — yet the alias still omits it, so
+	 * I tried three routes around it (a cast, then typing from the loader's own
+	 * return type) and the second erased to `void`. Rather than ship a guess, the
+	 * counts come from the endpoint that demonstrably returns them.
+	 *
+	 * Fetched once on mount. After that SSE keeps them accurate by delta (#bump in
+	 * the event client), and nothing re-seeds from the 30-row window — doing that is
+	 * what made the badges alternate between real totals and window sizes.
+	 */
 	$effect(() => {
-		void refreshJobCounts();
-		// Also on tab focus, so a queue left open overnight does not report stale
-		// totals after SSE has reconnected and finished draining.
-		const onFocus = () => void refreshJobCounts();
-		window.addEventListener('focus', onFocus);
-		return () => window.removeEventListener('focus', onFocus);
+		let cancelled = false;
+		void (async () => {
+			try {
+				const res = await fetch('/api/jobs?limit=30');
+				if (!res.ok || cancelled) return;
+				const body = (await res.json()) as { counts?: JobCounts };
+				if (body.counts && !cancelled) live.jobCounts = body.counts;
+			} catch {
+				// Leave the previous totals on screen rather than blanking the panel.
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
 	});
 
 	let queueFilter = $state<'all' | 'active' | 'done' | 'failed'>('all');
@@ -129,16 +130,6 @@
 	);
 	const pageCount = $derived(Math.max(1, Math.ceil(data.tracksTotal / 50)));
 	const filteredTracks = $derived(data.tracks);
-	/** Lower-bound counts from a page of jobs, used only until the server answers. */
-	function countFrom(rows: { status: string }[]) {
-		const byStatus: Record<string, number> = {};
-		for (const r of rows) byStatus[r.status] = (byStatus[r.status] ?? 0) + 1;
-		return {
-			total: rows.length,
-			active: (byStatus['queued'] ?? 0) + (byStatus['running'] ?? 0),
-			byStatus,
-		};
-	}
 	// Badges are the SERVER's counts over the whole jobs table. Counting
 	// `live.recentJobs` reported the size of the slice we happened to be holding,
 	// so "Active 30" meant "30 of 30 rows I was sent" — indistinguishable from

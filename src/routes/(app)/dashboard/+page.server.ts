@@ -16,7 +16,7 @@ export const load: PageServerLoad = async ({ url }) => {
 	// to this loader produced a PageServerData that would not regenerate and came
 	// through undefined at runtime, which showed as a confident 0.
 	const [jobs, tracksResult, failedResult, stats] = await Promise.all([
-		listJobs(100),
+		listJobs(30),
 		listTracks({
 			q: q ?? undefined,
 			page: Number.isFinite(page) ? page : 1,

@@ -14,6 +14,13 @@ import { isNaviEvent, type JobDTO, type NaviEvent } from '$lib/shared/types';
  *  - hydrate() overwrites AND pruneNotIn() removes — the server snapshot is
  *    always the source of truth.
  */
+/** Authoritative per-status job totals, counted over the whole table. */
+export interface JobCounts {
+	total: number;
+	active: number;
+	byStatus: Record<string, number>;
+}
+
 class LiveEventClient {
 	jobs = new SvelteMap<string, JobDTO>();
 	connected = $state(false);
@@ -72,8 +79,28 @@ class LiveEventClient {
 		}
 	}
 
+	/** The status an event implies, so count deltas are not restated per case. */
+	#statusFor(evt: NaviEvent, jobId: string): string {
+		switch (evt.type) {
+			case 'job.queued':
+				return 'queued';
+			case 'job.progress':
+				return 'running';
+			case 'job.completed':
+				return 'succeeded';
+			case 'job.failed':
+				return 'failed';
+			case 'job.cancelled':
+				return 'cancelled';
+			default:
+				// Unknown event type: treat as a progress tick so nothing is double counted.
+				return this.jobs.get(jobId)?.status ?? 'queued';
+		}
+	}
+
 	#apply(evt: NaviEvent): void {
 		const prev = this.jobs.get(evt.jobId);
+		this.#bump(prev?.status, this.#statusFor(evt, evt.jobId));
 		switch (evt.type) {
 			case 'job.queued': {
 				this.jobs.set(evt.jobId, {
@@ -178,29 +205,61 @@ class LiveEventClient {
 	}
 
 	/**
-	 * Newest first, capped for render performance.
-	 *
-	 * The cap was 30, which is why the queue panel looked permanently full and the
-	 * badges read 30 — the badge was counting this slice, not the table.
+	 * Newest first, 30 rows. That is the render window, and it is deliberately not
+	 * the count — the totals come from `jobCounts`, counted over the whole table.
 	 */
 	get recentJobs(): JobDTO[] {
 		return [...this.jobs.values()]
 			.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-			.slice(0, 100);
+			.slice(0, 30);
+	}
+
+	/** False until the server has supplied real totals, so a seed cannot overwrite them. */
+	get hasAuthoritativeCounts(): boolean {
+		return this.#countAuthoritative;
 	}
 
 	/**
-	 * Authoritative per-status totals, seeded from the server snapshot.
+	 * Authoritative per-status totals, seeded once from the server and then kept
+	 * live by delta on every SSE event.
 	 *
-	 * Kept separate from `jobs` on purpose: `jobs` is what this session has SEEN,
-	 * which cannot know about work queued before the page loaded. Anything
-	 * presented as a total must come from here.
+	 * Separate from `jobs` on purpose: `jobs` is a 30-row window and cannot know
+	 * about work queued before the page loaded. Anything shown as a total must come
+	 * from here — counting the window is what produced "Active 30" meaning "30 of
+	 * the 30 rows I was handed".
 	 */
-	jobCounts: { total: number; active: number; byStatus: Record<string, number> } = {
-		total: 0,
-		active: 0,
-		byStatus: {},
-	};
+	#counts: JobCounts = { total: 0, active: 0, byStatus: {} };
+
+	get jobCounts(): JobCounts {
+		return this.#counts;
+	}
+
+	set jobCounts(next: JobCounts) {
+		this.#counts = { total: next.total, active: next.active, byStatus: { ...next.byStatus } };
+		this.#countAuthoritative = true;
+	}
+
+	#countAuthoritative = false;
+
+	/**
+	 * Move the totals when a job changes status, so the badges track a draining
+	 * queue in real time instead of going stale until the next fetch.
+	 *
+	 * `#countAuthoritative` guards the seed: before the server answers, counts are
+	 * unknown and a delta would compound a wrong number, so events are ignored
+	 * until real totals arrive.
+	 */
+	#bump(from: string | undefined, to: string): void {
+		if (!this.#countAuthoritative) return;
+		const byStatus = { ...this.#counts.byStatus };
+		if (from) byStatus[from] = Math.max(0, (byStatus[from] ?? 0) - 1);
+		byStatus[to] = (byStatus[to] ?? 0) + 1;
+		this.#counts = {
+			total: this.#counts.total,
+			active: (byStatus['queued'] ?? 0) + (byStatus['running'] ?? 0),
+			byStatus,
+		};
+	}
 
 	get activeCount(): number {
 		return [...this.jobs.values()].filter(
