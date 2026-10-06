@@ -91,7 +91,14 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		if (wanted && !row.artist.toLowerCase().includes(wanted)) continue;
 		// Already refreshed inside the freshness window: leave it alone, or a
 		// re-run would immediately re-do its own work.
-		if (cutoff && row.metadataRefreshedAt && row.metadataRefreshedAt.getTime() > cutoff)
+		//
+		// An explicit `fields` request EXEMPTS itself. The window exists to stop a
+		// routine sweep re-doing its own work, but `{"fields":["coverUrl"]}` is a
+		// deliberate instruction to go and get that one field, and honouring the
+		// window silently returned `enqueued: 0` for rows refreshed minutes earlier
+		// — which reads as "there is nothing to fetch" when in fact the fetch was
+		// never attempted.
+		if (!fields && cutoff && row.metadataRefreshedAt && row.metadataRefreshedAt.getTime() > cutoff)
 			continue;
 		picked.push(row.id);
 	}
