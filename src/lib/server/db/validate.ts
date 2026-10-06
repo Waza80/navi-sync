@@ -113,6 +113,19 @@ export function safeValidateTrackRow(input: unknown): ValidatedTrackRow | null {
  * artist link — which is why a whole afternoon went into a "Deezer gateway fault"
  * that was really a fan-out request — so the shape is asserted rather than assumed.
  */
+/** The field names a metadata pass may be scoped to. */
+export const METADATA_FIELD_NAMES = [
+	'album',
+	'albumArtist',
+	'coverUrl',
+	'genre',
+	'year',
+	'trackNumber',
+	'discNumber',
+	'isrc',
+	'artistMbid',
+] as const;
+
 export const jobPayloadSchemas = {
 	download: z.object({
 		url: z.string().min(1).max(2048),
@@ -125,6 +138,9 @@ export const jobPayloadSchemas = {
 		trackId: z.string().uuid(),
 		reason: z.string().max(60).optional(),
 		force: z.boolean().optional(),
+		// The field-scoped forced pass. Was absent, so `fields: ['genre']` was
+		// silently stripped on the way in and every genre pass ran unforced.
+		fields: z.array(z.enum(METADATA_FIELD_NAMES)).max(9).optional(),
 	}),
 	upgrade_check: z.object({ trackId: z.string().uuid() }),
 	lyrics: z.object({
@@ -132,7 +148,18 @@ export const jobPayloadSchemas = {
 		force: z.boolean().optional(),
 		upgradeForTrackId: z.string().uuid().optional(),
 	}),
-	navidrome_scan: z.object({ full: z.boolean().optional() }).partial(),
+	// Every field the scan handler reads. `repair` was missing, so zod STRIPPED it
+	// and `payload.repair` was always undefined: the whole repair path — metadata
+	// re-enqueue, embedded tag repair, cover backfill — had never once executed,
+	// while the endpoint cheerfully reported its own findings. A repair that
+	// reports 0 retagged forever, and reads as "nothing needed fixing".
+	navidrome_scan: z.object({
+		repair: z.boolean().optional(),
+		full: z.boolean().optional(),
+		filesOnDisk: z.number().int().nonnegative().optional(),
+		tracksInDb: z.number().int().nonnegative().optional(),
+		missingFilesMarked: z.number().int().nonnegative().optional(),
+	}),
 } as const;
 
 export type ValidatedJobType = keyof typeof jobPayloadSchemas;

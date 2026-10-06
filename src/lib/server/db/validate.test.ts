@@ -167,3 +167,43 @@ describe('cleanPatch', () => {
 		});
 	});
 });
+
+describe('job payloads survive validation', () => {
+	// These are the exact payloads the routes and handlers send. A schema that
+	// omits a key does not reject the job — zod STRIPS it, the handler reads
+	// undefined, and the feature is silently inert while the caller is told it
+	// enqueued. That is not hypothetical: `repair` was missing from the scan
+	// schema, so the entire repair path never ran once.
+	it('keeps every field the navidrome repair endpoint sends', () => {
+		const sent = {
+			repair: true,
+			filesOnDisk: 675,
+			tracksInDb: 675,
+			missingFilesMarked: 0,
+		};
+		expect(validateJobPayload('navidrome_scan', sent)).toEqual(sent);
+	});
+
+	it('keeps the full-scan flag', () => {
+		expect(validateJobPayload('navidrome_scan', { full: true })).toEqual({ full: true });
+	});
+
+	it('keeps a field-scoped metadata pass', () => {
+		const sent = {
+			trackId: '5cfb3294-70bf-430f-a0c9-3357770b80b4',
+			reason: 'reindex:genre',
+			force: true,
+			fields: ['genre' as const],
+		};
+		expect(validateJobPayload('metadata_repair', sent)).toEqual(sent);
+	});
+
+	it('still rejects a metadata field that does not exist', () => {
+		expect(() =>
+			validateJobPayload('metadata_repair', {
+				trackId: '5cfb3294-70bf-430f-a0c9-3357770b80b4',
+				fields: ['nonsense'],
+			}),
+		).toThrow();
+	});
+});
