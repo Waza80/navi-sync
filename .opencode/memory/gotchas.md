@@ -214,7 +214,7 @@ files are missing.
 ## Reindexing after a restore: rows outlive their checksums
 
 `scripts/restore_library_index.py` rebuilds one row per file, but rows created
-*before* the restore survive alongside them. Result: several rows pointing at the
+_before_ the restore survive alongside them. Result: several rows pointing at the
 same `file_path` while carrying **different `checksum_sha256` values** — only one
 of them can be describing the file that is actually there.
 
@@ -229,7 +229,7 @@ richest row was describing a copy that no longer exists. Deleting the wrong row
 silently loses the only good metadata.
 
 The bug that hid this: a loop with `if (rows.length === 1) continue` placed
-*before* the deleted-file check. Single-row paths were skipped, so 4 rows whose
+_before_ the deleted-file check. Single-row paths were skipped, so 4 rows whose
 file an earlier pass deleted without repointing were never seen. Put the
 "does this file exist" check first, for every path.
 

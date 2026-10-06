@@ -66,14 +66,17 @@ export interface ProbedQuality {
  */
 export function tagMp3(path: string, tags: TagData): void {
 	const frames: Record<string, unknown> = {
-		title: tags.title,
-		artist: tags.artist,
-		album: tags.album ?? undefined,
-		performerInfo: tags.albumArtist ?? undefined,
+		title: nfc(tags.title),
+		artist: nfc(tags.artist),
+		album: nfc(tags.album),
+		// performerInfo is the TPE2 frame — the album artist. Without it Navidrome
+		// falls back to the track ARTIST for album grouping, so any release whose
+		// tracks credit different artists splits into one album per credit string.
+		performerInfo: nfc(tags.albumArtist),
 		trackNumber: tags.trackNumber != null ? String(tags.trackNumber) : undefined,
 		partOfSet: tags.discNumber != null ? String(tags.discNumber) : undefined,
 		year: tags.year != null ? String(tags.year) : undefined,
-		genre: tags.genre ?? undefined,
+		genre: nfc(tags.genre),
 	};
 	// Prefer synced (timestamped) lyrics when present, else the plain text.
 	//
@@ -105,21 +108,39 @@ export function tagMp3(path: string, tags: TagData): void {
 }
 
 /**
+ * Canonicalise a tag value to NFC before it is written.
+ *
+ * Paths are already normalised (`sanitizeComponent` calls `.normalize('NFC')`)
+ * so one album can only produce ONE folder, but the tag writers used to pass
+ * provider strings through verbatim. Providers hand back the same album title
+ * with the combining marks in different orders depending on the track, and
+ * Navidrome keys album identity on the raw tag BYTES — so a Zalgo release came
+ * out as two albums, `chars=62` and `chars=60`, both `bytes=115`, in one
+ * directory. Normalising here makes the tag agree with the folder it lives in.
+ */
+function nfc(value: string | null | undefined): string | undefined {
+	return value == null ? undefined : value.normalize('NFC');
+}
+
+/**
  * Build canonical Vorbis comment fields from tag data (pure — unit-tested).
  * Store downloads carry junk or empty tags (e.g. a lone "Processed by SoX"
  * comment), which is exactly why Navidrome shows [Unknown] artists/albums.
  */
 export function buildVorbisFields(tags: TagData): Array<[string, string]> {
 	const fields: Array<[string, string]> = [
-		['TITLE', tags.title],
-		['ARTIST', tags.artist],
+		['TITLE', nfc(tags.title)!],
+		['ARTIST', nfc(tags.artist)!],
 	];
-	if (tags.album) fields.push(['ALBUM', tags.album]);
-	if (tags.albumArtist) fields.push(['ALBUMARTIST', tags.albumArtist]);
+	const album = nfc(tags.album);
+	const albumArtist = nfc(tags.albumArtist);
+	if (album) fields.push(['ALBUM', album]);
+	if (albumArtist) fields.push(['ALBUMARTIST', albumArtist]);
 	if (tags.trackNumber != null) fields.push(['TRACKNUMBER', String(tags.trackNumber)]);
 	if (tags.discNumber != null) fields.push(['DISCNUMBER', String(tags.discNumber)]);
 	if (tags.year != null) fields.push(['DATE', String(tags.year)]);
-	if (tags.genre) fields.push(['GENRE', tags.genre]);
+	const genre = nfc(tags.genre);
+	if (genre) fields.push(['GENRE', genre]);
 	if (tags.lyricsPlain) fields.push(['LYRICS', tags.lyricsPlain.replace(/\r/g, '')]);
 	// Also write the timestamped form. Navidrome reads USLT/UNSYNCEDLYRICS for
 	// plain lyrics but shows nothing at all when only a .lrc sidecar exists —

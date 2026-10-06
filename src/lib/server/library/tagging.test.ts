@@ -200,3 +200,48 @@ describe('resolveLibraryPath', () => {
 });
 
 void readFile;
+
+describe('NFC normalisation of written tag values', () => {
+	// The two strings Navidrome split one folder into. Both are the same album
+	// title; the combining marks sit in different orders. They are canonically
+	// EQUIVALENT and byte-distinct, both 115 bytes — so truncation was never the
+	// cause and byte-comparing the tag is exactly what forked the album.
+	//
+	//   U+031F ccc=220, U+034E ccc=230, U+0362 ccc=232
+	// Ordered  : 220, 230, 232  -> already canonical
+	// Reordered: 232, 220, 230  -> must be sorted back to canonical
+	const ORDERED = '#CUT4\u031F\u034E\u0362Z';
+	const REORDERED = '#CUT4\u0362\u031F\u034EZ';
+
+	it('the two inputs really are distinct byte strings', () => {
+		expect(REORDERED).not.toBe(ORDERED);
+		expect(REORDERED.normalize('NFC')).toBe(ORDERED.normalize('NFC'));
+	});
+
+	it('writes the canonically ordered form even when the source is not', () => {
+		const albumOf = (a: string) =>
+			buildVorbisFields({ title: 't', artist: 'a', album: a }).find(
+				([k]) => k === 'ALBUM',
+			)![1];
+		expect(albumOf(REORDERED)).toBe(albumOf(ORDERED));
+		expect(albumOf(REORDERED)).toBe(ORDERED.normalize('NFC'));
+	});
+
+	it('normalises title, artist, albumArtist and genre too', () => {
+		const fields = buildVorbisFields({
+			title: REORDERED,
+			artist: REORDERED,
+			album: 'plain',
+			albumArtist: REORDERED,
+			genre: REORDERED,
+		});
+		for (const [, value] of fields) expect(value).toBe(value.normalize('NFC'));
+	});
+
+	it('leaves absent fields absent rather than empty', () => {
+		expect(buildVorbisFields({ title: 't', artist: 'a' }).map(([k]) => k)).toEqual([
+			'TITLE',
+			'ARTIST',
+		]);
+	});
+});
