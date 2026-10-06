@@ -843,45 +843,22 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		//
 		// Union, not majority vote: a name credited on 3 of 13 tracks is still a real
 		// credit, and dropping it would be a smaller lie than the split.
-		const { unifyAlbumArtistsByAlbum, canonicalArtistList } = await import(
-			'$lib/server/metadata/artists'
-		);
+		const { albumArtistUpdates } = await import('$lib/server/metadata/artists');
 		const {
 			listFiledTracks: listForUnify,
 			updateTrackAlbumArtist,
 			updateTrackTextFields,
 		} = await import('$lib/server/db/tracks');
 		const filedForUnify = await listForUnify();
-		const byTitle = new Map<string, typeof filedForUnify>();
+		const updates = albumArtistUpdates(filedForUnify);
+		for (const [id, value] of updates) {
+			await updateTrackAlbumArtist(id, value);
+		}
 		for (const t of filedForUnify) {
-			if (!t.album) continue;
-			const list = byTitle.get(t.album);
-			if (list) list.push(t);
-			else byTitle.set(t.album, [t]);
+			const unified = updates.get(t.id);
+			if (unified !== undefined) t.albumArtist = unified;
 		}
-		const unifiedByAlbum = unifyAlbumArtistsByAlbum(
-			filedForUnify.map((t) => ({
-				artist: t.artist,
-				album: t.album,
-				albumArtist: t.albumArtist,
-			})),
-		);
-		let albumsUnified = 0;
-		let rowsUpdated = 0;
-		for (const [album, group] of byTitle) {
-			const unified = unifiedByAlbum.get(album);
-			if (!unified) continue;
-			const target = canonicalArtistList(unified);
-			for (const t of group) {
-				// Also dedupe the row's own value: the credit lists arrive with every
-				// collaborator repeated, which is what made them differ at all.
-				if (canonicalArtistList(t.albumArtist ?? '') === target) continue;
-				await updateTrackAlbumArtist(t.id, target);
-				t.albumArtist = target;
-				rowsUpdated++;
-			}
-			if (group.some((t) => t.albumArtist !== target)) albumsUnified++;
-		}
+		const rowsUpdated = updates.size;
 		// Canonicalise the row text itself. The tag writer emits NFC, so a row still
 		// holding the marks in the wrong order disagrees with its own file for ever
 		// once the file is fixed. #CUT4ZALGO is exactly this: 11 files, 6 tagged
@@ -911,8 +888,7 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 
 		log.info('navidrome repair text canonicalised', { rows: rowsCanonicalised });
 		log.info('navidrome repair album artists unified', {
-			titles: byTitle.size,
-			albumsUnified,
+			titles: new Set(filedForUnify.map((t) => t.album)).size,
 			rowsUpdated,
 		});
 

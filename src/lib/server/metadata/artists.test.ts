@@ -5,6 +5,7 @@ import {
 	mergeCreditLists,
 	unifiedAlbumArtist,
 	unifyAlbumArtistsByAlbum,
+	albumArtistUpdates,
 } from './artists';
 
 // The two real credit strings from PRETTY DOLLCORPSE. Both repeat names:
@@ -224,5 +225,49 @@ describe('unifyAlbumArtistsByAlbum', () => {
 		const a = unifyAlbumArtistsByAlbum(rows);
 		const b = unifyAlbumArtistsByAlbum(rows.slice().reverse());
 		expect([...a.values()][0]).toBe([...b.values()][0]);
+	});
+});
+
+describe('albumArtistUpdates', () => {
+	const r = (id: string, albumArtist: string, artist = TEN, album = 'PRETTY DOLLCORPSE') => ({
+		id,
+		artist,
+		albumArtist,
+		album,
+	});
+
+	it('rewrites a row whose credits repeat, even though it dedupes to the target', () => {
+		// THE bug: THREE dedupes to exactly the merged target, so a
+		// canonicalise-then-compare test skipped it and left the duplicates.
+		const target = 'Ptite Soeur, neophron, FEMTOGO, reivilose, prxpvne, rosaliedu38';
+		expect(canonicalArtistList(THREE)).toBe(target);
+		const rows = [
+			...Array.from({ length: 10 }, (_, i) => r('a' + i, TEN)),
+			...Array.from({ length: 3 }, (_, i) => r('b' + i, THREE)),
+		];
+		const updates = albumArtistUpdates(rows);
+		expect(updates.size).toBe(13);
+		for (const v of updates.values()) expect(v).toBe(target);
+		expect([...updates.keys()].filter((k) => k.startsWith('b'))).toHaveLength(3);
+	});
+
+	it('is empty when every row already holds the target verbatim', () => {
+		const target = 'Ptite Soeur, neophron, FEMTOGO, reivilose, prxpvne, rosaliedu38';
+		expect(albumArtistUpdates([r('1', target), r('2', target)]).size).toBe(0);
+	});
+
+	it('is idempotent: applying the result again yields no updates', () => {
+		const rows = [r('1', TEN), r('2', THREE)];
+		const once = albumArtistUpdates(rows);
+		const settled = rows.map((x) => ({ ...x, albumArtist: once.get(x.id) ?? x.albumArtist }));
+		expect(albumArtistUpdates(settled).size).toBe(0);
+	});
+
+	it('leaves unrelated artists sharing a title untouched', () => {
+		const rows = [
+			r('1', 'Marina', 'Marina', 'Greatest Hits'),
+			r('2', 'Key', 'VISUAL ARTS / Key', 'Greatest Hits'),
+		];
+		expect(albumArtistUpdates(rows).size).toBe(0);
 	});
 });
