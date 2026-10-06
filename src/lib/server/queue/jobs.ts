@@ -408,6 +408,29 @@ export async function tracksWithPendingJob(type: JobType): Promise<Set<string>> 
 	return new Set(rows.map((r) => r.trackId).filter((v): v is string => typeof v === 'string'));
 }
 
+/**
+ * Cancel outstanding jobs for a track, so deleting a row does not leave them to
+ * fail on a row that no longer exists.
+ *
+ * Deleting a track while its jobs are queued produced "Track not found: <uuid>"
+ * dead jobs — 25 of them in the last few hours, all of it pure noise from the
+ * delete itself. Those jobs can only ever fail, so they are cancelled rather than
+ * left to burn their retries.
+ */
+export async function cancelJobsForTrack(trackId: string): Promise<number> {
+	const rows = await db
+		.update(jobs)
+		.set({
+			status: 'cancelled',
+			finishedAt: new Date(),
+			updatedAt: new Date(),
+			error: 'cancelled: track deleted',
+		})
+		.where(and(eq(jobs.trackId, trackId), inArray(jobs.status, ['queued', 'running'])))
+		.returning({ id: jobs.id });
+	return rows.length;
+}
+
 export { asc };
 
 /** Bulk-clear unimportant queue history: succeeded, cancelled and failed

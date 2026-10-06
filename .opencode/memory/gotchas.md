@@ -96,3 +96,42 @@ progress metric should abort when it does not.
 Rules that follow: any bulk endpoint needs a real idempotency key, the caller
 must assert forward progress, and a dedupe guard that depends on a column has to
 be verified against the data actually being written — not against intent.
+
+## Declared is not produced
+
+A field can live in the type union, be requested by `neededFieldsFor`, appear in
+every log line, and still never be written by anybody. `genre` was exactly that:
+`MetadataField` listed it, the resolver asked for it, `cleanPatch` passed it
+through, and **no source implemented it** — Tidal documents that it never sets
+genre, the Deezer track payload has no genre field, MusicBrainz's genre list is not
+in the recording payload we fetch, iTunes does not expose it here. So every row had
+`genre: null` and the pipeline looked healthy.
+
+Same shape as `artistMbid`, which was declared, produced by MusicBrainz, and then
+silently dropped by a hand-written cleaner. Twice now.
+
+When a column is suspiciously empty across the whole table, check whether anything
+_writes_ it before checking whether anything is _reading_ it wrong.
+
+## Deleting a row orphans its jobs
+
+`DELETE /api/tracks/[id]` left the row's queued jobs running, so they dead-lettered
+with "Track not found: <uuid>" — 25 of them, all noise created by the delete
+itself. `cancelJobsForTrack` now cancels outstanding work for a row before the row
+goes. The cancel must happen FIRST: a running job can otherwise write a file back
+for a row that no longer exists.
+
+## Bulk deletes need a row-count assertion
+
+The library index was destroyed by `delete ... where file_path is not null` run
+against an existence probe whose output I never checked. The probe returned
+nothing, everything looked orphaned, and 686 rows went. The file-level guard
+("never delete the only copy of a recording") existed; there was no row-level
+equivalent.
+
+Rules that follow, applied to every bulk write since:
+
+- assert the probe returned what you expected BEFORE acting on it
+- wrap the write in a transaction and ROLLBACK on any count mismatch
+- rehearse with a rollback-only mode against the real schema first
+- know the exact expected count and abort if it differs

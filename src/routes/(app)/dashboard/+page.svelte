@@ -14,6 +14,7 @@
 		ArrowLeft01Icon,
 		ArrowRight01Icon,
 		Cancel01Icon,
+		Delete02Icon,
 		GlobalRefreshIcon,
 	} from '@hugeicons/core-free-icons';
 	import type { TrackDTO } from '$lib/shared/types';
@@ -306,6 +307,7 @@
 		}
 	}
 	let retryAllBusy = $state(false);
+	let deleteAllBusy = $state(false);
 	async function retryAllFailed() {
 		retryAllBusy = true;
 		try {
@@ -321,6 +323,49 @@
 			retryAllBusy = false;
 		}
 	}
+	/**
+	 * Delete every failed row, one at a time.
+	 *
+	 * Sequential on purpose: a bulk endpoint that reported one aggregate success
+	 * would hide a partial failure, and the per-row endpoint already cancels that
+	 * row's queued jobs. Failures are collected and named so "deleted 30" can never
+	 * quietly mean "deleted 28".
+	 */
+	async function deleteAllFailed() {
+		const ids = failedTracks.map((t) => t.id);
+		if (ids.length === 0) return;
+		if (
+			!confirm(
+				`Delete ${ids.length} failed ${ids.length === 1 ? 'entry' : 'entries'}?\n\nThis removes them from the database. Nothing is deleted from disk, because a failed download never produced a file.`,
+			)
+		)
+			return;
+		deleteAllBusy = true;
+		const before = failedTracks;
+		failedLocal = [];
+		const failedIds: string[] = [];
+		for (const id of ids) {
+			try {
+				const res = await fetch(`/api/tracks/${id}`, { method: 'DELETE' });
+				if (!res.ok) failedIds.push(id);
+			} catch {
+				failedIds.push(id);
+			}
+		}
+		if (failedIds.length === 0) {
+			toast('ok', `Deleted ${ids.length} failed ${ids.length === 1 ? 'entry' : 'entries'}.`);
+		} else {
+			failedLocal = before.filter((t) => failedIds.includes(t.id));
+			toast(
+				'error',
+				`Deleted ${ids.length - failedIds.length}, ${failedIds.length} could not be removed.`,
+			);
+		}
+		await invalidateAll();
+		failedLocal = null;
+		deleteAllBusy = false;
+	}
+
 	async function deleteTrack(id: string) {
 		await fetch(`/api/tracks/${id}`, { method: 'DELETE' });
 		if (nowPlaying?.id === id) nowPlaying = null;
@@ -1363,6 +1408,20 @@
 					? 'Queueing…'
 					: `Retry all failed (${data.stats.failed})`}<HugeiconsIcon
 					icon={GlobalRefreshIcon}
+					size={16}
+					strokeWidth={2}
+					aria-hidden="true"
+				/>
+			</button>
+			<button
+				type="button"
+				class="m3-btn m3-btn-text h-10 min-h-10 px-4 text-sm text-error"
+				disabled={deleteAllBusy}
+				onclick={deleteAllFailed}
+				aria-label="Delete all failed entries from the database"
+			>
+				{deleteAllBusy ? 'Deleting…' : `Delete all (${failedTracks.length})`}<HugeiconsIcon
+					icon={Delete02Icon}
 					size={16}
 					strokeWidth={2}
 					aria-hidden="true"

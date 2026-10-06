@@ -37,28 +37,30 @@ export async function moveIntoLibrary(srcPath: string, relativeDest: string): Pr
 			log.info('identical file already in library, reusing', { relativeDest });
 			return dest;
 		}
-		// Content differs: keep both by suffixing (never destroy user data).
-		const deduped = await dedupePath(dest);
-		await safeMove(srcPath, deduped);
-		return deduped;
+		// Content differs. The pipeline hard-stops a recording we already hold
+		// (`shouldStopAlreadyDownloaded`), so reaching here means this is a genuine
+		// second copy of something we were asked to fetch, or an upgrade that
+		// produced different bytes.
+		//
+		// It used to suffix to "…(2).flac" and keep both. That is how one album ended
+		// up with six suffixed copies and greyed out in Navidrome: several files
+		// claiming one track number. A second file for the same track is never a
+		// useful outcome, and the earlier copy is the one the library indexes, so the
+		// incoming file is dropped and the existing one kept. Nothing the user
+		// already had is destroyed.
+		const size = await stat(srcPath).then(
+			(s) => s.size,
+			() => 0,
+		);
+		await rm(srcPath, { force: true });
+		log.warn('library already holds different audio for this path; keeping existing', {
+			relativeDest,
+			discardedBytes: size,
+		});
+		return dest;
 	}
 	await safeMove(srcPath, dest);
 	return dest;
-}
-
-async function dedupePath(path: string): Promise<string> {
-	const dot = path.lastIndexOf('.');
-	const base = dot > 0 ? path.slice(0, dot) : path;
-	const ext = dot > 0 ? path.slice(dot) : '';
-	for (let i = 2; i < 1000; i++) {
-		const candidate = `${base} (${i})${ext}`;
-		const taken = await stat(candidate).then(
-			() => true,
-			() => false,
-		);
-		if (!taken) return candidate;
-	}
-	throw new Error(`Could not dedupe path: ${path}`);
 }
 
 async function safeMove(src: string, dest: string): Promise<void> {

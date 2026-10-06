@@ -17,6 +17,7 @@ import type { MetadataPatch, MetadataQuery, MetadataSource } from '../types';
 
 const log = logger;
 const DEEZER = 'https://api.deezer.com/search';
+const DEEZER_ALBUM = 'https://api.deezer.com/album';
 const TIMEOUT_MS = 15_000;
 
 interface DeezerTrack {
@@ -26,7 +27,53 @@ interface DeezerTrack {
 	isrc?: string;
 	duration?: number;
 	artist?: { name?: string };
-	album?: { title?: string; cover_xl?: string; release_date?: string };
+	album?: { id?: number; title?: string; cover_xl?: string; release_date?: string };
+}
+
+interface DeezerAlbum {
+	id?: number;
+	title?: string;
+	genres?: { data?: Array<{ name?: string }> };
+}
+
+/**
+ * Album genres from Deezer.
+ *
+ * The track search payload carries NO genre — the field only exists on the album
+ * endpoint — which is why `genre` was empty for every row in the library: it was
+ * declared in MetadataField and requested by neededFieldsFor, and NO source
+ * produced it. Tidal documents that it never sets genre; MusicBrainz's genre list
+ * is not in the recording payload we fetch; iTunes does not expose it here.
+ *
+ * One extra request per album, only when genre is actually wanted, which is what
+ * `needed` is for.
+ */
+async function albumGenres(albumId: number | undefined): Promise<string | null> {
+	if (!albumId) return null;
+	try {
+		const res = await fetch(`${DEEZER_ALBUM}/${albumId}`, {
+			signal: AbortSignal.timeout(TIMEOUT_MS),
+		});
+		if (!res.ok) return null;
+		const album = (await res.json()) as DeezerAlbum;
+		const names = (album?.genres?.data ?? [])
+			.map((g) => g.name?.trim())
+			.filter((n): n is string => typeof n === 'string' && n.length > 0);
+		if (names.length === 0) return null;
+		// Keep it a usable tag. Deezer returns its genre tree flattened: RAM yields
+		// "Electro / Electro Pop/Electro Rock / Techno/House / Dance / Pop /
+		// International Pop / Rock / R&B / Disco / Soul & Funk" — 160 characters of
+		// noise for one GENRE field. The first entry is the most specific (Discovery
+		// gives "Electro", not "Dance"), so take that, plus a second only when it is
+		// short and genuinely distinct.
+		const primary = names[0];
+		const secondary = names[1];
+		return secondary && secondary !== primary && secondary.length <= 24
+			? `${primary} / ${secondary}`
+			: primary;
+	} catch {
+		return null;
+	}
 }
 
 async function fetchJson(url: string): Promise<DeezerTrack[] | null> {
@@ -68,11 +115,11 @@ export const deezerSource: MetadataSource = {
 		);
 		if (!best) return null;
 		const hit = results.find((t) => (t.title_short ?? t.title) === best.title);
-		return hit ? toPatch(hit, query) : null;
+		return hit ? await toPatch(hit, query) : null;
 	},
 };
 
-function toPatch(track: DeezerTrack, query: MetadataQuery): MetadataPatch | null {
+async function toPatch(track: DeezerTrack, query: MetadataQuery): Promise<MetadataPatch | null> {
 	const need = new Set(query.needed);
 	const patch: MetadataPatch = {};
 	const album = track.album?.title ?? null;
@@ -86,6 +133,10 @@ function toPatch(track: DeezerTrack, query: MetadataQuery): MetadataPatch | null
 	}
 	if (need.has('isrc') && track.isrc) patch.isrc = track.isrc;
 	if (need.has('coverUrl') && track.album?.cover_xl) patch.coverUrl = track.album.cover_xl;
+	if (need.has('genre')) {
+		const genre = await albumGenres(track.album?.id);
+		if (genre) patch.genre = genre;
+	}
 	// No track/disc numbers in the search payload — `needs:trackNumber` stays
 	// unanswered rather than being filled with a guess.
 	return Object.keys(patch).length > 0 ? patch : null;

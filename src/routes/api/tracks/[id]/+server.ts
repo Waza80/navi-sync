@@ -56,6 +56,11 @@ export const DELETE: RequestHandler = async ({ locals, params, request }) => {
 		}
 	}
 
+	// Cancel its queued work FIRST: a running job could otherwise write a file back
+	// for a row that is about to be gone, or dead-letter on "track not found".
+	const { cancelJobsForTrack } = await import('$lib/server/queue/jobs');
+	const cancelled = await cancelJobsForTrack(track.id);
+
 	const removed = await deleteTrackRow(track.id);
 	if (!removed) {
 		return json(
@@ -72,5 +77,5 @@ export const DELETE: RequestHandler = async ({ locals, params, request }) => {
 		by: locals.user.id,
 	});
 
-	return json({ id: track.id, deleted: true });
+	return json({ id: track.id, deleted: true, cancelledJobs: cancelled });
 };
