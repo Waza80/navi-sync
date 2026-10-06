@@ -5,6 +5,7 @@ import {
 	countLibraryTracks,
 	findMissingFiles,
 	findOrphanedFiles,
+	findUnindexedFiles,
 	adoptExistingFile,
 	markDownloadStatus,
 } from '$lib/server/db/tracks';
@@ -49,11 +50,12 @@ export const POST: RequestHandler = async ({ locals }) => {
 		);
 	}
 
-	const [filesOnDisk, tracksInDb, missing, orphans] = await Promise.all([
+	const [filesOnDisk, tracksInDb, missing, orphans, unindexed] = await Promise.all([
 		countAudioFiles(env.MUSIC_LIBRARY_DIR),
 		countLibraryTracks(),
 		findMissingFiles(env.MUSIC_LIBRARY_DIR),
 		findOrphanedFiles(env.MUSIC_LIBRARY_DIR),
+		findUnindexedFiles(env.MUSIC_LIBRARY_DIR),
 	]);
 	// Rows this server owns whose file is gone: flip to failed so they show
 	// up in the library and the next retry (manual or sweep) re-downloads.
@@ -76,6 +78,8 @@ export const POST: RequestHandler = async ({ locals }) => {
 		missingFilesMarked: missing.length,
 		orphansFound: orphans.length,
 		orphansAdopted: adopted.length,
+		unindexedFiles: unindexed.length,
+		unindexedSample: unindexed.slice(0, 5).map((u) => u.filePath),
 		serverVersion: reachable.serverVersion,
 	});
 
@@ -92,6 +96,11 @@ export const POST: RequestHandler = async ({ locals }) => {
 			tracksInDb,
 			missingFilesMarked: missing.length,
 			orphansAdopted: adopted.length,
+			// Reported, not hidden. A repair that says "0 adopted" while 13 files are
+			// unaccounted for is indistinguishable from one that found nothing wrong,
+			// which is exactly why this looked broken.
+			unindexedFiles: unindexed.length,
+			unindexedSample: unindexed.slice(0, 5).map((u) => u.filePath),
 			serverVersion: reachable.serverVersion,
 		},
 		{ status: 202 },

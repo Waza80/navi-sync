@@ -1,5 +1,6 @@
 import { and, asc, count, desc, eq, ilike, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { existsSync, statSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { trackRelativePath } from '$lib/server/library/paths';
 import { jobs } from './schema';
@@ -848,6 +849,49 @@ export async function findMissingFiles(
  * Only rows with no `file_path` are considered: if one is set, `findMissingFiles`
  * already owns the decision.
  */
+/**
+ * Audio files on disk that NO row points at.
+ *
+ * The mirror image of `findOrphanedFiles`, and the one that was missing. Repair
+ * could only ever see rows whose file exists; a file with no row at all was
+ * invisible, so 13 unaccounted files reported "0 adopted" and the repair looked
+ * broken rather than incomplete.
+ */
+export async function findUnindexedFiles(libraryDir: string): Promise<
+	Array<{
+		filePath: string;
+		sizeBytes: number;
+	}>
+> {
+	const rows = await db
+		.select({ filePath: tracks.filePath })
+		.from(tracks)
+		.where(isNotNull(tracks.filePath));
+	const known = new Set(rows.map((r) => r.filePath));
+
+	const found: Array<{ filePath: string; sizeBytes: number }> = [];
+	const walk = async (dir: string): Promise<void> => {
+		let entries;
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const e of entries) {
+			const full = join(dir, e.name);
+			if (e.isDirectory()) {
+				await walk(full);
+				continue;
+			}
+			if (!/\.(flac|mp3|wav|aiff|aif|m4a|ogg|opus)$/i.test(e.name)) continue;
+			if (known.has(full)) continue;
+			found.push({ filePath: full, sizeBytes: statSync(full).size });
+		}
+	};
+	await walk(libraryDir);
+	return found;
+}
+
 export async function findOrphanedFiles(libraryDir: string): Promise<
 	Array<{
 		id: string;

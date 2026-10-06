@@ -38,6 +38,15 @@ verify with `git stash && bun run format` before believing you broke it. Check c
 - **Commit and push only when explicitly asked.**
 - Tidal takes precedence over Deezer; registry order _is_ the precedence order.
 
+## Destructive operations
+
+Never run a bulk write without all four: assert the probe's output before acting,
+run inside a transaction, roll back on any count mismatch, and know the exact
+expected count in advance. Reconcile logic lives in the pure, heavily-tested
+`src/lib/server/library/reconcile.ts`; `scripts/reconcile-library.ts` is a thin
+shell that adopts and verifies BEFORE deleting anything. See
+`.opencode/memory/recovery.md` — this is not theoretical.
+
 ## Verifying a fix
 
 Prefer measuring over asserting. Most bugs here have been "the code is right, the

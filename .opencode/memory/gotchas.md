@@ -135,3 +135,45 @@ Rules that follow, applied to every bulk write since:
 - wrap the write in a transaction and ROLLBACK on any count mismatch
 - rehearse with a rollback-only mode against the real schema first
 - know the exact expected count and abort if it differs
+
+## Whitelists are the recurring failure
+
+Three separate fields were declared, sent or produced, and then dropped by a
+hand-written list:
+
+- `artistMbid` — in `MetadataPatch`, returned by MusicBrainz, dropped by `cleanPatch`.
+- `genre` — in `MetadataField`, requested by `neededFieldsFor`, produced by NO source.
+- `forceTagRepair` — in `AppSettings`, sent by the settings form, stripped by the
+  settings PATCH schema because zod drops unknown keys.
+
+Each looked healthy in the type system and in every log line. The durable fix is to
+derive these schemas from the underlying types rather than re-declaring keys. That
+has not been done and remains the most likely source of the next one.
+
+## Verify the signal can change
+
+Three deploy/observability mistakes in one session, all the same shape:
+
+- `/api/health` returned a hardcoded `version: '0.1.0'`; I polled it for 14 minutes
+  to detect a deploy and concluded "not deployed" on the strength of a constant.
+- `/api/jobs` validated `limit` as `max(100)`, so `limit=300` FAILED validation and
+  silently fell back to 30 — a request that looks honoured but is not.
+- The job store was never subscribed: `live.start()` was called nowhere, so no SSE
+  events arrived at all. Fixed three times in a row upstream (missing `$state`,
+  non-`$state` field, never started).
+
+Rule: before trusting a number, a status, or a version to mean something, confirm it
+_can_ change. Then confirm the component actually receives it.
+
+## The provider is often right and the pipeline wrong
+
+Album-wide download failure (every track on an album) means a rights/tier block, not
+a flaky request — Deezer lists the track `readable: true` and refuses the stream.
+Scattered failure within one album is something else.
+
+Reaching metadata is not reaching audio. The rescued-when-`NO_STREAM` path was the
+fix for 30 Tanger tracks that metadata had already "found".
+
+## Do not re-declare keys in a hand-written whitelist
+
+(see above — this is the same item, kept here because it is the highest-value rule)

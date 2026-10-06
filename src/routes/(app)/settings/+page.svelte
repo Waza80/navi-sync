@@ -41,7 +41,7 @@
 	// svelte-ignore state_referenced_locally
 	let enabled = $state<string[]>([...data.settings.enabledProviders]);
 
-	let message = $state<{ tone: 'ok' | 'error'; text: string } | null>(null);
+	let message = $state<{ tone: 'ok' | 'warn' | 'error'; text: string } | null>(null);
 	let busy = $state(false);
 	let pingBusy = $state(false);
 	let scanBusy = $state(false);
@@ -163,14 +163,27 @@
 				filesOnDisk?: number;
 				tracksInDb?: number;
 				serverVersion?: string;
+				unindexedFiles?: number;
+				unindexedSample?: string[];
 				error?: { message: string };
 			};
-			message = res.ok
-				? {
-						tone: 'ok',
-						text: `Repair started — ${body.filesOnDisk ?? '?'} files on disk, ${body.tracksInDb ?? '?'} tracks in DB (Navidrome ${body.serverVersion ?? '?'}). Watch the queue; the job reports when indexing finishes.`,
-					}
-				: { tone: 'error', text: body.error?.message ?? `HTTP ${res.status}` };
+			if (!res.ok) {
+				message = { tone: 'error', text: body.error?.message ?? `HTTP ${res.status}` };
+				return;
+			}
+			// Say what did NOT reconcile. Reporting only the successes made a repair
+			// that found 13 unaccounted files look identical to one that found nothing.
+			const unaccounted = body.unindexedFiles ?? 0;
+			const gap =
+				unaccounted > 0
+					? ` ${unaccounted} file(s) on disk have no index row — run scripts/reconcile-library.ts to adopt them.`
+					: '';
+			message = {
+				tone: unaccounted > 0 ? 'warn' : 'ok',
+				text:
+					`Repair started — ${body.filesOnDisk ?? '?'} files on disk, ${body.tracksInDb ?? '?'} tracks in DB ` +
+					`(Navidrome ${body.serverVersion ?? '?'}).${gap} Watch the queue; the job reports when indexing finishes.`,
+			};
 		} finally {
 			repairBusy = false;
 		}
@@ -420,7 +433,9 @@
 		<p
 			class="rounded-lg px-3 py-2 text-sm {message.tone === 'ok'
 				? 'bg-tertiary-container text-on-tertiary-container'
-				: 'bg-error-container text-on-error-container'}"
+				: message.tone === 'warn'
+					? 'bg-secondary-container text-on-secondary-container'
+					: 'bg-error-container text-on-error-container'}"
 			role="status"
 		>
 			{message.text}
