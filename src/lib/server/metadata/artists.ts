@@ -87,3 +87,74 @@ export function unifiedAlbumArtist(rows: Iterable<string | null | undefined>): s
 	}
 	return any ? out.join(', ') : null;
 }
+
+/** The distinct names credited by one artist string. */
+export function creditedNames(value: string | null | undefined): Set<string> {
+	const out = new Set<string>();
+	for (const p of names((value ?? '').normalize('NFC'))) out.add(p.toLocaleLowerCase());
+	return out;
+}
+
+/**
+ * One album artist per ALBUM TITLE, across rows whose artist strings differ.
+ *
+ * Grouping by (artist, album) does not work, and the reason is the bug itself:
+ * PRETTY DOLLCORPSE's thirteen tracks carried two different artist strings, so
+ * each (artist, album) group was internally consistent and nothing was unified.
+ * The artist is the thing that has to be allowed to differ.
+ *
+ * Two unrelated acts both having a "Greatest Hits" must NOT be merged, so a
+ * title is unified only when its artist strings are variants of one another —
+ * every one of them sharing at least one credit. DOLLCORPSE's two strings share
+ * five names; a genuine compilation pairing shares nothing and is left alone.
+ *
+ * Pure. Returns a value only for titles that qualify.
+ */
+export function unifyAlbumArtistsByAlbum(
+	rows: ReadonlyArray<{
+		artist: string | null;
+		album: string | null;
+		albumArtist: string | null;
+	}>,
+): Map<string, string> {
+	const titles = new Map<string, Array<{ artist: string | null; albumArtist: string | null }>>();
+	for (const r of rows) {
+		const title = r.album?.normalize('NFC');
+		if (!title) continue;
+		const list = titles.get(title);
+		if (list) list.push({ artist: r.artist, albumArtist: r.albumArtist });
+		else titles.set(title, [{ artist: r.artist, albumArtist: r.albumArtist }]);
+	}
+
+	const out = new Map<string, string>();
+	for (const [title, group] of titles) {
+		const unified = unifiedAlbumArtist(group.map((g) => g.albumArtist));
+		if (!unified) continue;
+
+		// Distinct artist credit-sets on this title, first-seen order.
+		const variants: Array<Set<string>> = [];
+		const seen = new Set<string>();
+		for (const g of group) {
+			const names = creditedNames(g.artist);
+			if (names.size === 0) continue;
+			const key = [...names].sort().join('\u0000');
+			if (seen.has(key)) continue;
+			seen.add(key);
+			variants.push(names);
+		}
+		// One artist on the title: already unified by definition.
+		if (variants.length <= 1) {
+			out.set(title, unified);
+			continue;
+		}
+		// Variants must share a credit WITH EACH OTHER. Measuring each against the
+		// union instead is vacuous: every variant trivially contains itself, so a
+		// single-name act always "overlapped" and `Marina` merged with
+		// `VISUAL ARTS / Key` on a shared album title. The intersection of all
+		// variants is the only test that means anything here — DOLLCORPSE's two
+		// strings share five names, an unrelated pair shares none.
+		const shared = [...variants[0]].filter((n) => variants.every((v) => v.has(n)));
+		if (shared.length > 0) out.set(title, unified);
+	}
+	return out;
+}

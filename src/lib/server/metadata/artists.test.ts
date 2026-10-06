@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalArtistList, unifiedAlbumArtist } from './artists';
+import { canonicalArtistList, unifiedAlbumArtist, unifyAlbumArtistsByAlbum } from './artists';
 
 // The real credit strings from PRETTY DOLLCORPSE, in the exact shape that
 // produced two artist directories. Both repeat names: the ten-track variant has
@@ -96,5 +96,76 @@ describe('unifiedAlbumArtist', () => {
 
 	it('agrees with canonicalArtistList for a single consistent album', () => {
 		expect(unifiedAlbumArtist(['A, B, A'])).toBe(canonicalArtistList('A, B, A'));
+	});
+});
+
+describe('unifyAlbumArtistsByAlbum', () => {
+	const row = (
+		artist: string,
+		albumArtist: string,
+		album: string | null = 'PRETTY DOLLCORPSE',
+	) => ({
+		artist,
+		albumArtist,
+		album,
+	});
+
+	// The real data: 13 rows, two artist strings differing by one name, and the
+	// tag/DB album artist copied from whichever directory each group came from.
+	const ten =
+		'Ptite Soeur, neophron, FEMTOGO, Ptite Soeur, FEMTOGO, neophron, prxpvne, prxpvne, rosaliedu38, prxpvne';
+	const three =
+		'Ptite Soeur, neophron, FEMTOGO, Ptite Soeur, FEMTOGO, reivilose, neophron, prxpvne, prxpvne, rosaliedu38, prxpvne';
+
+	it('unifies the thirteen rows that grouping by artist could not', () => {
+		const rows = [
+			...Array.from({ length: 10 }, () => row(ten, ten)),
+			...Array.from({ length: 3 }, () => row(three, three)),
+		];
+		const out = unifyAlbumArtistsByAlbum(rows);
+		expect(out.size).toBe(1);
+		expect([...out.values()][0]).toBe(
+			'Ptite Soeur, neophron, FEMTOGO, prxpvne, rosaliedu38, reivilose',
+		);
+	});
+
+	it('gives one value per album, not per artist+album pair', () => {
+		const rows = [row('A, B', 'A, B'), row('A, B, C', 'A, B, C')];
+		expect(unifyAlbumArtistsByAlbum(rows).size).toBe(1);
+	});
+
+	it('does NOT merge two unrelated acts sharing an album title', () => {
+		// "Greatest Hits" by two artists with no credit in common.
+		const rows = [
+			row('Marina', 'Marina', 'Greatest Hits'),
+			row('VISUAL ARTS / Key', 'VISUAL ARTS / Key', 'Greatest Hits'),
+		];
+		expect(unifyAlbumArtistsByAlbum(rows).size).toBe(0);
+	});
+
+	it('keeps genuinely distinct albums apart', () => {
+		const rows = [row('A', 'A', 'One'), row('B', 'B', 'Two')];
+		const out = unifyAlbumArtistsByAlbum(rows);
+		expect([...out.keys()].sort()).toEqual(['One', 'Two']);
+	});
+
+	it('still unifies a title with a single artist string', () => {
+		const rows = Array.from({ length: 5 }, () => row('Tanger', 'Tanger, Tanger', 'Archive'));
+		expect(unifyAlbumArtistsByAlbum(rows).get('Archive')).toBe('Tanger');
+	});
+
+	it('ignores rows with no album or no album artist', () => {
+		const rows = [row('A', 'A', ''), row('A', '', 'X'), row('A', 'A', null)];
+		expect(unifyAlbumArtistsByAlbum(rows).size).toBe(0);
+	});
+
+	it('matches albums that differ only by NFC form', () => {
+		// Same name, combining marks in different orders, on both the album title
+		// and the artist credit — so the two rows must land in ONE group.
+		const rows = [
+			row('A\u031F\u034E\u0362Z', 'x', 'Z\u031F\u034E\u0362A'),
+			row('A\u0362\u031F\u034EZ', 'x', 'Z\u0362\u031F\u034EA'),
+		];
+		expect(unifyAlbumArtistsByAlbum(rows).size).toBe(1);
 	});
 });

@@ -843,36 +843,47 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		//
 		// Union, not majority vote: a name credited on 3 of 13 tracks is still a real
 		// credit, and dropping it would be a smaller lie than the split.
-		const { unifiedAlbumArtist, canonicalArtistList } = await import(
+		const { unifyAlbumArtistsByAlbum, canonicalArtistList } = await import(
 			'$lib/server/metadata/artists'
 		);
-		const { listFiledTracks: listForUnify } = await import('$lib/server/db/tracks');
-		const { updateTrackAlbumArtist } = await import('$lib/server/db/tracks');
+		const { listFiledTracks: listForUnify, updateTrackAlbumArtist } = await import(
+			'$lib/server/db/tracks'
+		);
 		const filedForUnify = await listForUnify();
-		const byAlbum = new Map<string, typeof filedForUnify>();
+		const byTitle = new Map<string, typeof filedForUnify>();
 		for (const t of filedForUnify) {
-			const key = `${t.artist ?? ''}\u0000${t.album ?? ''}`;
-			if (!byAlbum.has(key)) byAlbum.set(key, []);
-			byAlbum.get(key)!.push(t);
+			if (!t.album) continue;
+			const list = byTitle.get(t.album);
+			if (list) list.push(t);
+			else byTitle.set(t.album, [t]);
 		}
+		const unifiedByAlbum = unifyAlbumArtistsByAlbum(
+			filedForUnify.map((t) => ({
+				artist: t.artist,
+				album: t.album,
+				albumArtist: t.albumArtist,
+			})),
+		);
 		let albumsUnified = 0;
-		for (const group of byAlbum.values()) {
-			const unified = unifiedAlbumArtist(group.map((t) => t.albumArtist));
+		let rowsUpdated = 0;
+		for (const [album, group] of byTitle) {
+			const unified = unifiedByAlbum.get(album);
 			if (!unified) continue;
-			// Also dedupe the value itself: the credit lists arrive with each
-			// collaborator repeated, which is what made them differ at all.
 			const target = canonicalArtistList(unified);
 			for (const t of group) {
-				const current = canonicalArtistList(t.albumArtist ?? '');
-				if (current === target) continue;
+				// Also dedupe the row's own value: the credit lists arrive with every
+				// collaborator repeated, which is what made them differ at all.
+				if (canonicalArtistList(t.albumArtist ?? '') === target) continue;
 				await updateTrackAlbumArtist(t.id, target);
 				t.albumArtist = target;
-				albumsUnified++;
+				rowsUpdated++;
 			}
+			if (group.some((t) => t.albumArtist !== target)) albumsUnified++;
 		}
 		log.info('navidrome repair album artists unified', {
-			albums: byAlbum.size,
-			rowsUpdated: albumsUnified,
+			titles: byTitle.size,
+			albumsUnified,
+			rowsUpdated,
 		});
 
 		await updateProgress(job.id, job.type, job.trackId, 20, 'repairing embedded tags');
