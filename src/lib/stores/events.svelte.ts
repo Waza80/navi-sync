@@ -228,7 +228,13 @@ class LiveEventClient {
 	 * from here — counting the window is what produced "Active 30" meaning "30 of
 	 * the 30 rows I was handed".
 	 */
-	#counts: JobCounts = { total: 0, active: 0, byStatus: {} };
+	/**
+	 * MUST be $state. As a plain field the page's $derived read the zero default
+	 * once and the fetch assignment below triggered no invalidation, so every badge
+	 * stayed at 0 forever — while the API was returning correct totals all along.
+	 * `jobs` is a SvelteMap and `connected` is $state; this was the odd one out.
+	 */
+	#counts = $state<JobCounts>({ total: 0, active: 0, byStatus: {} });
 
 	get jobCounts(): JobCounts {
 		return this.#counts;
@@ -239,7 +245,7 @@ class LiveEventClient {
 		this.#countAuthoritative = true;
 	}
 
-	#countAuthoritative = false;
+	#countAuthoritative = $state(false);
 
 	/**
 	 * Move the totals when a job changes status, so the badges track a draining

@@ -65,7 +65,63 @@ const progressEvt = (jobId: string, progress: number, stage: string): string =>
 		ts: ts(1),
 	});
 
+const statusEvt = (type: string, jobId: string): string =>
+	JSON.stringify({
+		type,
+		jobId,
+		jobType: 'metadata_repair',
+		trackId: null,
+		progress: 0,
+		stage: null,
+		error: null,
+		ts: ts(1),
+	});
+
 describe('LiveEventClient reactivity', () => {
+	// NOTE: the regression that made every badge read 0 — `#counts` declared as a
+	// plain class field instead of `$state` — CANNOT be asserted here. $effect does
+	// not run in this harness (no component context, and flushSync does not drive
+	// it), so a "did the getter re-trigger" test would pass or fail for reasons
+	// unrelated to the code. That gap is precisely why it shipped: the store was
+	// already reactive everywhere else and this one field was not.
+	//
+	// What IS asserted below is the delta arithmetic, which is the part that is
+	// testable, plus the guard that stops a seed compounding a wrong number.
+
+	it('live SSE events move the totals by a status delta', async () => {
+		const live = await freshStore();
+		live.start();
+		// Authoritative totals first: deltas are ignored until real numbers arrive,
+		// otherwise a seed would compound into a wrong count.
+		live.jobCounts = { total: 100, active: 0, byStatus: { succeeded: 100 } };
+		live.start();
+
+		lastES().onmessage?.({ data: statusEvt('job.queued', 'job-a') });
+		expect(live.jobCounts.byStatus['queued']).toBe(1);
+		expect(live.jobCounts.active).toBe(1);
+		// total is the server's number of rows, not a local tally, so it holds.
+		expect(live.jobCounts.total).toBe(100);
+
+		lastES().onmessage?.({ data: progressEvt('job-a', 5, 'working') });
+		expect(live.jobCounts.byStatus['queued']).toBe(0);
+		expect(live.jobCounts.byStatus['running']).toBe(1);
+		expect(live.jobCounts.active).toBe(1);
+
+		lastES().onmessage?.({ data: statusEvt('job.completed', 'job-a') });
+		expect(live.jobCounts.byStatus['running']).toBe(0);
+		expect(live.jobCounts.byStatus['succeeded']).toBe(101);
+		expect(live.jobCounts.active).toBe(0);
+	});
+
+	it('ignores deltas until the server has supplied real totals', async () => {
+		const live = await freshStore();
+		live.start();
+		lastES().onmessage?.({ data: statusEvt('job.queued', 'job-b') });
+		// No authoritative counts yet — a delta here would compound a wrong number.
+		expect(live.jobCounts.total).toBe(0);
+		expect(live.jobCounts.byStatus['queued']).toBeUndefined();
+	});
+
 	it('applies progress events for UNKNOWN jobs (missed queued event)', async () => {
 		const live = await freshStore();
 		live.start();
