@@ -69,12 +69,22 @@ export function ping(baseUrl: string, username: string, password: string): Promi
 	return call(baseUrl, 'ping', username, password);
 }
 
+/**
+ * Trigger a library scan.
+ *
+ * `fullScan` matters: a normal scan is incremental and will happily leave rows for
+ * files that have been deleted. After a dedupe that removed files directly from a
+ * READ-ONLY mount, Navidrome's index still listed them — 361 rows of 1085 pointed at
+ * files that no longer existed, and every one rendered greyed out. Navidrome's
+ * extension accepts `fullScan=true`, which re-walks the tree and drops what is gone.
+ */
 export function startScan(
 	baseUrl: string,
 	username: string,
 	password: string,
+	fullScan = false,
 ): Promise<SubsonicResult> {
-	return call(baseUrl, 'startScan', username, password);
+	return call(baseUrl, `startScan${fullScan ? '?fullScan=true' : ''}`, username, password);
 }
 
 export interface ScanStatusResult {

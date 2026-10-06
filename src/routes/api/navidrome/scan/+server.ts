@@ -10,7 +10,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const user = locals.user;
 
 	// Optional {"pingOnly": true} runs a synchronous connection test instead.
-	const body = (await request.json().catch(() => ({}))) as { pingOnly?: boolean };
+	const body = (await request.json().catch(() => ({}))) as { pingOnly?: boolean; full?: boolean };
 	const s = await getSettings();
 	if (!s.navidromeUrl || !s.navidromeUsername || !s.navidromePassword) {
 		return badRequest(
@@ -26,8 +26,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	const job = await enqueueJob({
 		type: 'navidrome_scan',
-		payload: {},
+		payload: { full: body.full === true },
 		createdBy: user.id,
 	});
-	return json({ job: { id: job.id, type: job.type, status: job.status } }, { status: 202 });
+	return json(
+		{ job: { id: job.id, type: job.type, status: job.status }, full: body.full === true },
+		{ status: 202 },
+	);
 };

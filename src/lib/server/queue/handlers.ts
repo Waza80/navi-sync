@@ -793,7 +793,12 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 	if (!s.navidromeUrl || !s.navidromeUsername || !s.navidromePassword) {
 		throw new Error('Navidrome not configured (URL, username and password required)');
 	}
-	const payload = job.payload as { repair?: boolean; filesOnDisk?: number; tracksInDb?: number };
+	const payload = job.payload as {
+		repair?: boolean;
+		full?: boolean;
+		filesOnDisk?: number;
+		tracksInDb?: number;
+	};
 	let retagged = 0;
 	let tagsSkipped = 0;
 	let tagsFailed = 0;
@@ -903,7 +908,9 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		log.info('navidrome repair cover pass finished', { ...coverReport });
 	}
 	await updateProgress(job.id, job.type, job.trackId, 40, 'triggering scan');
-	const started = await startScan(s.navidromeUrl, s.navidromeUsername, s.navidromePassword);
+	// A repair exists because the index disagreed with the disk, so it always
+	// asks for a FULL scan: an incremental one leaves the disagreement in place.
+	const started = await startScan(s.navidromeUrl, s.navidromeUsername, s.navidromePassword, true);
 	if (!started.ok) throw new Error(`Scan failed: ${started.error ?? 'unknown error'}`);
 	log.info('navidrome scan triggered', { serverVersion: started.serverVersion });
 
