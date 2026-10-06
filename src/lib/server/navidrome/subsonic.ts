@@ -38,9 +38,19 @@ async function call(
 	endpoint: string,
 	username: string,
 	password: string,
+	/** Extra query parameters, merged with the auth params. */
+	extraParams: Record<string, string> = {},
 ): Promise<SubsonicResult> {
 	try {
-		const url = `${normalizeBaseUrl(baseUrl)}/rest/${endpoint}?${authParams(username, password)}`;
+		// Extra params must be MERGED into the query string. Prefixing them onto
+		// `endpoint` puts them before the `?`, so `?fullScan=true` became part of the
+		// path and the auth params were never sent — Navidrome answered "missing
+		// parameter: 'u'" and the scan job died. A repair run during that window
+		// reported nothing at all.
+		const params = `${authParams(username, password)}&${Object.entries(extraParams)
+			.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+			.join('&')}`;
+		const url = `${normalizeBaseUrl(baseUrl)}/rest/${endpoint}?${params}`;
 		const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
 		if (!res.ok) {
 			return { ok: false, error: `HTTP ${res.status}` };
@@ -84,7 +94,7 @@ export function startScan(
 	password: string,
 	fullScan = false,
 ): Promise<SubsonicResult> {
-	return call(baseUrl, `startScan${fullScan ? '?fullScan=true' : ''}`, username, password);
+	return call(baseUrl, 'startScan', username, password, fullScan ? { fullScan: 'true' } : {});
 }
 
 export interface ScanStatusResult {
