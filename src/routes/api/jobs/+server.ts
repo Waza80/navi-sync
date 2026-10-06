@@ -1,20 +1,38 @@
 import { z } from 'zod';
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
-import { listJobs } from '$lib/server/queue/jobs';
-import { enqueueJob } from '$lib/server/queue/jobs';
+import { enqueueJob, jobCounts, listJobs } from '$lib/server/queue/jobs';
+import type { JobStatus } from '$lib/shared/types';
 import type { RequestHandler } from './$types';
 
-const listSchema = z.object({
-	limit: z.coerce.number().int().min(1).max(100).default(30),
-});
+const ALL_STATUSES: JobStatus[] = ['queued', 'running', 'succeeded', 'failed', 'dead', 'cancelled'];
 
-/** GET /api/jobs?limit=30 */
+/**
+ * GET /api/jobs?limit=30&status=queued,running
+ *
+ * `limit` CLAMPS rather than falling back. It previously validated as
+ * `max(100)` and any out-of-range request failed the schema, so the handler
+ * quietly used 30 — asking for 300 jobs and receiving 30 with no indication that
+ * the parameter had been discarded. A silently ignored parameter reads as "that
+ * is all there is".
+ *
+ * `counts` is computed over the whole table, never from the returned window, so
+ * "Active 412" cannot be an artefact of a 30-row slice.
+ */
 export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!locals.user) return unauthorizedResponse();
-	const parsed = listSchema.safeParse(Object.fromEntries(url.searchParams));
-	const limit = parsed.success ? parsed.data.limit : 30;
-	const jobs = await listJobs(limit);
+
+	const rawLimit = Number(url.searchParams.get('limit') ?? 30);
+	const limit = Number.isFinite(rawLimit) ? Math.min(500, Math.max(1, Math.trunc(rawLimit))) : 30;
+	const requested = (url.searchParams.get('status') ?? '')
+		.split(',')
+		.map((s) => s.trim())
+		.filter((s): s is JobStatus => (ALL_STATUSES as string[]).includes(s));
+
+	const [jobs, counts] = await Promise.all([listJobs(limit, requested), jobCounts()]);
 	return json({
+		counts,
+		limit,
+		statusFilter: requested,
 		jobs: jobs.map((j) => ({
 			id: j.id,
 			type: j.type,

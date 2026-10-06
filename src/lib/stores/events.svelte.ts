@@ -177,12 +177,30 @@ class LiveEventClient {
 		}
 	}
 
-	/** Newest first, capped for render performance. */
+	/**
+	 * Newest first, capped for render performance.
+	 *
+	 * The cap was 30, which is why the queue panel looked permanently full and the
+	 * badges read 30 — the badge was counting this slice, not the table.
+	 */
 	get recentJobs(): JobDTO[] {
 		return [...this.jobs.values()]
 			.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-			.slice(0, 30);
+			.slice(0, 100);
 	}
+
+	/**
+	 * Authoritative per-status totals, seeded from the server snapshot.
+	 *
+	 * Kept separate from `jobs` on purpose: `jobs` is what this session has SEEN,
+	 * which cannot know about work queued before the page loaded. Anything
+	 * presented as a total must come from here.
+	 */
+	jobCounts: { total: number; active: number; byStatus: Record<string, number> } = {
+		total: 0,
+		active: 0,
+		byStatus: {},
+	};
 
 	get activeCount(): number {
 		return [...this.jobs.values()].filter(

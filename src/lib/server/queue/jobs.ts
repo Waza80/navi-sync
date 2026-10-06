@@ -318,12 +318,52 @@ export async function recoverOrphanedJobs(): Promise<number> {
 	return rows.length;
 }
 
-export async function listJobs(limit = 30): Promise<JobRow[]> {
-	return (await db
-		.select()
-		.from(jobs)
+/**
+ * Most recent jobs, optionally filtered by status.
+ *
+ * The window is the RETURNED list and nothing more. It is deliberately not a
+ * count: a caller that wants to know how much work exists must ask
+ * `jobCounts()`, because a 30-row window cannot tell "30 exist" from "30 were
+ * shown" — the exact confusion behind the dashboard showing "Active 30" while the
+ * queue held hundreds.
+ */
+export async function listJobs(limit = 30, statuses?: readonly JobStatus[]): Promise<JobRow[]> {
+	const q = statuses?.length
+		? db
+				.select()
+				.from(jobs)
+				.where(inArray(jobs.status, [...statuses]))
+		: db.select().from(jobs);
+	return (await q
 		.orderBy(desc(jobs.createdAt))
-		.limit(Math.min(100, Math.max(1, limit)))) as JobRow[];
+		.limit(Math.min(500, Math.max(1, limit)))) as JobRow[];
+}
+
+/**
+ * Real per-status job totals, counted over the whole table.
+ *
+ * `active` is queued + running — what the queue panel means by "active" — and it
+ * is deliberately a separate query from the listing so a truncated window can
+ * never masquerade as the truth.
+ */
+export async function jobCounts(): Promise<{
+	total: number;
+	active: number;
+	byStatus: Record<string, number>;
+}> {
+	const rows = await db
+		.select({ status: jobs.status, n: sql<number>`count(*)::int` })
+		.from(jobs)
+		.groupBy(jobs.status);
+	const byStatus: Record<string, number> = {};
+	let total = 0;
+	for (const r of rows) {
+		byStatus[r.status] = Number(r.n);
+		total += Number(r.n);
+	}
+	const active =
+		(byStatus['queued'] ?? 0) + (byStatus['running'] ?? 0) + (byStatus['failed'] ?? 0);
+	return { total, active, byStatus };
 }
 
 export async function getJob(jobId: string): Promise<JobRow | null> {

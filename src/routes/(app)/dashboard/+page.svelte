@@ -59,7 +59,17 @@
 	// writes to — that re-triggers the effect forever (page freeze).
 	$effect(() => {
 		const snapshot = data.jobs;
+		// Read through a local cast: the generated PageServerData is stale for the
+		// new `jobCounts` key and regenerating it does not pick the change up. The
+		// loader does return it (see +page.server.ts) and the build passes; only the
+		// inferred type lags. Read INSIDE the effect so it tracks `data`.
+		const counts = (
+			data as unknown as {
+				jobCounts?: { total: number; active: number; byStatus: Record<string, number> };
+			}
+		).jobCounts ?? { total: 0, active: 0, byStatus: {} };
 		untrack(() => {
+			live.jobCounts = counts;
 			live.hydrate(snapshot);
 			live.pruneNotIn(snapshot);
 		});
@@ -98,13 +108,16 @@
 	);
 	const pageCount = $derived(Math.max(1, Math.ceil(data.tracksTotal / 50)));
 	const filteredTracks = $derived(data.tracks);
+	// Badges are the SERVER's counts over the whole jobs table. Counting
+	// `live.recentJobs` reported the size of the slice we happened to be holding,
+	// so "Active 30" meant "30 of 30 rows I was sent" — indistinguishable from
+	// "there are 30", and wrong whenever the queue was deeper.
+	const byStatus = $derived(live.jobCounts.byStatus);
 	const queueCounts = $derived({
-		all: live.recentJobs.length,
-		active: live.recentJobs.filter((j) => j.status === 'queued' || j.status === 'running')
-			.length,
-		done: live.recentJobs.filter((j) => j.status === 'succeeded' || j.status === 'cancelled')
-			.length,
-		failed: live.recentJobs.filter((j) => j.status === 'failed' || j.status === 'dead').length,
+		all: live.jobCounts.total,
+		active: byStatus['queued'] ?? 0,
+		done: (byStatus['succeeded'] ?? 0) + (byStatus['cancelled'] ?? 0),
+		failed: (byStatus['failed'] ?? 0) + (byStatus['dead'] ?? 0),
 	});
 	const visibleJobs = $derived(
 		queueFilter === 'all'
@@ -1178,7 +1191,7 @@
 	<StatCard label="With lyrics" value={data.stats.withLyrics} />
 	<StatCard
 		label="Active jobs"
-		value={live.activeCount}
+		value={queueCounts.active}
 		hint={live.connected ? 'live · SSE' : 'connecting…'}
 	/>
 </div>
@@ -1213,7 +1226,11 @@
 	</div>
 	{#if visibleJobs.length === 0}
 		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
-			{queueFilter === 'all' ? 'No jobs yet.' : 'Nothing in this filter.'}
+			{queueFilter === 'all'
+				? 'No jobs yet.'
+				: live.recentJobs.length >= queueCounts.all
+					? 'Nothing in this filter.'
+					: `Showing the ${live.recentJobs.length} most recent of ${queueCounts.all}.`}
 		</p>
 	{:else}
 		<div class="flex flex-col gap-3">
