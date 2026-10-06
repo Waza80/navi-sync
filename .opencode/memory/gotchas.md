@@ -273,7 +273,7 @@ re-writes it, because:
   it, so `patch` stays empty and no re-tag happens; and
 - the one unconditional re-tag loop is gated behind `forceTagRepair = false`.
 
-A gap rule that only asks for *missing* fields can therefore never write a field
+A gap rule that only asks for _missing_ fields can therefore never write a field
 to disk that was recovered into the DB some other way. Restoring rows from disk
 made this permanent: `restore_library_index.py` populated `album_artist`, so the
 gap rule has considered every row complete ever since.
@@ -282,12 +282,12 @@ gap rule has considered every row complete ever since.
 grouping. Any release whose tracks credit different artists splits into one
 album per credit string. Measured — 4 albums:
 
-| album | tracks | artists seen |
-|---|---|---|
-| PRETTY DOLLCORPSE | 13 | 2 (10 + 3, the 3 add `reivilose`) |
-| don dada mixtape vol 1 | | Alpha Wann, Nekfeu |
-| WHY ALWAYS ME? | | Aminé, Cochise |
-| ECHO (English side.) | | Marina, VISUAL ARTS / Key |
+| album                  | tracks | artists seen                      |
+| ---------------------- | ------ | --------------------------------- |
+| PRETTY DOLLCORPSE      | 13     | 2 (10 + 3, the 3 add `reivilose`) |
+| don dada mixtape vol 1 |        | Alpha Wann, Nekfeu                |
+| WHY ALWAYS ME?         |        | Aminé, Cochise                    |
+| ECHO (English side.)   |        | Marina, VISUAL ARTS / Key         |
 
 4 is a floor, not a ceiling — every future collaborative release re-splits. The
 fix is a disagreement-triggered re-tag (compare the file's tags to the DB row,

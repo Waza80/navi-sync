@@ -110,7 +110,13 @@ async function coverUrlFor(releaseId: string | undefined): Promise<string | null
 		images?: Array<{
 			types?: string[];
 			approved?: boolean;
-			thumbnails?: Record<string, { url?: string }>;
+			// The Cover Art Archive returns `thumbnails` as a map of size -> URL
+			// STRING. It was typed as `{ url: string }` and read as
+			// `thumbs[size]?.url`, so `.url` on a string is undefined, the loop
+			// could never return, and this function answered null for EVERY
+			// release — MusicBrainz had never once supplied a cover in this
+			// library. Both shapes are accepted so the fallback is harmless.
+			thumbnails?: Record<string, string | { url?: string }>;
 		}>;
 	} | null;
 	const images = (body?.images ?? []).filter((i) => i.thumbnails);
@@ -131,7 +137,8 @@ async function coverUrlFor(releaseId: string | undefined): Promise<string | null
 		const thumbs = image.thumbnails ?? {};
 		// Largest first: 1200 is the useful embed size, then the rest.
 		for (const size of ['1200', 'large', '500', '250', 'small']) {
-			const url = thumbs[size]?.url;
+			const entry = thumbs[size];
+			const url = typeof entry === 'string' ? entry : entry?.url;
 			if (url) return url;
 		}
 	}

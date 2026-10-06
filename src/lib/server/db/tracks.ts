@@ -764,6 +764,17 @@ export async function updateTrackFilePath(id: string, filePath: string): Promise
 	await db.update(tracks).set({ filePath, updatedAt: new Date() }).where(eq(tracks.id, id));
 }
 
+/**
+ * Converge a row's album artist.
+ *
+ * Only ever called with a value agreed across the whole album, never a single
+ * track's own credits — see `unifiedAlbumArtist` for why a per-track value is
+ * the thing that splits one release into several Navidrome albums.
+ */
+export async function updateTrackAlbumArtist(id: string, albumArtist: string): Promise<void> {
+	await db.update(tracks).set({ albumArtist, updatedAt: new Date() }).where(eq(tracks.id, id));
+}
+
 /** Rows whose album cover is missing or points at a file that no longer exists. */
 export async function listBrokenCoverCandidates(limit = 25) {
 	return db

@@ -831,6 +831,50 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		// Repair mode: rewrite embedded tags from canonical DB data BEFORE
 		// scanning, so Navidrome indexes real artists/albums instead of
 		// [Unknown]. Store FLACs often carry junk/empty Vorbis comments.
+		await updateProgress(job.id, job.type, job.trackId, 18, 'unifying album artists');
+
+		// Converge every track of an album onto ONE album artist, before any file is
+		// re-tagged. Navidrome's album identity is (album, album artist) compared on
+		// raw tag bytes, so a collaborative release whose tracks carry different
+		// credit strings is indexed as several albums — and no amount of re-tagging
+		// fixes it, because the rows themselves disagree. PRETTY DOLLCORPSE arrived
+		// as 10 rows and 3 rows with two different strings, in two artist
+		// directories, and rendered as a 10-song and a 3-song album.
+		//
+		// Union, not majority vote: a name credited on 3 of 13 tracks is still a real
+		// credit, and dropping it would be a smaller lie than the split.
+		const { unifiedAlbumArtist, canonicalArtistList } = await import(
+			'$lib/server/metadata/artists'
+		);
+		const { listFiledTracks: listForUnify } = await import('$lib/server/db/tracks');
+		const { updateTrackAlbumArtist } = await import('$lib/server/db/tracks');
+		const filedForUnify = await listForUnify();
+		const byAlbum = new Map<string, typeof filedForUnify>();
+		for (const t of filedForUnify) {
+			const key = `${t.artist ?? ''}\u0000${t.album ?? ''}`;
+			if (!byAlbum.has(key)) byAlbum.set(key, []);
+			byAlbum.get(key)!.push(t);
+		}
+		let albumsUnified = 0;
+		for (const group of byAlbum.values()) {
+			const unified = unifiedAlbumArtist(group.map((t) => t.albumArtist));
+			if (!unified) continue;
+			// Also dedupe the value itself: the credit lists arrive with each
+			// collaborator repeated, which is what made them differ at all.
+			const target = canonicalArtistList(unified);
+			for (const t of group) {
+				const current = canonicalArtistList(t.albumArtist ?? '');
+				if (current === target) continue;
+				await updateTrackAlbumArtist(t.id, target);
+				t.albumArtist = target;
+				albumsUnified++;
+			}
+		}
+		log.info('navidrome repair album artists unified', {
+			albums: byAlbum.size,
+			rowsUpdated: albumsUnified,
+		});
+
 		await updateProgress(job.id, job.type, job.trackId, 20, 'repairing embedded tags');
 		const { ensureFileTags } = await import('$lib/server/library/tagging');
 		const { readFile } = await import('node:fs/promises');

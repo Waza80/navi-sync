@@ -4,7 +4,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { buildVorbisFields, tagMp3 } from './tagging';
+import { buildVorbisFields, tagMp3, type TagData } from './tagging';
 import { resolveLibraryPath } from './paths';
 
 const exec = promisify(execFile);
@@ -210,6 +210,21 @@ describe('NFC normalisation of written tag values', () => {
 	//   U+031F ccc=220, U+034E ccc=230, U+0362 ccc=232
 	// Ordered  : 220, 230, 232  -> already canonical
 	// Reordered: 232, 220, 230  -> must be sorted back to canonical
+	const mk = (over: Partial<TagData> = {}): TagData => ({
+		title: 't',
+		artist: 'a',
+		album: null,
+		albumArtist: null,
+		trackNumber: null,
+		discNumber: null,
+		year: null,
+		genre: null,
+		cover: null,
+		lyricsPlain: null,
+		lyricsSynced: null,
+		...over,
+	});
+
 	const ORDERED = '#CUT4\u031F\u034E\u0362Z';
 	const REORDERED = '#CUT4\u0362\u031F\u034EZ';
 
@@ -220,28 +235,25 @@ describe('NFC normalisation of written tag values', () => {
 
 	it('writes the canonically ordered form even when the source is not', () => {
 		const albumOf = (a: string) =>
-			buildVorbisFields({ title: 't', artist: 'a', album: a }).find(
-				([k]) => k === 'ALBUM',
-			)![1];
+			buildVorbisFields(mk({ album: a })).find(([k]) => k === 'ALBUM')![1];
 		expect(albumOf(REORDERED)).toBe(albumOf(ORDERED));
 		expect(albumOf(REORDERED)).toBe(ORDERED.normalize('NFC'));
 	});
 
 	it('normalises title, artist, albumArtist and genre too', () => {
-		const fields = buildVorbisFields({
-			title: REORDERED,
-			artist: REORDERED,
-			album: 'plain',
-			albumArtist: REORDERED,
-			genre: REORDERED,
-		});
+		const fields = buildVorbisFields(
+			mk({
+				title: REORDERED,
+				artist: REORDERED,
+				album: 'plain',
+				albumArtist: REORDERED,
+				genre: REORDERED,
+			}),
+		);
 		for (const [, value] of fields) expect(value).toBe(value.normalize('NFC'));
 	});
 
 	it('leaves absent fields absent rather than empty', () => {
-		expect(buildVorbisFields({ title: 't', artist: 'a' }).map(([k]) => k)).toEqual([
-			'TITLE',
-			'ARTIST',
-		]);
+		expect(buildVorbisFields(mk()).map(([k]) => k)).toEqual(['TITLE', 'ARTIST']);
 	});
 });

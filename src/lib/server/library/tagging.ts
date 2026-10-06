@@ -1,6 +1,7 @@
 import * as NodeID3 from 'node-id3';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { execFile } from 'node:child_process';
+import { stat } from 'node:fs/promises';
 import { rename, unlink, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
@@ -166,6 +167,32 @@ export function buildVorbisFields(tags: TagData): Array<[string, string]> {
 const MULTILINE_FIELDS = new Set(['LYRICS', 'LRC']);
 
 export async function tagFlac(path: string, tags: TagData): Promise<void> {
+	// `--remove-all-tags` also deletes the PICTURE block. Every whole-library
+	// re-tag path passes `cover: null` (the art lives in cover_path and is not
+	// read back), so a forced pass would strip the embedded cover from every
+	// FLAC while reporting success. When no replacement bytes are supplied,
+	// export the existing picture first and re-import it after the rewrite, so
+	// cleaning the junk comments costs no artwork.
+	let preserved: string | null = null;
+	if (!tags.cover) {
+		const tmp = `${path}.keepcover.tmp`;
+		try {
+			await execFileAsync(
+				'metaflac',
+				['--no-utf8-convert', `--export-picture-to=${tmp}`, path],
+				{ timeout: 30_000, env: { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' } },
+			);
+			// metaflac exits 0 and writes nothing when the file has no picture.
+			if (
+				await stat(tmp)
+					.then(() => true)
+					.catch(() => false)
+			)
+				preserved = tmp;
+		} catch {
+			// No picture to preserve — nothing to do.
+		}
+	}
 	const args = ['--remove-all-tags'];
 	// Temp files for newline-bearing values, removed in the finally block.
 	const scratch: string[] = [];
@@ -185,6 +212,8 @@ export async function tagFlac(path: string, tags: TagData): Promise<void> {
 		await writeFile(coverTmp, tags.cover);
 		// Empty dimensions are accepted — metaflac fills them in.
 		args.push(`--import-picture-from=3|image/jpeg|||${coverTmp}`);
+	} else if (preserved) {
+		args.push(`--import-picture-from=3|image/jpeg|||${preserved}`);
 	}
 	args.push(path);
 	try {
@@ -209,6 +238,7 @@ export async function tagFlac(path: string, tags: TagData): Promise<void> {
 		}
 	} finally {
 		if (coverTmp) await unlink(coverTmp).catch(() => undefined);
+		if (preserved) await unlink(preserved).catch(() => undefined);
 		for (const f of scratch) await unlink(f).catch(() => undefined);
 	}
 }
@@ -257,6 +287,73 @@ export async function tagFlacStream(path: string, tags: TagData): Promise<void> 
  * is what metadata enrichment needs after it discovers a previously unknown
  * album, genre or track number.
  */
+/**
+ * The fields whose value in the file differs from the canonical DB row.
+ *
+ * This is the whole fix for "the database is right and the file is wrong". The
+ * old rule — skip when the file already has a title and artist — meant a file
+ * could hold every field wrong, or none at all, and still be skipped. It also
+ * meant a field could never reach disk if it was recovered into the DB by any
+ * route other than a metadata patch: album_artist arrived that way, the gap
+ * rule then considered the row complete, no patch followed, and no re-tag ever
+ * ran. 0 of 675 files carried ALBUMARTIST as a result.
+ *
+ * Pure, so the decision is testable without touching a filesystem. Compared as
+ * NFC on both sides: the tag writer canonicalises, and comparing raw bytes would
+ * re-flag every Zalgo title as a disagreement forever.
+ */
+export function tagsDisagree(tags: TagData, file: Record<string, unknown> | null): string[] {
+	if (!file)
+		return [
+			'title',
+			'artist',
+			'album',
+			'albumArtist',
+			'trackNumber',
+			'discNumber',
+			'year',
+			'genre',
+		];
+	// `file` comes from music-metadata, whose tag values are `string | number[]`
+	// for multi-valued frames — not `unknown`. Narrowing to string/number here
+	// keeps a stray object out of String() rather than yielding '[object Object]',
+	// which would silently compare as a permanent disagreement and re-tag the
+	// whole library on every pass.
+	const asText = (v: unknown): string | null => {
+		if (v == null) return null;
+		if (typeof v === 'string') return v === '' ? null : v;
+		if (typeof v === 'number') return String(v);
+		if (Array.isArray(v)) {
+			const parts = v.filter((x): x is string => typeof x === 'string' && x !== '');
+			return parts.length ? parts.join(' / ') : null;
+		}
+		return null;
+	};
+	const same = (a: string | number | null | undefined, b: unknown): boolean => {
+		const left = a == null || a === '' ? null : String(a);
+		const right = asText(b);
+		if (left === null && right === null) return true;
+		if (left === null || right === null) return false;
+		return left.normalize('NFC') === right.normalize('NFC');
+	};
+	const out: string[] = [];
+	if (!same(tags.title, file.title)) out.push('title');
+	if (!same(tags.artist, file.artist)) out.push('artist');
+	if (!same(tags.album, file.album)) out.push('album');
+	if (!same(tags.albumArtist, file.albumartist)) out.push('albumArtist');
+	const trackNo = (file.track as { no?: number } | undefined)?.no;
+	if (tags.trackNumber != null && Number(trackNo ?? 0) !== tags.trackNumber) {
+		out.push('trackNumber');
+	}
+	const discNo = (file.disk as { no?: number } | undefined)?.no;
+	if (tags.discNumber != null && Number(discNo ?? 0) !== tags.discNumber) {
+		out.push('discNumber');
+	}
+	if (tags.year != null && Number(file.year ?? 0) !== tags.year) out.push('year');
+	if (!same(tags.genre, file.genre)) out.push('genre');
+	return out;
+}
+
 export async function ensureFileTags(
 	filePath: string,
 	tags: TagData,
@@ -264,14 +361,22 @@ export async function ensureFileTags(
 ): Promise<'ok' | 'skipped' | 'failed'> {
 	try {
 		const ext = filePath.toLowerCase().endsWith('.flac') ? 'flac' : 'mp3';
+		let disagreeing: string[] = [];
 		if (!opts.force) {
 			const info = await parseFile(filePath, { duration: false }).catch(() => null);
-			const c = info?.common;
-			if (c?.title && c?.artist) return 'skipped';
+			disagreeing = tagsDisagree(
+				tags,
+				(info?.common as Record<string, unknown> | undefined) ?? null,
+			);
+			if (disagreeing.length === 0) return 'skipped';
 		}
 		if (ext === 'flac') await tagFlac(filePath, tags);
 		else tagMp3(filePath, tags);
-		log.info('repaired embedded tags', { filePath, force: opts.force ?? false });
+		log.info('repaired embedded tags', {
+			filePath,
+			force: opts.force ?? false,
+			...(disagreeing.length ? { disagreeing: disagreeing.join(',') } : {}),
+		});
 		return 'ok';
 	} catch (err) {
 		log.warn('tag repair failed', { filePath, error: String(err) });
