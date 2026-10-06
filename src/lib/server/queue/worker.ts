@@ -169,6 +169,16 @@ export function ensureWorkerStarted(): void {
 			// aggressively as songs awaiting a better master.
 			const metadataSweep = setInterval(() => void metadataRepairSweep(), 60 * 60_000);
 			metadataSweep.unref?.();
+
+			// Reindex top-up. The hourly metadata sweep only offers 25 GAP-based
+			// candidates, so a row that has an album and a cover but no genre is never
+			// selected — which is how the reindex stalled at 414/715 with an empty
+			// queue and 301 rows nobody was ever going to ask about again. This walks
+			// the never-refreshed rows directly, so the index finishes on its own
+			// without anyone having to babysit a loop.
+			const reindexSweep = setInterval(() => void reindexTopUpSweep(), 10 * 60_000);
+			reindexSweep.unref?.();
+			void reindexTopUpSweep();
 			void lyricsBackfillSweep();
 			void downloadRetrySweep();
 			void qualityUpgradeSweep();
@@ -274,6 +284,43 @@ export function ensureWorkerStarted(): void {
 			 * job. Each job fills only what is absent, writes the cover, force-retags
 			 * the file and relocates it when a newly-found album changes its folder.
 			 */
+			/**
+			 * Keep the reindex moving without supervision.
+			 *
+			 * Enqueues rows that have never been through a metadata pass, oldest first.
+			 * Not forced: this is about covering rows nobody has looked at, not
+			 * re-querying the ones already done. `tracksWithPendingJob` stops it piling
+			 * duplicates on rows already in flight.
+			 */
+			async function reindexTopUpSweep(): Promise<void> {
+				try {
+					const { listReindexCandidates } = await import('$lib/server/db/tracks');
+					const { enqueueJob, tracksWithPendingJob } = await import('./jobs');
+					const busy = await tracksWithPendingJob('metadata_repair');
+					const candidates = await listReindexCandidates(60);
+					let enqueued = 0;
+					for (const row of candidates) {
+						if (busy.has(row.id)) continue;
+						// Only rows that have NEVER been refreshed; once stamped, the
+						// ordering moves them to the back naturally.
+						if (row.metadataRefreshedAt) break;
+						await enqueueJob({
+							type: 'metadata_repair',
+							payload: { trackId: row.id, reason: 'reindex-topup' },
+							trackId: row.id,
+							// Behind a user's own download, but ahead of the hourly sweep.
+							priority: 4,
+						});
+						enqueued++;
+					}
+					if (enqueued > 0) {
+						log.info('reindex top-up enqueued', { count: enqueued });
+					}
+				} catch (err) {
+					log.warn('reindex top-up failed', { error: String(err) });
+				}
+			}
+
 			async function metadataRepairSweep(): Promise<void> {
 				try {
 					const { listMetadataRepairCandidates, listBrokenCoverCandidates } =
