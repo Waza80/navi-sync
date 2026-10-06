@@ -73,3 +73,26 @@ encoding, not from the text itself.
 ## navi-sync deployment
 
 A webhook deploys `main`. Do not deploy through the Coolify API.
+
+## A batch endpoint you cannot safely loop is a trap
+
+The reindex sweep enqueues one batch per POST. I called it in a loop twice and
+both times it ran away — 4000 jobs, then 8000 jobs, for a 686-track library.
+
+Two independent causes, and the second is the one to remember:
+
+1. `freshnessHours: 0` means "no freshness filter", which removed the last guard.
+   The endpoint behaved as documented; the caller did not.
+2. `tracksWithPendingJob` deduped on `jobs.track_id`, but `enqueueJob` was never
+   passed a `trackId`, so every job landed with NULL and the guard matched
+   nothing. Only **171 of 686** tracks were ever refreshed while the queue burned
+   through 8000 duplicates.
+
+`refreshed` sat pinned at 171 for 30 straight minutes. I watched each round
+report "enqueued 100" and read that as progress. It was not — the assertion that
+catches this is that `refreshed` must ADVANCE, and a loop that watches its own
+progress metric should abort when it does not.
+
+Rules that follow: any bulk endpoint needs a real idempotency key, the caller
+must assert forward progress, and a dedupe guard that depends on a column has to
+be verified against the data actually being written — not against intent.
