@@ -423,6 +423,11 @@ export async function listLyricsBackfillCandidates(limit = 5): Promise<
  */
 export async function ensureFailedTrackRow(input: {
 	provider: string;
+	/**
+	 * Validated as a real id, never a URL. This column is half the
+	 * (provider, provider_track_id) unique key, so a URL here silently forks the
+	 * row instead of matching the one that already owns the song.
+	 */
 	providerTrackId: string | null;
 	title: string;
 	artist: string;
@@ -436,6 +441,15 @@ export async function ensureFailedTrackRow(input: {
 	genre?: string | null;
 	error: string;
 }): Promise<string> {
+	const { NOT_A_TRACK_ID } = await import('$lib/server/db/validate');
+	const idCheck = NOT_A_TRACK_ID.safeParse(input.providerTrackId);
+	if (!idCheck.success) {
+		// Refuse rather than repair: a URL here used to create a duplicate row
+		// titled "Failed download" that nothing could ever match or clean up.
+		throw new Error(
+			`ensureFailedTrackRow: providerTrackId must be a provider-native id, got ${JSON.stringify(input.providerTrackId)}`,
+		);
+	}
 	const values = {
 		provider: input.provider,
 		providerTrackId: input.providerTrackId,
@@ -666,6 +680,22 @@ export async function applyMetadataPatch(
 /** Record the on-disk cover path after a cover image is written. */
 export async function setCoverPath(id: string, coverPath: string | null): Promise<void> {
 	await db.update(tracks).set({ coverPath, updatedAt: new Date() }).where(eq(tracks.id, id));
+}
+
+/** The row for a recording, by exact ISRC. Used to fail the right row. */
+export async function findTrackByIsrc(
+	isrc: string,
+): Promise<{ id: string; title: string; filePath: string | null } | null> {
+	const [row] = await db
+		.select({
+			id: tracks.id,
+			title: tracks.title,
+			filePath: tracks.filePath,
+		})
+		.from(tracks)
+		.where(eq(tracks.isrc, isrc))
+		.limit(1);
+	return row ?? null;
 }
 
 /**

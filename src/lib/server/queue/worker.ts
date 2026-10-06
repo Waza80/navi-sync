@@ -483,12 +483,48 @@ async function recordFailedDownload(job: JobRow, error: string): Promise<void> {
 		return;
 	}
 
-	const { ensureFailedTrackRow } = await import('$lib/server/db/tracks');
+	const { ensureFailedTrackRow, findTrackByIsrc } = await import('$lib/server/db/tracks');
 	const { canonicalTrackId } = await import('$lib/server/providers/ids');
 	const rawId = typeof payload.url === 'string' ? payload.url : null;
+	const canonicalId = canonicalTrackId(providerId, rawId);
+
+	// Never fall back to the URL in provider_track_id.
+	//
+	// That column is part of the (provider, provider_track_id) unique key, so
+	// writing "https://www.deezer.com/track/2421366" there created a SECOND row for
+	// a song that already had a proper one keyed "2421366" — 29 of them, titled
+	// "Failed download" by "Unknown Artist", because the URL can never match an ISRC
+	// lookup or a canonical id. The artist link leaked in the same way, storing
+	// ".../fr/artist/110750" as if it were a track.
+	if (!canonicalId) {
+		log.info('no canonical track id; not creating a placeholder row', {
+			jobId: job.id,
+			provider: providerId,
+			url: rawId,
+		});
+		return;
+	}
+
+	// If we know the recording, find its row and fail THAT. Otherwise every job for
+	// a track whose metadata resolved would add another orphan row.
+	if (isrc) {
+		const existing = await findTrackByIsrc(isrc).catch(() => null);
+		if (existing) {
+			const { markDownloadStatus } = await import('$lib/server/db/tracks');
+			await markDownloadStatus(existing.id, 'failed');
+			await logFailureForTrack(existing.id, error);
+			log.info('failure recorded against the row with that ISRC', {
+				trackId: existing.id,
+				isrc,
+				jobId: job.id,
+			});
+			return;
+		}
+	}
+
 	await ensureFailedTrackRow({
 		provider: providerId,
-		providerTrackId: canonicalTrackId(providerId, rawId) ?? rawId,
+		providerTrackId: canonicalId,
 		title,
 		artist,
 		album,

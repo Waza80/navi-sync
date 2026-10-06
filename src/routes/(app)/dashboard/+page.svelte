@@ -252,33 +252,35 @@
 			upgrading.delete(id);
 		}
 	}
-	async function setRefetchBlock(id: string, blocked: boolean) {
-		// Optimistic: drop it from the failed list on click rather than after the
-		// round trip, and put it back if the server disagrees. Without this the row
-		// sat there unchanged until invalidateAll() resolved, which is indistinguishable
-		// from a dead button.
+	/**
+	 * Remove a failed row for good. One click, gone from the database — not a
+	 * reversible mute. The server deletes the row and reports precisely what failed,
+	 * and the row leaves the list optimistically so the action is visible at once.
+	 */
+	async function deleteFailedTrack(id: string) {
 		const snapshot: TrackDTO[] = failedTracks;
 		blocking.add(id);
+		failedLocal = failedTracks.filter((t) => t.id !== id);
 		try {
-			if (blocked) {
-				failedLocal = failedTracks.filter((t) => t.id !== id);
-			}
-			const res = await fetch(`/api/tracks/${id}/refetch-block`, {
-				method: 'POST',
+			const res = await fetch(`/api/tracks/${id}`, {
+				method: 'DELETE',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ blocked }),
+				body: JSON.stringify({}),
 			});
+			const body = (await res.json().catch(() => null)) as {
+				error?: { message?: string };
+			} | null;
 			if (!res.ok) {
 				failedLocal = snapshot;
-				toast('error', `Could not change refetch (HTTP ${res.status})`);
+				toast('error', body?.error?.message ?? `Could not delete (HTTP ${res.status})`);
 				return;
 			}
-			toast('ok', blocked ? 'Stopped refetching this track.' : 'Refetching resumed.');
+			toast('ok', 'Entry deleted.');
 			await invalidateAll();
 			failedLocal = null;
-		} catch {
-			failedTracks = snapshot;
-			toast('error', 'Could not change refetch (network).');
+		} catch (err) {
+			failedLocal = snapshot;
+			toast('error', `Could not delete: ${err instanceof Error ? err.message : 'network'}`);
 		} finally {
 			blocking.delete(id);
 		}
@@ -1380,7 +1382,7 @@
 				<TrackCard
 					{track}
 					playing={nowPlaying?.id === track.id}
-					ondelete={deleteTrack}
+					ondelete={(id: string) => void deleteFailedTrack(id)}
 					onplay={(id: string) => {
 						const t = filteredTracks.find((x) => x.id === id);
 						if (t) void togglePlay(t);
@@ -1388,8 +1390,7 @@
 					ondownload={downloadTrackFile}
 					onupgrade={(id: string) => void forceUpgrade(id)}
 					onretry={(id: string) => void retryFailedDownload(id)}
-					onrefetchblock={(id: string, blocked: boolean) =>
-						void setRefetchBlock(id, blocked)}
+					busy={blocking.has(track.id)}
 				/>
 			{/each}
 		</div>

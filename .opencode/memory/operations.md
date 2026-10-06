@@ -4,7 +4,14 @@
 
 - App: `https://navis.orbitsc.net` — health reports `db: true` and `uptimeSec`,
   which is how you detect a deploy.
-- Navidrome: `https://navi.orbitsc.net`, mounted read-only `/mnt/hdd/music:/music:ro`.
+- Navidrome: `https://navi.orbitsc.net`.
+- **The music library lives at `/mnt/hdd/music` on `192.168.1.16`, NOT on this host.**
+  Reach it with `ssh wyzz@192.168.1.16`. Anything that touches library _files_ —
+  deleting duplicates, repairing tags, checking what is actually on disk — has to run
+  over there; the app container sees it as `/music`. Do not conclude a file is
+  missing from an empty local `/mnt/hdd/music`: the mount simply is not present here.
+  Verify with `ssh wyzz@192.168.1.16 'ls /mnt/hdd/music'` before concluding anything
+  about library contents.
 - Production DB: `postgres://…@192.168.1.16:3593/navisync`, read from
   `docker/compose.prod.yaml` (gitignored). Dev DB is port `3945/navisync_dev`.
   **Direct connections from this host are flaky** — ECONNREFUSED or timeouts even
@@ -52,6 +59,9 @@ matters — source `.env` _before_ `bun`, or `env.ts` throws on a missing
 
 ## Known unreconciled items
 
+- Duplicate library files from suffixed moves (`song (2).flac`, `(3).flac`) affected
+  211 rows across 93 albums. **A higher suffix is a LATER fetch and may be the better
+  file** — never keep the unprefixed copy by default; compare before deleting.
 - `cover (4).jpg` … `cover (7).jpg` accumulate in `The Long Faces/Jane!/` — six
   identical 357,150-byte files beside a 331,610-byte `cover.jpg`. Neither repair
   path writes suffixed names, so the writer that does is still unidentified.

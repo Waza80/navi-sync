@@ -2,7 +2,6 @@
 	import { qualityLabel, formatDuration } from '$lib/shared/format';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import {
-		CancelCircleIcon,
 		Delete02Icon,
 		Download01Icon,
 		PauseIcon,
@@ -19,17 +18,18 @@
 		ondownload,
 		onupgrade,
 		onretry,
-		onrefetchblock,
+		busy,
 	}: {
 		track: TrackDTO;
 		playing?: boolean;
+		/** Permanently remove this row. For a failed row there is no file to delete. */
 		ondelete?: (id: string) => void;
+		/** An action is in flight for this row; disables its buttons. */
+		busy?: boolean;
 		onplay?: (id: string) => void;
 		ondownload?: (id: string) => void;
 		onupgrade?: (id: string) => void;
 		onretry?: (id: string) => void;
-		/** Permanently stop / resume refetch attempts for this track. */
-		onrefetchblock?: (id: string, blocked: boolean) => void;
 	} = $props();
 
 	const failed = $derived(track.downloadStatus === 'failed');
@@ -165,23 +165,13 @@
 			     known-unobtainable entry and can be revived from the same control. -->
 			<button
 				type="button"
-				class="m3-icon-button h-10 w-10 {track.refetchBlocked
-					? 'bg-primary-container text-on-primary-container'
-					: ''}"
-				title={track.refetchBlocked
-					? 'Resume automatic refetch attempts'
-					: 'Stop the server refetching this track'}
-				aria-label={track.refetchBlocked
-					? `Resume refetching ${track.title}`
-					: `Stop refetching ${track.title}`}
-				onclick={() => onrefetchblock?.(track.id, !track.refetchBlocked)}
+				class="m3-icon-button h-10 w-10"
+				disabled={busy}
+				title="Delete this entry from the library"
+				aria-label={`Delete ${track.title} from the library`}
+				onclick={() => ondelete?.(track.id)}
 			>
-				<HugeiconsIcon
-					icon={track.refetchBlocked ? RefreshIcon : CancelCircleIcon}
-					size={18}
-					strokeWidth={2}
-					aria-hidden="true"
-				/>
+				<HugeiconsIcon icon={Delete02Icon} size={18} strokeWidth={2} aria-hidden="true" />
 			</button>
 		{:else}
 			<button
