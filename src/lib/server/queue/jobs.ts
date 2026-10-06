@@ -361,8 +361,11 @@ export async function jobCounts(): Promise<{
 		byStatus[r.status] = Number(r.n);
 		total += Number(r.n);
 	}
-	const active =
-		(byStatus['queued'] ?? 0) + (byStatus['running'] ?? 0) + (byStatus['failed'] ?? 0);
+	// `active` means queued + running and nothing else, so it agrees with what the
+	// dashboard's "Active" tab shows. It previously also counted `failed`, which is
+	// a retryable terminal-ish state — so any consumer of counts.active disagreed
+	// with the filter the user was looking at.
+	const active = (byStatus['queued'] ?? 0) + (byStatus['running'] ?? 0);
 	return { total, active, byStatus };
 }
 
