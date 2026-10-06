@@ -167,3 +167,115 @@ export function planAlbumRename(rows: readonly AlbumRow[]): AlbumPlan[] {
 	}
 	return out;
 }
+
+// ── the (n) artefact ─────────────────────────────────────────────────────────
+
+/**
+ * Remove a trailing ` (n)` — the artefact of an old download bug — unconditionally.
+ *
+ * Strict on purpose. `\s\((\d{1,3})\)$` matches a bare 1–3 digit group at the very
+ * end and nothing else, so it never touches:
+ *
+ *   FLIP (Deluxe)              no digits
+ *   Exit Music (For A Film)    no digits
+ *   Love Song (feat. x)        no digits
+ *   Paranoid Android (2011)    4 digits — a year, and 4 is not in {1,2,3}
+ *   Chapter 12 (Part 2 of 3)   not at the end
+ *
+ * Every one of those is a genuine part of a title. The artefacts observed in the
+ * library were (2), (3), (5), (9), (11), (22) — all 1–3 digits, all at the end,
+ * all removable.
+ */
+export function stripIndexSuffix(title: string): string {
+	const m = INDEX_SUFFIX.exec(title);
+	return m ? title.slice(0, m.index) : title;
+}
+
+/** True when `stripIndexSuffix` would change this title. */
+export function hasIndexSuffix(title: string): boolean {
+	return INDEX_SUFFIX.test(title);
+}
+
+export interface SuffixStrip {
+	id: string;
+	from: string;
+	to: string;
+	filePath: string;
+	newFilePath: string;
+}
+
+export interface SuffixPlan {
+	strips: SuffixStrip[];
+	/** Titles that would still collide inside their own folder after stripping. */
+	collisions: Array<{ folder: string; title: string; files: string[] }>;
+}
+
+/**
+ * Plan the ` (n)` removal for every row that has one, refusing to produce a plan
+ * that would put two files on the same name.
+ *
+ * The collision check is the whole point of doing this as a plan rather than a
+ * loop of renames: stripping ` (2)` off `06 - Creep (2)` must not land on a
+ * `06 - Creep` that already exists, and discovering that after the first rename
+ * leaves half the folder renamed.
+ */
+export function planSuffixStrip(
+	rows: ReadonlyArray<{ id: string; title: string; filePath: string }>,
+): SuffixPlan {
+	const strips: SuffixStrip[] = [];
+	// Every final filename that will exist after the pass, per folder.
+	const occupancy = new Map<string, Map<string, string>>();
+
+	const folderOf = (p: string) => p.slice(0, Math.max(p.lastIndexOf('/'), 0));
+	const nameOf = (p: string) => p.slice(p.lastIndexOf('/') + 1);
+	const extOf = (n: string) => n.slice(n.lastIndexOf('.'));
+
+	const intended = new Map<string, string>();
+	for (const r of rows) {
+		const dir = folderOf(r.filePath);
+		const name = nameOf(r.filePath);
+		const ext = extOf(name);
+		const stem = name.slice(0, -ext.length);
+		// Decide from the FILENAME stem, which is where the artefact is written,
+		// and strip the title only when the title carries one too. They can
+		// diverge: 156 filenames were affected but only 139 titles, so 17 files
+		// had a clean title and a suffixed name.
+		if (!hasIndexSuffix(stem) && !hasIndexSuffix(r.title)) continue;
+		// Rebuilding the name from the title would drop the '03 - ' track prefix,
+		// because titles carry no track number.
+		const newStem = stripIndexSuffix(stem);
+		intended.set(r.filePath, `${dir}/${newStem}${ext}`);
+		strips.push({
+			id: r.id,
+			from: r.title,
+			to: hasIndexSuffix(r.title) ? stripIndexSuffix(r.title) : r.title,
+			filePath: r.filePath,
+			newFilePath: `${dir}/${newStem}${ext}`,
+		});
+	}
+
+	// Occupy: files that are not moving keep their current name; files that are
+	// moving take their destination.
+	const finalName = new Map<string, string>();
+	for (const r of rows) finalName.set(r.filePath, intended.get(r.filePath) ?? r.filePath);
+
+	const byFolder = new Map<string, Map<string, string[]>>();
+	for (const r of rows) {
+		const final = finalName.get(r.filePath)!;
+		const dir = folderOf(final);
+		if (!byFolder.has(dir)) byFolder.set(dir, new Map());
+		const m = byFolder.get(dir)!;
+		if (!m.has(final)) m.set(final, []);
+		m.get(final)!.push(r.filePath);
+	}
+
+	const collisions: SuffixPlan['collisions'] = [];
+	for (const [dir, m] of byFolder) {
+		for (const [final, paths] of m) {
+			if (paths.length > 1)
+				collisions.push({ folder: dir, title: final, files: paths.sort() });
+		}
+	}
+	void occupancy;
+	return { strips, collisions };
+}

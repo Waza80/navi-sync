@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { foldAlbum, isDuplicateOfSibling, planAlbumRename, splitIndexSuffix } from './albumfold';
+import {
+	foldAlbum,
+	hasIndexSuffix,
+	isDuplicateOfSibling,
+	planAlbumRename,
+	planSuffixStrip,
+	splitIndexSuffix,
+	stripIndexSuffix,
+} from './albumfold';
 
 // ── the real, measured library data ───────────────────────────────────────────
 // 675 files. 16 tracks sit in folders whose ALBUM tags differ only in case or a
@@ -189,5 +197,126 @@ describe('planAlbumRename', () => {
 		const rows = [ROW('1', 'X', 'Album', 100), ROW('2', 'Y', 'ALBUM', 100)];
 		const plan = planAlbumRename(rows);
 		expect(plan[0].canonical).toMatch(/^Album$/i);
+	});
+});
+
+describe('stripIndexSuffix / hasIndexSuffix', () => {
+	it('removes the artefacts actually found in this library', () => {
+		for (const [from, to] of [
+			['Eleanor Rigby (3)', 'Eleanor Rigby'],
+			['Palpal (9)', 'Palpal'],
+			['Sur le sol (22)', 'Sur le sol'],
+			['07 - a compte pas (5)', '07 - a compte pas'],
+			['02 - Creep (11)', '02 - Creep'],
+			['06 - Moog City 2 (2)', '06 - Moog City 2'],
+			['05 - souvenir (2)', '05 - souvenir'],
+		]) {
+			expect(stripIndexSuffix(from)).toBe(to);
+			expect(hasIndexSuffix(from)).toBe(true);
+		}
+	});
+
+	it('never touches a genuine parenthesis', () => {
+		for (const t of [
+			'FLIP (Deluxe)',
+			'Exit Music (For A Film)',
+			'Love Song (feat. x)',
+			'Chapter 12 (Part 2 of 3)',
+			'POCKET ROCKET (Remix)',
+			'Album (Anniversary Edition)',
+			'(Intro)',
+			'Track (A)',
+		]) {
+			expect(stripIndexSuffix(t)).toBe(t);
+			expect(hasIndexSuffix(t)).toBe(false);
+		}
+	});
+
+	it('treats a 4-digit group as a year, not an index', () => {
+		expect(stripIndexSuffix('Paranoid Android (2011)')).toBe('Paranoid Android (2011)');
+		expect(stripIndexSuffix('Song (1999)')).toBe('Song (1999)');
+	});
+
+	it('only matches at the very end', () => {
+		expect(stripIndexSuffix('Sag (2) Mix')).toBe('Sag (2) Mix');
+		expect(stripIndexSuffix('Sag (2)')).toBe('Sag');
+	});
+
+	it('is idempotent — stripping twice changes nothing further', () => {
+		const once = stripIndexSuffix('03 - dogbone (2)');
+		expect(stripIndexSuffix(once)).toBe(once);
+	});
+
+	it('is deterministic', () => {
+		expect(stripIndexSuffix('06 - Moog City 2 (2)')).toBe(
+			stripIndexSuffix('06 - Moog City 2 (2)'),
+		);
+	});
+});
+
+describe('planSuffixStrip', () => {
+	const R = (id: string, title: string, filePath: string) => ({ id, title, filePath });
+
+	it('plans a strip per affected row', () => {
+		const plan = planSuffixStrip([
+			R('1', 'dogbone (2)', 'Tanger/x/02 - dogbone (2).flac'),
+			R('2', 'TONSURE', 'Tanger/x/11 - TONSURE.flac'),
+		]);
+		expect(plan.strips).toHaveLength(1);
+		expect(plan.strips[0].to).toBe('dogbone');
+		expect(plan.strips[0].newFilePath).toBe('Tanger/x/02 - dogbone.flac');
+		expect(plan.collisions).toHaveLength(0);
+	});
+
+	it('keeps the track prefix on the filename', () => {
+		// The title carries no number, so rebuilding the name from the title would
+		// produce 'dogbone.flac' and lose '02 - '.
+		const plan = planSuffixStrip([R('1', 'Danse (2)', 'L/13 - Danse (2).flac')]);
+		expect(plan.strips[0].newFilePath).toBe('L/13 - Danse.flac');
+	});
+
+	it('detects a collision instead of planning an overwrite', () => {
+		const plan = planSuffixStrip([
+			R('1', 'Creep (11)', 'Radiohead/02 - Creep (11).flac'),
+			R('2', 'Creep', 'Radiohead/02 - Creep.flac'),
+		]);
+		expect(plan.strips).toHaveLength(1);
+		expect(plan.collisions).toHaveLength(1);
+		expect(plan.collisions[0].folder).toBe('Radiohead');
+		expect(plan.collisions[0].files).toHaveLength(2);
+	});
+
+	it('sees two suffixed files colliding with each other', () => {
+		const plan = planSuffixStrip([
+			R('1', 'Creep (2)', 'R/02 - Creep (2).flac'),
+			R('2', 'Creep (11)', 'R/02 - Creep (11).flac'),
+		]);
+		expect(plan.collisions).toHaveLength(1);
+	});
+
+	it('does not treat the same name in different folders as a collision', () => {
+		const plan = planSuffixStrip([
+			R('1', 'Creep (2)', 'A/02 - Creep (2).flac'),
+			R('2', 'Creep (11)', 'B/02 - Creep (11).flac'),
+		]);
+		expect(plan.collisions).toHaveLength(0);
+		expect(plan.strips).toHaveLength(2);
+	});
+
+	it('strips the filename even when the title is already clean', () => {
+		// 156 filenames carried the artefact but only 139 titles did.
+		const plan = planSuffixStrip([R('1', 'Danse', 'L/13 - Danse (2).flac')]);
+		expect(plan.strips).toHaveLength(1);
+		expect(plan.strips[0].to).toBe('Danse');
+		expect(plan.strips[0].newFilePath).toBe('L/13 - Danse.flac');
+	});
+
+	it('ignores every other extension unchanged', () => {
+		const plan = planSuffixStrip([
+			R('1', 'x', 'L/01 - x.mp3'),
+			R('2', 'y', 'L/02 - y.flac'),
+			R('3', 'z', 'L/03 - z.opus'),
+		]);
+		expect(plan.strips).toHaveLength(0);
 	});
 });

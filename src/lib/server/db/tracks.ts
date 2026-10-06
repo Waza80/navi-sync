@@ -265,6 +265,7 @@ export async function listFiledTracks(): Promise<
 		discNumber: number | null;
 		releaseYear: number | null;
 		genre: string | null;
+		coverPath: string | null;
 	}>
 > {
 	return db
@@ -279,6 +280,7 @@ export async function listFiledTracks(): Promise<
 			discNumber: tracks.discNumber,
 			releaseYear: tracks.releaseYear,
 			genre: tracks.genre,
+			coverPath: tracks.coverPath,
 		})
 		.from(tracks)
 		.where(isNotNull(tracks.filePath));

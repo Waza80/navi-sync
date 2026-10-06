@@ -27,3 +27,7 @@ coverage/
 .DS_Store
 Thumbs.db
 opencode.jsonc
+
+# session cookie jars and scratch files — these carry live session tokens
+c*.txt
+cookies*.txt

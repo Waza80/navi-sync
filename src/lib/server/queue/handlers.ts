@@ -894,6 +894,7 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 
 		await updateProgress(job.id, job.type, job.trackId, 20, 'repairing embedded tags');
 		const { ensureFileTags } = await import('$lib/server/library/tagging');
+		const { readCoverBytes } = await import('$lib/server/library/cover');
 		const { readFile } = await import('node:fs/promises');
 		const { forceTagRepair } = await getSettings();
 		for (const t of await listFiledTracks()) {
@@ -922,7 +923,12 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 					discNumber: t.discNumber,
 					year: t.releaseYear,
 					genre: t.genre,
-					cover: null,
+					// Same reason as the metadata path: an album only has art on
+					// Navidrome when the bytes are embedded, so read the cover we
+					// already hold rather than passing null.
+					cover: await readCoverBytes(t.coverPath, {
+						libraryRoot: env.MUSIC_LIBRARY_DIR,
+					}),
 					lyricsPlain,
 					lyricsSynced,
 				},
@@ -1223,10 +1229,25 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 		}
 	}
 
+	// Embed whatever artwork we now hold. Navidrome shows a cover ONLY when the
+	// bytes are inside the audio file — a `cover_path` sitting beside the track is
+	// invisible to it. This path passed `cover: null`, so a file could carry a
+	// perfectly good cover on disk and still show no art, which is what left
+	// PRETTY DOLLCORPSE bare while 213 other albums had art.
+	//
+	// Reading the file we already have adds no network call and no behaviour
+	// change beyond the embed, and `tagFlac` still preserves an existing PICTURE
+	// block when this is null.
+	let embedBytes: Buffer | null = coverBytes;
+	if (!embedBytes && row.coverPath) {
+		const { readCoverBytes } = await import('$lib/server/library/cover');
+		embedBytes = await readCoverBytes(row.coverPath, { libraryRoot: env.MUSIC_LIBRARY_DIR });
+	}
+
 	// ── 3. Retag + relocate ─────────────────────────────────────────────────
 	let retagged = false;
 	let movedTo: string | null = null;
-	if (Object.keys(patch).length > 0 || coverBytes) {
+	if (Object.keys(patch).length > 0 || embedBytes) {
 		await ctx.report(70, 'rewriting embedded tags');
 		const { ensureFileTags } = await import('$lib/server/library/tagging');
 		let filePath = row.filePath;
@@ -1273,7 +1294,7 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 				discNumber,
 				year,
 				genre,
-				cover: coverBytes,
+				cover: embedBytes,
 				lyricsPlain: null,
 				lyricsSynced: null,
 			},

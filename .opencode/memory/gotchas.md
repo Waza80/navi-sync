@@ -519,6 +519,7 @@ albums Navidrome shows more than once: 1       (don dada, the real mixtape)
 
 The 4 ghosts are all files my own earlier passes deleted or renamed on disk
 without telling Navidrome:
+
 - `.../09 - SADDAM&SODOME (2).flac` — the duplicate the reconciler deleted, and
   the reason NODA still appeared twice: the ghost row carries the OLD album
   spelling `NODA le monde et les humains`, so it forms its own 1-track album_id
@@ -552,3 +553,91 @@ the `metadata_repair` re-tag path passes `cover: null`, so even a resolved
 
 `Expunged` releases are also invisible to Navidrome's own MB sync, so it will not
 fetch art for one on its own — which is exactly the case DOLLCORPSE is.
+
+## A session cookie was committed to the repo
+
+`git ls-files` showed `c3.txt` tracked at the repository root — a curl cookie jar
+containing `__Secure-navisync.session_token`, i.e. a live login for the live
+instance. It got in through an unconditional `git add -A` after I had been
+writing scratch files into the repo root. `emit.ts` and `emit2.ts` came in the
+same way.
+
+**Before every commit, check what you are actually adding.** Not `git add -A` and
+hope:
+
+```sh
+git ls-files | grep -E "^c[0-9]*\.txt$"        # cookie jars
+git diff --cached | grep -iE "session_token|postgres://|password"
+git ls-files "*.ts" | grep -vE "^src/|^scripts/" # scratch scripts
+```
+
+Keep scratch work in `/tmp/opencode`, never the repository root. `.gitignore` now
+covers `c*.txt` and `cookies*.txt`, but gitignore does not untrack a file that is
+already in the index — `git rm --cached` is required, and the token should be
+treated as compromised regardless.
+
+## The ` (n)` artefact: the database cannot corroborate, and does not need to
+
+Every bare numeric ` (n)` in this library is a leftover of an old download bug.
+`stripIndexSuffix` removes it unconditionally, matched strictly by
+`/\s\((\d{1,3})\)$/` so it can never touch a genuine parenthesis:
+
+```
+Trailer Theme (Remix) (2)                -> Trailer Theme (Remix)
+Yoroï (with Thomas Bangalter) (2)        -> Yoroï (with Thomas Bangalter)
+FLIP (Deluxe)                            -> unchanged
+Paranoid Android (2011)                  -> unchanged (4 digits is a year)
+```
+
+I first tried to corroborate every strip against an independent source, which was
+worth doing as a check even though it could not be the mechanism:
+
+- **Our own rows, matched by title+duration: 3 of 138.** Each affected file is the
+  only copy we hold — 615 distinct ISRCs across 675 rows and every
+  `provider:track_id` distinct — so there is no sibling to compare against.
+- **Corroborating by ISRC and provider track id: 3 confirmed, 0 conflicts, 135
+  undecided.**
+
+The useful result is the **zero**: nothing in the database, and nothing keyed on
+ISRC, knows any of these titles *only* in its suffixed form. There is no evidence
+for the `(n)` being part of a title, and the user knows these are artefacts of
+old bugs. Undecided means "no counter-evidence", not "unsafe" — do not read an
+absence of a witness as a reason to keep a known artefact.
+
+Do not query MusicBrainz to settle this. It is rate limited and it is not needed;
+the answer was already in the database.
+
+## Renames must commit the database FIRST, and be resumable
+
+The strip committed all 152 rows, then the rename loop died on the first path
+containing an apostrophe. Result: 81 files renamed, 71 not, database pointing at
+names that did not exist yet. Recoverable, and recoverable only because the
+database records the intended path.
+
+Order that works: **database in one transaction → renames → verify**, never the
+reverse. A stray rename with no row is an orphan nobody will notice; a row with no
+file is loudly broken and self-documenting.
+
+Two bugs worth remembering from the recovery:
+- `ssh host "test -e '<path>'"` **breaks on an apostrophe or a backtick**, and the
+  resulting non-zero exit reads as "file does not exist" in a try/catch — so the
+  guard passed and `mv` would have clobbered a real file. Check occupancy against
+  an exact `find` listing instead; membership has no quoting to get wrong.
+- `ssh host 'python3 -'` reads stdin as the **program**, so a payload cannot also
+  travel on stdin. Embed it as a JSON literal in the source.
+- A regex for "does this stem end in a copy index" must test the END of the stem,
+  not the whole stem. Matching `/^\s?\(\d{1,3}\)$/` against
+  `04 - SNAPSHOTALTRAZINE (2)` never matches, and every source looks unresolvable.
+
+## Cover art needs an EMBED, and both re-tag paths passed null
+
+An album has art on Navidrome only when cover bytes are inside the audio file. A
+`cover_path` in our database is a JPEG beside the track and Navidrome never looks
+at it. Both whole-library re-tag paths passed `cover: null`, so PRETTY DOLLCORPSE
+sat with no art despite a cover on disk and approved front/back images at its
+MusicBrainz release.
+
+`readCoverBytes` reads the cover we already hold — no new network call, no
+provider change — and refuses anything that is not a real JPEG/PNG, is oversized,
+is outside the library root, or contains a NUL. `tagFlac` still preserves an
+existing PICTURE block when the result is null, so this can only add art.
