@@ -56,6 +56,9 @@ provider is wrong" or the reverse, and guessing wastes hours.
   `src/lib/server/providers/registry`.
 - Library truth: the **production Postgres**, not the Subsonic API. Direct
   connections from the dev host are flaky (ECONNREFUSED) — retry in a loop.
-- Navidrome truth: its SQLite DB (`media_file.lyrics`, `media_file.kind`), because
-  the Subsonic API's legacy `getLyrics` fields are not populated and will make a
-  working feature look broken.
+- Navidrome truth: its SQLite DB (`media_file.lyrics`, `media_file.kind`,
+  `media_file.missing`), because the Subsonic API's legacy `getLyrics` fields are
+  not populated and will make a working feature look broken.
+- Deleting files behind Navidrome's back leaves ghosts it will never purge — a
+  full scan only sets `media_file.missing = 1`, which is what greys the row. Clear
+  them in the Navidrome UI after any bulk delete.

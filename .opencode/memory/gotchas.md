@@ -177,3 +177,63 @@ fix for 30 Tanger tracks that metadata had already "found".
 ## Do not re-declare keys in a hand-written whitelist
 
 (see above — this is the same item, kept here because it is the highest-value rule)
+
+## Navidrome retains missing files — a full scan does NOT purge them
+
+Measured on Navidrome 1.16.1 after deleting 67 files directly from disk and
+running three full scans:
+
+```
+media_file rows: 723 | flagged missing: 67   (missing = 1, still listed)
+after manual deletion in the Navidrome UI:
+media_file rows: 656 | flagged missing: 0
+```
+
+`fullScan=true` re-walks the tree and updates what it finds. It does **not**
+remove rows whose file is gone — it sets `media_file.missing = 1` and keeps them,
+which is exactly what renders them greyed out. Six minutes of polling changed
+nothing; the UI deletion did it in one action.
+
+Consequences:
+
+- `navidrome_scan` is not a cleanup mechanism. It repairs tags and metadata; it
+  does not reconcile the index against the disk.
+- A repair that reports `unindexedFiles: 0` and `missingFilesMarked: 0` has only
+  proven the **navi-sync** side is clean. Navidrome's own index can still hold
+  hundreds of rows for files deleted behind its back, and there is no app-side
+  API to remove them.
+- **Deleting files outside Navidrome will always leave ghosts.** After any bulk
+  disk operation — dedupe, reconcile, a manual `rm` — someone has to clear
+  Navidrome's UI, or Navidrome's `Scan.PurgeMissing` must be set to `always`.
+  Treat that as a required step of the workflow, not a follow-up.
+
+Verify with `select missing, count(*) from media_file group by 1`, not with the
+row count. A matching row count proves nothing while stale rows exist and real
+files are missing.
+
+## Reindexing after a restore: rows outlive their checksums
+
+`scripts/restore_library_index.py` rebuilds one row per file, but rows created
+*before* the restore survive alongside them. Result: several rows pointing at the
+same `file_path` while carrying **different `checksum_sha256` values** — only one
+of them can be describing the file that is actually there.
+
+55 such groups, 59 surplus rows. The resolution is not "trust the newest row":
+
+- match `checksum_sha256` against a freshly generated disk manifest, and
+- prefer the row that also has genre / isrc / year / lyrics.
+
+43 of 55 groups had a keeper whose checksum already matched disk; for the other
+12 the keeper's checksum had to be **rewritten** to the disk value, because the
+richest row was describing a copy that no longer exists. Deleting the wrong row
+silently loses the only good metadata.
+
+The bug that hid this: a loop with `if (rows.length === 1) continue` placed
+*before* the deleted-file check. Single-row paths were skipped, so 4 rows whose
+file an earlier pass deleted without repointing were never seen. Put the
+"does this file exist" check first, for every path.
+
+Also: `track_id` and `id` are `uuid`, not `text`. `= any($1::text[])` fails with
+`operator does not exist: uuid = text` **inside a transaction**, so every retry
+after it reports `current transaction is aborted` and the real error scrolls away
+in the noise. Read the first retry line, not the last.
