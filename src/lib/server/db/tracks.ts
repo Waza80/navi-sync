@@ -686,6 +686,93 @@ export async function setCoverPath(id: string, coverPath: string | null): Promis
 }
 
 /** The row for a recording, by exact ISRC. Used to fail the right row. */
+/**
+ * The row for a recording that is already in the library, however it got there.
+ *
+ * `findTrackByIsrc` only answers for an ISRC, so it misses a locally adopted
+ * file — those rows carry provider `local` and often no ISRC at all. This also
+ * matches on artist+album+title, which is what a provider's metadata resolves to
+ * when the recording has no ISRC.
+ *
+ * Used to stop a failed download from inserting a SECOND row for a song that is
+ * already present, which is what made adopted tracks appear as failed.
+ */
+export async function findTrackByIdentity(input: {
+	title: string;
+	artist: string;
+	album: string | null;
+	isrc: string | null;
+	durationSec?: number | null;
+}): Promise<{ id: string; provider: string } | null> {
+	// An ISRC first: exact, when both sides have one.
+	if (input.isrc) {
+		const byIsrc = await findTrackByIsrc(input.isrc);
+		if (byIsrc?.filePath != null) return { id: byIsrc.id, provider: 'isrc' };
+	}
+
+	// Then title + album + duration, and deliberately NOT artist.
+	//
+	// Artist is the one field that cannot be trusted to match. A locally uploaded
+	// track carries the merged credit list — 'Ptite Soeur, neophron, FEMTOGO,
+	// reivilose, prxpvne, rosaliedu38' — while the provider's metadata for the
+	// same recording names one act. Requiring an artist match missed all seven
+	// shadow rows this exists to prevent.
+	//
+	// Title + album + duration within a second is a far tighter key than any of
+	// those three alone: two different songs on one album differing by title, or
+	// sharing a title and differing by a full second of runtime, is not a thing
+	// that happens.
+	const rows = await db
+		.select({
+			id: tracks.id,
+			provider: tracks.provider,
+			filePath: tracks.filePath,
+			durationSec: tracks.durationSec,
+		})
+		.from(tracks)
+		.where(
+			and(
+				eq(tracks.title, input.title),
+				input.album == null ? undefined : eq(tracks.album, input.album),
+				input.durationSec == null ? undefined : eq(tracks.durationSec, input.durationSec),
+			),
+		)
+		.limit(4);
+
+	// Only a row that actually HAS a file counts. A previously failed row of the
+	// same name must not shield a fresh failure from being recorded.
+	const present = rows.find((r) => r.filePath != null);
+	if (present) return { id: present.id, provider: present.provider };
+
+	// Durations drift by a second after encoding, so retry the exact match with a
+	// tolerance rather than demanding byte equality.
+	if (input.durationSec != null) {
+		const near = await db
+			.select({
+				id: tracks.id,
+				provider: tracks.provider,
+				filePath: tracks.filePath,
+				durationSec: tracks.durationSec,
+			})
+			.from(tracks)
+			.where(
+				and(
+					eq(tracks.title, input.title),
+					input.album == null ? undefined : eq(tracks.album, input.album),
+				),
+			)
+			.limit(8);
+		const hit = near.find(
+			(r) =>
+				r.filePath != null &&
+				Number(r.durationSec ?? -1) >= 0 &&
+				Math.abs(Number(r.durationSec) - input.durationSec!) <= 1.5,
+		);
+		if (hit) return { id: hit.id, provider: hit.provider };
+	}
+	return null;
+}
+
 export async function findTrackByIsrc(
 	isrc: string,
 ): Promise<{ id: string; title: string; filePath: string | null } | null> {

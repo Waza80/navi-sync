@@ -524,6 +524,21 @@ async function recordFailedDownload(job: JobRow, error: string): Promise<void> {
 	const targetId = payload.retryForTrackId ?? payload.upgradeForTrackId ?? null;
 	if (targetId) {
 		const { markDownloadStatus } = await import('$lib/server/db/tracks');
+		if (payload.upgradeForTrackId && !payload.retryForTrackId) {
+			// An UPGRADE failed, not a download. The track is present, filed and
+			// playing — only a better copy was unobtainable, which is common and
+			// says nothing about the track's own state. Marking it `failed` made a
+			// song you can hear show up in the failed list, and the dashboard's
+			// remove-from-database button on such a row would take away the file.
+			// The reason is still recorded against the track, just not as a status.
+			await logFailureForTrack(targetId, error);
+			log.info('upgrade failed; existing track left completed', {
+				trackId: targetId,
+				jobId: job.id,
+				error,
+			});
+			return;
+		}
 		await markDownloadStatus(targetId, 'failed');
 		await logFailureForTrack(targetId, error);
 		log.info('failure recorded against existing track', { trackId: targetId, jobId: job.id });
@@ -567,6 +582,29 @@ async function recordFailedDownload(job: JobRow, error: string): Promise<void> {
 			});
 			return;
 		}
+	}
+
+	// The track may already be in the library under a DIFFERENT provider — a
+	// locally adopted file has provider `local`, so an ISRC lookup misses it, and
+	// the failure then inserts a second row for a song that is present and filed.
+	// That is how 7 tracks of PRETTY DOLLCORPSE came to appear as failed while the
+	// same songs played from their adopted files.
+	const { findTrackByIdentity } = await import('$lib/server/db/tracks');
+	const equivalent = await findTrackByIdentity({
+		artist,
+		album,
+		title,
+		isrc,
+		durationSec,
+	}).catch(() => null);
+	if (equivalent) {
+		await logFailureForTrack(equivalent.id, error);
+		log.info('failure recorded against the existing local row; no shadow row created', {
+			trackId: equivalent.id,
+			provider: equivalent.provider,
+			jobId: job.id,
+		});
+		return;
 	}
 
 	await ensureFailedTrackRow({
