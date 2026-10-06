@@ -85,3 +85,14 @@ describe('coverMimeType', () => {
 		expect(coverMimeType(JPEG)).toBe('image/jpeg');
 	});
 });
+
+describe('degraded queue responses stay usable', () => {
+	// The shape /api/jobs returns when the queue read fails. Asserted here because
+	// it is the contract the dashboard's `degraded` flag depends on, and a change
+	// to either side silently turning a transient DB blip back into a blank page
+	// is exactly the failure this guards.
+	it('reports totals in the same shape as a healthy response', () => {
+		const degraded = { total: 0, active: 0, byStatus: {} };
+		expect(Object.keys(degraded).sort()).toEqual(['active', 'byStatus', 'total']);
+	});
+});

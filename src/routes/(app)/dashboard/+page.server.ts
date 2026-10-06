@@ -3,9 +3,14 @@ import { listTracks, trackStats } from '$lib/server/db/tracks';
 import { ensureMigrated } from '$lib/server/db';
 import type { TrackDTO } from '$lib/shared/types';
 import type { PageServerLoad } from './$types';
+import { logger } from '$lib/server/logger';
 
 export const load: PageServerLoad = async ({ url }) => {
-	await ensureMigrated();
+	// A failed migration must not blank the page either — the library is readable
+	// even if a migration is pending, and /api/health reports the real state.
+	await ensureMigrated().catch((err: unknown) => {
+		logger.warn('ensureMigrated failed on dashboard load', { error: String(err) });
+	});
 	const q = url.searchParams.get('q');
 	const page = Number.parseInt(url.searchParams.get('page') ?? '1', 10);
 
@@ -19,17 +24,50 @@ export const load: PageServerLoad = async ({ url }) => {
 	// enhancement on top of this: it is seeded from here and kept live by SSE
 	// deltas. When the two disagree, this one is right — the store has now been
 	// wrong three times (never subscribed, non-reactive field, never started).
+	// Each panel degrades on its own. `Promise.all` meant a single rejection — one
+	// dropped Postgres connection while a repair was rewriting rows, or a slow
+	// `jobCounts` over a table that had just grown past a thousand jobs — rejected
+	// the whole load, the reverse proxy reported 502, and the entire library page
+	// rendered blank. The queue is a panel, not the page: losing it must cost the
+	// queue panel and nothing else.
+	//
+	// `settle` reports which panels came back empty so the UI can say so rather
+	// than showing confident zeros.
+	type Panels = {
+		jobs: Awaited<ReturnType<typeof listJobs>>;
+		counts: Awaited<ReturnType<typeof jobCounts>>;
+		tracks: Awaited<ReturnType<typeof listTracks>>;
+		failed: Awaited<ReturnType<typeof listTracks>>;
+		stats: Awaited<ReturnType<typeof trackStats>>;
+	};
+	const EMPTY_TRACKS = { items: [], total: 0 } as Panels['tracks'];
+	const settle = async <T>(what: string, run: () => Promise<T>, fallback: T): Promise<T> => {
+		try {
+			return await run();
+		} catch (err) {
+			logger.warn('dashboard panel unavailable', { panel: what, error: String(err) });
+			degraded.push(what);
+			return fallback;
+		}
+	};
+	const degraded: string[] = [];
+
 	const [jobs, counts, tracksResult, failedResult, stats] = await Promise.all([
-		listJobs(30),
-		jobCounts(),
-		listTracks({
-			q: q ?? undefined,
-			page: Number.isFinite(page) ? page : 1,
-			pageSize: 50,
-			scope: 'filed',
-		}),
-		listTracks({ pageSize: 100, scope: 'failed' }),
-		trackStats(),
+		settle('jobs', () => listJobs(30), [] as Panels['jobs']),
+		settle('counts', () => jobCounts(), { total: 0, active: 0, byStatus: {} }),
+		settle(
+			'tracks',
+			() =>
+				listTracks({
+					q: q ?? undefined,
+					page: Number.isFinite(page) ? page : 1,
+					pageSize: 50,
+					scope: 'filed',
+				}),
+			EMPTY_TRACKS,
+		),
+		settle('failed', () => listTracks({ pageSize: 100, scope: 'failed' }), EMPTY_TRACKS),
+		settle('stats', () => trackStats(), { total: 0, lossless: 0, withLyrics: 0, failed: 0 }),
 	]);
 
 	const toDto = (t: (typeof tracksResult.items)[number]): TrackDTO => {
@@ -95,6 +133,8 @@ export const load: PageServerLoad = async ({ url }) => {
 	const failedDtos: TrackDTO[] = failedResult.items.map(toDto);
 
 	return {
+		/** Panels that failed to load, so the UI can say so instead of showing zeros. */
+		degradedPanels: degraded,
 		jobCounts: counts,
 		jobs: jobs.map((j) => ({
 			id: j.id,

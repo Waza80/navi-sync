@@ -3,6 +3,7 @@ import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
 import { enqueueJob, jobCounts, listJobs } from '$lib/server/queue/jobs';
 import type { JobStatus } from '$lib/shared/types';
 import type { RequestHandler } from './$types';
+import { logger as log } from '$lib/server/logger';
 
 const ALL_STATUSES: JobStatus[] = ['queued', 'running', 'succeeded', 'failed', 'dead', 'cancelled'];
 
@@ -28,8 +29,32 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 		.map((s) => s.trim())
 		.filter((s): s is JobStatus => (ALL_STATUSES as string[]).includes(s));
 
-	const [jobs, counts] = await Promise.all([listJobs(limit, requested), jobCounts()]);
+	// A queue read must never take the page down.
+	//
+	// There was no error handling here at all, so any throw from `listJobs` or
+	// `jobCounts` — a dropped connection to Postgres, a statement timeout while a
+	// repair is rewriting rows — became an unhandled 500, which the reverse proxy
+	// surfaced as a 502 and the dashboard rendered as a blank page. The queue is a
+	// panel on the page, not the page.
+	//
+	// So this returns 200 with an empty queue and `degraded: true`. The UI shows
+	// "queue unavailable" instead of the library vanishing, and the next poll
+	// recovers on its own. Only an unauthenticated request is an error.
+	let jobs: Awaited<ReturnType<typeof listJobs>> = [];
+	let counts: Awaited<ReturnType<typeof jobCounts>> = { total: 0, active: 0, byStatus: {} };
+	let degraded = false;
+	try {
+		[jobs, counts] = await Promise.all([listJobs(limit, requested), jobCounts()]);
+	} catch (err) {
+		degraded = true;
+		log.warn('job listing failed; serving an empty queue', {
+			limit,
+			statusFilter: requested,
+			error: String(err),
+		});
+	}
 	return json({
+		degraded,
 		counts,
 		limit,
 		statusFilter: requested,

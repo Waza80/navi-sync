@@ -86,11 +86,23 @@
 		void (async () => {
 			try {
 				const res = await fetch('/api/jobs?limit=30');
-				if (!res.ok || cancelled) return;
-				const body = (await res.json()) as { counts?: JobCounts };
-				if (body.counts && !cancelled) live.jobCounts = body.counts;
+				if (cancelled) return;
+				// The endpoint answers 200 even when the queue read failed, with
+				// `degraded: true`. Surface that instead of silently showing zeros,
+				// which read as "nothing is queued" rather than "we could not ask".
+				const body = (await res.json().catch(() => null)) as {
+					counts?: JobCounts;
+					degraded?: boolean;
+				} | null;
+				if (body?.degraded) queueUnavailable = true;
+				else if (body?.counts && !cancelled) {
+					live.jobCounts = body.counts;
+					queueUnavailable = false;
+				}
 			} catch {
-				// Leave the previous totals on screen rather than blanking the panel.
+				// Network-level failure: keep the last known totals rather than
+				// blanking the panel, and say that it is stale.
+				queueUnavailable = true;
 			}
 		})();
 		return () => {
@@ -107,6 +119,12 @@
 	 * forwards from there.
 	 */
 	$effect(() => {
+		// Panels that failed on the server render. A blank page is the failure mode
+		// this replaces; a named panel that is unavailable is a readable one.
+		const degradedPanels =
+			(data as unknown as { degradedPanels?: string[] }).degradedPanels ?? [];
+		queueUnavailable = degradedPanels.includes('jobs') || degradedPanels.includes('counts');
+
 		const fromServer = (data as unknown as { jobCounts?: JobCounts }).jobCounts;
 		if (fromServer) {
 			live.jobCounts = fromServer;
@@ -115,6 +133,8 @@
 	});
 
 	let queueFilter = $state<'all' | 'active' | 'done' | 'failed'>('all');
+	/** True when the queue could not be read; the panel says so instead of lying. */
+	let queueUnavailable = $state(false);
 	// Library filter + pagination are server-driven so they cover the whole
 	// library, not just the loaded page.
 	let trackFilter = $state(page.url.searchParams.get('q') ?? '');
@@ -1358,12 +1378,27 @@
 			</button>
 		</div>
 	</div>
+	{#if queueUnavailable}
+		<p class="m3-card p-3 text-sm text-error" role="status" data-testid="queue-unavailable">
+			The queue could not be read just now, so these counts may be stale. Everything else on
+			this page is current.
+		</p>
+	{/if}
 	{#if visibleJobs.length === 0}
 		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
 			{queueFilter === 'all' ? 'No jobs yet.' : 'Nothing in this filter.'}
 		</p>
 	{:else}
-		<div class="flex flex-col gap-3">
+		<!--
+			A fixed-height scroll region. The list grew and shrank with the job count,
+			which moved everything below it and made the whole page jump as jobs came
+			and went. The height no longer depends on how many rows are present, so the
+			SSE-driven updates inside it change nothing about the layout.
+		-->
+		<div
+			class="jobs-scroll flex flex-col gap-3 overflow-y-auto overscroll-contain pr-1"
+			data-testid="jobs-scroll"
+		>
 			{#each visibleJobs as job (job.id)}
 				<JobRow {job} oncancel={cancelJob} onretry={retryJob} />
 			{/each}
@@ -1560,3 +1595,16 @@
 		</div>
 	</div>
 {/if}
+
+<style>
+	/*
+	 * Sized in viewport units rather than by row count, so the panel is the same
+	 * height with 3 jobs or 300. `min-height` keeps it from collapsing when the
+	 * filter matches nothing that survived.
+	 */
+	.jobs-scroll {
+		max-height: min(70vh, 44rem);
+		min-height: 4rem;
+		scrollbar-gutter: stable;
+	}
+</style>
