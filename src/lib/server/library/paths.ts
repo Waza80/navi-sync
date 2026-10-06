@@ -117,9 +117,24 @@ export function sanitizeComponent(raw: string, fallback = 'Unknown'): string {
 	return s;
 }
 
+/**
+ * The numeric prefix for a filename, or '' when there is no track number.
+ *
+ * It used to return the literal '00', which wrote `00 - Title` for every track
+ * whose number was unknown. Twelve of PRETTY DOLLCORPSE's thirteen files were
+ * named that way, so the album had no usable order at all, and a
+ * `splitTrackFilename` round-trip read `00` back as track zero.
+ *
+ * An absent number now yields NO prefix rather than a fake one. A file called
+ * `Title.flac` is honest; `00 - Title.flac` asserts track 0, which does not
+ * exist, and a later pass that learns the real number is then obliged to rename.
+ */
 function padTrackNumber(n: number | null | undefined): string {
-	if (n === null || n === undefined || !Number.isFinite(n) || n <= 0) return '00';
-	return String(Math.min(999, Math.round(n))).padStart(2, '0');
+	if (n === null || n === undefined || !Number.isFinite(n) || n <= 0) return '';
+	// A track number of 100 is legitimate; three digits are not a prefix we can
+	// distinguish from a title that begins with digits.
+	if (n > 999) return '';
+	return String(Math.round(n)).padStart(2, '0');
 }
 
 /** "Artist/Album/NN - Title" (no extension). */
@@ -127,7 +142,11 @@ export function trackBaseRelativePath(meta: PathMeta): string {
 	const artist = sanitizeComponent(meta.artist, 'Unknown Artist');
 	const album = sanitizeComponent(meta.album ?? 'Unknown Album', 'Unknown Album');
 	const title = sanitizeComponent(meta.title, 'Unknown Title');
-	return `${artist}/${album}/${padTrackNumber(meta.trackNumber)} - ${title}`;
+	const n = padTrackNumber(meta.trackNumber);
+	// Without the `NN - ` prefix the title stands alone, so a title that itself
+	// starts with digits ('100 000 LUMEN') is no longer mistaken for a number.
+	const prefix = n === '' ? '' : `${n} - `;
+	return `${artist}/${album}/${prefix}${title}`;
 }
 
 /** Full audio path relative to the library root. */

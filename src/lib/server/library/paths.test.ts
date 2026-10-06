@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeComponent, trackRelativePath, lyricsFilePath, coverRelativePath } from './paths';
+import {
+	sanitizeComponent,
+	trackRelativePath,
+	lyricsFilePath,
+	coverRelativePath,
+	trackBaseRelativePath,
+} from './paths';
+import { splitTrackFilename } from './reconcile';
 
 describe('sanitizeComponent', () => {
 	it('strips path traversal and hostile characters', () => {
@@ -88,5 +95,50 @@ describe('lyricsFilePath', () => {
 describe('coverRelativePath', () => {
 	it('places cover.jpg in the album folder', () => {
 		expect(coverRelativePath({ title: 'X', artist: 'A', album: 'B' })).toBe('A/B/cover.jpg');
+	});
+});
+
+describe('trackBaseRelativePath track-number prefix', () => {
+	it('omits the prefix entirely when there is no track number', () => {
+		// It used to emit '00 - ', which asserted a track 0 that does not exist.
+		for (const trackNumber of [null, undefined, 0, -1, Number.NaN, 1000]) {
+			expect(
+				trackBaseRelativePath({ artist: 'A', album: 'B', title: 'T', trackNumber }),
+			).toBe('A/B/T');
+		}
+	});
+
+	it('pads a real track number to two digits', () => {
+		expect(trackBaseRelativePath({ artist: 'A', album: 'B', title: 'T', trackNumber: 1 })).toBe(
+			'A/B/01 - T',
+		);
+		expect(
+			trackBaseRelativePath({ artist: 'A', album: 'B', title: 'T', trackNumber: 13 }),
+		).toBe('A/B/13 - T');
+	});
+
+	it('leaves a title that starts with digits alone', () => {
+		// '100 000 LUMEN' must not become '100 - 100 000 LUMEN'.
+		expect(
+			trackBaseRelativePath({
+				artist: 'A',
+				album: 'B',
+				title: '100 000 LUMEN',
+				trackNumber: null,
+			}),
+		).toBe('A/B/100 000 LUMEN');
+	});
+
+	it('round-trips through splitTrackFilename', () => {
+		const p = trackBaseRelativePath({
+			artist: 'A',
+			album: 'B',
+			title: '100 000 LUMEN',
+			trackNumber: null,
+		});
+		expect(splitTrackFilename(p.split('/').pop()!)).toEqual({
+			trackNumber: null,
+			title: '100 000 LUMEN',
+		});
 	});
 });
