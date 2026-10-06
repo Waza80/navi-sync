@@ -724,3 +724,55 @@ and shipped an unformatted file. Check each gate's own output.
   at measurement there were 3 queued and 1 running. Undiagnosed.
 - **4 stale Navidrome rows** (deleted/renamed behind its back, `missing=1`). A full
   scan only flags them; they need the UI or `Scan.PurgeMissing="always"`.
+
+## A 502 on the dashboard has two unrelated causes — check which
+
+**One is real and was fixed.** `+page.server.ts` used `Promise.all` across five
+queries, so a single rejection — a dropped Postgres connection while a repair was
+rewriting rows — rejected the whole load and the reverse proxy reported 502 with a
+blank page. `/api/jobs` had no error handling at all, so any throw from `listJobs`
+or `jobCounts` became an unhandled 500 → 502. Each panel now settles on its own
+and the endpoint answers 200 with `degraded: true`.
+
+**The other is a deploy in progress.** Testing immediately after a rolling update
+returns 502 on every authenticated route while `/api/health` and `/login` answer
+200, because the proxy is pointing at a container being replaced. Check
+`uptimeSec` in `/api/health` before believing a 502:
+
+```
+{"status":"ok","db":true,"uptimeSec":42,"version":"0.8.9"}
+/            http=502
+/api/health  http=200
+```
+
+That is not an application fault and chasing it as one wastes a debugging session.
+Retry once uptime is past a minute or two.
+
+## Degrade loudly, never to silent zeros
+
+A failed panel that renders `0` reads as "nothing is queued", not "we could not
+ask". The loader returns `degradedPanels: string[]` and `/api/jobs` returns
+`degraded: true`; the client sets a `queueUnavailable` flag that shows a banner
+and clears itself on the next successful poll. A library page that loses its queue
+panel must not lose the library.
+
+## Verify the deployed artefact, not your source
+
+Grepping the repo proves nothing about production. Fetch the built chunk the
+deployed page actually serves:
+
+```sh
+curl -s https://host/_app/immutable/assets/<hash>.css | grep -o '\.jobs-scroll[^}]*}'
+```
+
+Also: SvelteKit's HTML only references entry chunks, so `grep`ing the HTML for a
+component's markers finds nothing even when it is shipped — the node chunk loads
+dynamically. Check `build/client/_app/immutable/` locally and then fetch that exact
+hashed asset by name.
+
+## Job list height
+
+It grew and shrank with the row count, moving everything below it on every job
+arrival. Now a fixed `overflow-y-auto` region, `max-height: min(70vh, 44rem)`,
+`min-height: 4rem`, `scrollbar-gutter: stable` so the scrollbar does not itself
+shift content. SSE updates inside it change nothing about the layout.
