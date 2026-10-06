@@ -237,3 +237,80 @@ Also: `track_id` and `id` are `uuid`, not `text`. `= any($1::text[])` fails with
 `operator does not exist: uuid = text` **inside a transaction**, so every retry
 after it reports `current transaction is aborted` and the real error scrolls away
 in the noise. Read the first retry line, not the last.
+
+## `forceTagRepair = true` would strip cover art from the whole library
+
+Do not enable it as a "just re-tag everything" shortcut. `tagFlac` starts with
+`metaflac --remove-all-tags` and re-imports a picture **only** if `tags.cover` is
+a Buffer. Both whole-library re-tag call sites — the Navidrome repair loop in
+`handlers.ts` and the adopt path in `db/tracks.ts` — pass `cover: null`, because
+the cover lives in `cover_path` and is not read back. So a forced pass rewrites
+every Vorbis comment and **deletes the embedded PICTURE block** on every FLAC.
+
+That is almost certainly why the flag has stayed `false`: turning it on looks
+correct and quietly destroys 675 covers.
+
+The real fix is to make the re-tag cover-aware (read `cover_path`, or preserve
+existing pictures with `--preserve-picture` semantics), not to flip the switch.
+
+## 0 of 675 files carry ALBUMARTIST, so Navidrome groups albums by track ARTIST
+
+Measured with `ffprobe -show_entries format_tags` over the whole library:
+
+```
+files carrying albumartist: 0 / 675
+rows with album_artist in Postgres: 675 / 675
+```
+
+All three re-tag sites (`handlers.ts` download, Navidrome repair loop, adopt
+path) pass `albumArtist` correctly, and both writers emit it (`performerInfo` /
+TPE2 for ID3, `ALBUMARTIST` for Vorbis). The value is simply **null at write
+time** — metadata is not resolved yet during a download — and nothing ever
+re-writes it, because:
+
+- the re-tag after a metadata pass only fires `if (Object.keys(patch).length > 0)`,
+- `album_artist` is already filled in the DB, so `neededFieldsFor` never requests
+  it, so `patch` stays empty and no re-tag happens; and
+- the one unconditional re-tag loop is gated behind `forceTagRepair = false`.
+
+A gap rule that only asks for *missing* fields can therefore never write a field
+to disk that was recovered into the DB some other way. Restoring rows from disk
+made this permanent: `restore_library_index.py` populated `album_artist`, so the
+gap rule has considered every row complete ever since.
+
+**Consequence:** Navidrome falls back to the track `ARTIST` tag for album
+grouping. Any release whose tracks credit different artists splits into one
+album per credit string. Measured — 4 albums:
+
+| album | tracks | artists seen |
+|---|---|---|
+| PRETTY DOLLCORPSE | 13 | 2 (10 + 3, the 3 add `reivilose`) |
+| don dada mixtape vol 1 | | Alpha Wann, Nekfeu |
+| WHY ALWAYS ME? | | Aminé, Cochise |
+| ECHO (English side.) | | Marina, VISUAL ARTS / Key |
+
+4 is a floor, not a ceiling — every future collaborative release re-splits. The
+fix is a disagreement-triggered re-tag (compare the file's tags to the DB row,
+re-tag when they differ), not a one-off pass.
+
+## Split-album triage: ask Navidrome, then read the tags off disk
+
+Navidrome's Subsonic API is the fastest way to see a split: `getAlbumList2`
+(type `alphabeticalByName`, not `A`) then `search3` for the name, then `getAlbum`
+on the full id — **not an 8-char prefix**, which returns `Album not found` and
+looks like a missing album. Two albums with the same name and year means the
+grouping key differs; compare `artist`/`albumArtist` across the two.
+
+On disk, read tags with `ffprobe`. Do **not** hand-roll a FLAC Vorbis-comment
+parser to do it — one that assumes no block padding crashes with
+`struct.error: unpack requires a buffer of 4 bytes` and, worse, silently returns
+zero tags so every file looks untagged. That reads exactly like "no metadata
+exists" and sends you fixing the wrong thing.
+
+## Literal Zalgo strings in tests do not survive the shell
+
+Writing the two combining-mark orderings literally into a heredoc got them
+normalised before the assertion ran, so the test compared a string with itself
+and passed for the wrong reason. Use explicit `\uXXXX` escapes. When a test
+asserts "these two inputs differ", assert that FIRST — it is the assertion the
+rest depends on, and it catches the mistake in the fixture itself.
