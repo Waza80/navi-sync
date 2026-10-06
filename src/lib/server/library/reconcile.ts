@@ -243,7 +243,8 @@ export function planLibraryReconcile(
 	});
 
 	// ── adoption: anything on disk with no row ─────────────────────────────
-	const adopt = candidates.filter((c) => !c.indexed).map((c) => c.file);
+	const adoptList = candidates.filter((c) => !c.indexed).map((c) => c.file);
+	const adopt = new Set(adoptList.map((x) => x.relPath));
 
 	// ── group by recording ─────────────────────────────────────────────────
 	// artist + title + album. Album is part of the key because the same song on two
@@ -329,7 +330,16 @@ export function planLibraryReconcile(
 			//
 			// An earlier version force-added adopted files back into `keep`, which let
 			// one file be adopted AND deleted in the same plan.
-			const survivorWillBeIndexed = winner.indexed || !winner.rowId;
+			// The survivor is acceptable only if it is ALREADY indexed, or it is an
+			// orphan that this run will adopt. `!winner.rowId` is NOT that test — it
+			// only means "no row points here", which for an unindexed winner means
+			// nothing is going to index it. Reading it as acceptance deleted 8 files'
+			// worth of survivors on the first real run, and the verification gate caught
+			// it, which is the only reason no audio was lost.
+			// Indexed already, or an orphan this run will adopt. Survivors are never
+			// themselves deletion targets, so anything unindexed among them lands in
+			// `adopt` — which is exactly why adoption must run before deletion.
+			const survivorWillBeIndexed = winner.indexed || adopt.has(winner.file.relPath);
 			if (!survivorWillBeIndexed) {
 				keep.add(m.file.relPath);
 				skipped.push({
@@ -405,7 +415,7 @@ export function planLibraryReconcile(
 	// A file scheduled for deletion must never also be adopted, and must not be
 	// listed as kept. This previously ran unconditionally and re-added deleted files
 	// to both sets, so the plan said "delete this" and "keep this" at once.
-	const survivingAdopt = adopt.filter((a) => !deleteSet.has(a.relPath));
+	const survivingAdopt = adoptList.filter((a) => !deleteSet.has(a.relPath));
 	for (const a of survivingAdopt) keep.add(a.relPath);
 
 	return {

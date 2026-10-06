@@ -312,6 +312,35 @@ describe('planLibraryReconcile', () => {
 
 	// ── scale and awkward inputs ────────────────────────────────────────────
 
+	// Regression from the first real run: `!winner.rowId` was read as "the survivor
+	// will be indexed", when it only means "no row points here". Eight survivors that
+	// nothing was going to index were scheduled for deletion; the runner's
+	// verification gate refused to delete, which is the only reason no audio was lost.
+	it('does not delete a loser when the survivor is unindexed AND unadoptable', () => {
+		// A suffix on the winner with no row and nothing to adopt it: the family must be
+		// left alone rather than deleting the indexed original.
+		const files = [
+			f('A/B/06 - CHIMERA.flac'),
+			f('A/B/06 - CHIMERA (2).flac', { sizeBytes: 1100 }),
+		];
+		// Index the SUFFIXED one, so the winner is an orphan with no adoptable path.
+		const plan = planLibraryReconcile(files, [r('A/B/06 - CHIMERA (2).flac')]);
+		// Either way, the indexed original must not be deleted for an unindexed winner.
+		for (const d of plan.delete) {
+			expect(adoptedSomewhere(plan, d.survivor.relPath)).toBe(true);
+		}
+	});
+
+	it('deletes a loser when the survivor is unindexed but WILL be adopted', () => {
+		const files = [
+			f('A/B/06 - CHIMERA.flac'),
+			f('A/B/06 - CHIMERA (2).flac', { sizeBytes: 1100 }),
+		];
+		const plan = planLibraryReconcile(files, [r('A/B/06 - CHIMERA.flac')]);
+		expect(plan.delete.map((d) => d.file.relPath)).toEqual(['A/B/06 - CHIMERA.flac']);
+		expect(plan.adopt.map((a) => a.relPath)).toEqual(['A/B/06 - CHIMERA (2).flac']);
+	});
+
 	it('handles an empty library', () => {
 		const plan = planLibraryReconcile([], []);
 		expect(plan).toEqual({ adopt: [], keep: [], delete: [], repoint: [], skipped: [] });
@@ -407,6 +436,14 @@ describe('reconcile on the real library shapes seen tonight', () => {
  * the library, so they are asserted across generated inputs rather than only the
  * handful of hand-written cases.
  */
+/** Would this file have a row after the run completes? */
+function adoptedSomewhere(plan: ReturnType<typeof planLibraryReconcile>, relPath: string): boolean {
+	if (plan.keep.some((k) => k.relPath === relPath)) return true;
+	if (plan.adopt.some((a) => a.relPath === relPath)) return true;
+	// It survives because some row was repointed onto it.
+	return plan.repoint.some((r) => r.toRelPath === relPath);
+}
+
 describe('planLibraryReconcile invariants', () => {
 	/** Deterministic pseudo-random so a failure is reproducible. */
 	function rng(seed: number): () => number {

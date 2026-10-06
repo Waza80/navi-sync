@@ -40,6 +40,14 @@ const opt = (n: string): string | null => {
 
 const ROOT = opt('root');
 const DB_URL = opt('db-url');
+/**
+ * The path PREFIX the application stores, which is NOT the prefix this script
+ * scans with. The library host has it at /mnt/hdd/music; the app container mounts
+ * the same volume at /music. Writing ROOT into the database reproduced the exact
+ * failure that made covers and playback break for malevil: every stored path was
+ * unopenable by the only process that reads it.
+ */
+const APP_PREFIX = opt('app-prefix') ?? '/music';
 const APPLY = flag('apply');
 const CROSS_FOLDER = flag('cross-folder');
 const AUDIO = /\.(flac|mp3|wav|aiff|aif|m4a|ogg|opus)$/i;
@@ -265,8 +273,10 @@ async function main(): Promise<void> {
 				a.sampleRateHz,
 				a.sizeBytes,
 				a.sha256,
-				abs,
-				coverPath,
+				`${APP_PREFIX}/${a.relPath}`,
+				coverPath
+					? `${APP_PREFIX}/${a.relPath.split('/').slice(0, -1).join('/')}/${coverPath.split('/').pop()}`
+					: null,
 			],
 		);
 		adopted.push(a);
@@ -275,6 +285,7 @@ async function main(): Promise<void> {
 
 	for (const rp of plan.repoint) {
 		const to = join(ROOT, rp.toRelPath);
+		const stored = `${APP_PREFIX}/${rp.toRelPath}`;
 		if (
 			!(await stat(to).then(
 				() => true,
@@ -285,17 +296,17 @@ async function main(): Promise<void> {
 			await client.end();
 			process.exit(4);
 		}
-		await client.query('update tracks set file_path = $2 where id = $1', [rp.rowId, to]);
+		await client.query('update tracks set file_path = $2 where id = $1', [rp.rowId, stored]);
 	}
 	console.log(`phase 1: repointed ${plan.repoint.length} row(s)`);
 
 	// Verify the survivors really are indexed now. If this fails, delete nothing.
 	for (const d of plan.delete) {
-		const { count } = await client.query(
-			'select count(*)::int c from tracks where file_path = $1',
-			[join(ROOT, d.survivor.relPath)],
+		const { rows: checkRows } = await client.query(
+			'select count(*)::int as n from tracks where file_path = $1',
+			[`${APP_PREFIX}/${d.survivor.relPath}`],
 		);
-		if (count.c === 0) {
+		if (Number(checkRows[0]?.n ?? 0) === 0) {
 			console.error(
 				`  ABORT: survivor ${d.survivor.relPath} is still not indexed; deleting nothing.`,
 			);

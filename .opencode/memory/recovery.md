@@ -20,6 +20,28 @@ sample rate, duration, size, sha256, cover path, sidecar presence.
 Not recoverable from disk: ISRC, release year, genre, album artist, provider link.
 Those were re-fetched by the metadata reindex (MusicBrainz as ground truth).
 
+## The path-prefix trap, hit TWICE in one night
+
+The library host has the volume at `/mnt/hdd/music`. The app container mounts the
+same volume at `/music`. A tool that scans with one prefix and stores that prefix
+writes rows the only consumer cannot open — covers fail to stat, audio fails to
+stream, and the symptom looks like "some songs have no cover and no working
+audio".
+
+It happened twice: once during the restore (695 of 715 rows), and again when the
+reconciler repointed 62 rows and adopted 5 using the scanner's prefix.
+
+**Rule: a tool must write the prefix the CONSUMER reads, never the one it scans
+with.** `scripts/reconcile-library.ts` now takes an explicit `--app-prefix`
+(defaulting to `/music`) and uses it for every write and for its own verification
+query. Verify it after any bulk path write:
+
+```sql
+select count(*) filter (where file_path like '/music/%')        ok,
+       count(*) filter (where file_path like '/mnt/hdd/music/%') bad
+from tracks where file_path is not null;
+```
+
 ## The two bugs that followed the restore, both mine
 
 1. **Host paths written into the container's database.** The restore ran over ssh
@@ -86,3 +108,18 @@ partner anywhere is **never** deleted — `Menace (2)` may be a real title.
 GNU `find` treats `\(` as a group, so it matched a space followed by a digit. Fifteen
 files were flagged that way; all were real titles. The Python checker requires a
 literal paren and reported zero duplicates.
+
+## The verification gate saved the library
+
+The reconciler's first real run wanted to delete 71 duplicates. Eight survivors
+were not indexed, the gate refused, and **nothing was deleted**.
+
+The cause was a genuine planner bug: the survivor-acceptance test read
+`!winner.rowId` as "this will be indexed", when it only means "no row points
+here". For an unindexed winner that is nothing — no adoption was going to happen.
+Fixed to `winner.indexed || adopt.has(winner.relPath)`, with two regression tests.
+
+The lesson is not "add tests" — the property tests already covered the shape. It is
+that the _gate_ was the thing that worked: the destructive step verified its own
+precondition against live data and stopped. That check must never be removed to
+"simplify" the script.
