@@ -85,6 +85,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		await enqueueJob({
 			type: 'metadata_repair',
 			payload: { trackId, reason: 'reindex', force: true },
+			// Required, not decorative: tracksWithPendingJob dedupes on jobs.track_id,
+			// so without it the reindex's own guard can never match and the sweep
+			// re-enqueues the same rows forever. That shipped broken and produced
+			// 8000 jobs for 171 distinct tracks.
+			trackId,
 			// Behind ordinary work so a reindex never starves a user's download.
 			priority: -5,
 			maxAttempts: 6,
