@@ -82,6 +82,14 @@ interface Chosen {
 	artworkOnly?: boolean;
 }
 
+/** A Chosen for artwork only: identity fields are withheld by `toPatch`. */
+function artworkOnly(rec: MbRecording): Chosen | null {
+	const art = artworkReleases(rec).reduce((best, r) =>
+		releaseScore(r) > releaseScore(best) ? r : best,
+	);
+	return { recording: rec, release: art, albumArtist: artistName(rec), artworkOnly: true };
+}
+
 function yearOf(date: string | undefined): number | null {
 	const m = /^(\d{4})/.exec(date ?? '');
 	if (!m?.[1]) return null;
@@ -287,34 +295,38 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 		);
 		return { recording: rec, release, albumArtist: artistName(rec) };
 	}
-	// No canonical release, so the strict path above returns nothing. Before
-	// giving up, look for a recording matched by title+artist whose only release
-	// is Expunged — enough to lend us its cover art, not its identity.
+	// No canonical release, so the strict path above returns nothing. Before giving
+	// up, look for a recording whose only release is Expunged — enough to lend us
+	// its cover art, never its identity.
+	//
+	// Two passes, because the artist often cannot match. Our album artist for a
+	// collaboration is the merged credit list ('Ptite Soeur, neophron, FEMTOGO,
+	// reivilose, prxpvne, rosaliedu38') while the recording credits three of those
+	// names, so `pickStrict` on artist never matches and PRETTY DOLLCORPSE stayed
+	// uncoverable — and with cover_path NULL there were no bytes to embed either.
 	if (!wanted) {
-		const lenient = pickStrict(
+		const withArt = recs.filter((r) => r.title && artworkReleases(r).length > 0);
+		const shape = (r: MbRecording) => ({
+			title: r.title ?? '',
+			artist: artistName(r) ?? '',
+			durationSec: typeof r.length === 'number' ? Math.round(r.length / 1000) : null,
+		});
+		const exactTitle = withArt.filter((r) => r.title === query.title);
+
+		// Pass 1: title + artist + duration.
+		const byArtist = pickStrict(
 			{ title: query.title, artist: query.artist, durationSec: query.durationSec },
-			recs
-				.filter((r) => r.title && artworkReleases(r).length > 0)
-				.map((r) => ({
-					title: r.title ?? '',
-					artist: artistName(r) ?? '',
-					durationSec: typeof r.length === 'number' ? Math.round(r.length / 1000) : null,
-				})),
+			withArt.map(shape),
 		);
-		if (lenient) {
-			const rec = recs.find((r) => r.title === lenient.title);
-			if (rec) {
-				const art = artworkReleases(rec).reduce((best, r) =>
-					releaseScore(r) > releaseScore(best) ? r : best,
-				);
-				return {
-					recording: rec,
-					release: art,
-					albumArtist: artistName(rec),
-					artworkOnly: true,
-				};
-			}
+		if (byArtist) {
+			const hit = withArt.filter((r) => r.title === byArtist.title);
+			if (hit.length === 1) return artworkOnly(hit[0]);
 		}
+
+		// Pass 2: exact title alone, and ONLY when unambiguous. Two recordings sharing
+		// an exact title would make the cover a coin flip, so a unique match is the
+		// condition, not a preference.
+		return exactTitle.length === 1 ? artworkOnly(exactTitle[0]) : null;
 	}
 	return null;
 }
@@ -406,10 +418,22 @@ export const musicbrainzSource: MetadataSource = {
 			const chosen = choose(await search(`isrc:${query.isrc}`), query);
 			if (chosen) return withTrackNumbers(chosen, query);
 		}
-		const chosen = choose(
+		let chosen = choose(
 			await search(`recording:"${query.title}" AND artist:"${query.artist}"`),
 			query,
 		);
+		if (!chosen) {
+			// Retry on title alone.
+			//
+			// A collaboration's artist field is the merged credit list — 'Ptite
+			// Soeur, neophron, FEMTOGO, reivilose, prxpvne, rosaliedu38' — and
+			// MusicBrainz will not match an artist query against a comma-separated
+			// list of six names, so the FIRST search returns nothing and every
+			// fallback behind it is unreachable. `choose` still applies every guard:
+			// a strict match needs title+artist+duration, and the artwork-only path
+			// requires an unambiguous exact title, and yields a cover and nothing else.
+			chosen = choose(await search(`recording:"${query.title}"`), query);
+		}
 		if (!chosen) {
 			log.debug('musicbrainz: no canonical release matched', {
 				title: query.title,
