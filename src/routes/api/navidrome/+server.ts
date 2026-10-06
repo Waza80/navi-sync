@@ -21,6 +21,11 @@ const patchSchema = z.object({
 	preferLossless: z.boolean().optional(),
 	allowLowerFallback: z.boolean().optional(),
 	autoUpgradeQuality: z.boolean().optional(),
+	// Was MISSING from this schema, so zod stripped it on every save and the
+	// toggle silently reset. Same shape as the genre bug: a field that is declared in
+	// the settings type, sent by the client, and then dropped by a whitelist nobody
+	// checks against the type.
+	forceTagRepair: z.boolean().optional(),
 	enabledProviders: z
 		.array(z.enum(['deezer', 'tidal']))
 		.max(2)

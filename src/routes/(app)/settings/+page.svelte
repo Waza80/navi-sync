@@ -364,15 +364,34 @@
 					</span>
 				</span>
 			</label>
-			<label class="flex min-h-12 items-center gap-3">
-				<input
-					type="checkbox"
-					class="h-5 w-5 accent-[var(--md-primary)]"
-					bind:checked={forceTagRepair}
-				/>
-				<span class="text-sm">Force re-tag every file on repair</span>
-			</label>
 		</div>
+	</section>
+
+	<!--
+		Maintenance actions, kept OUT of the preferences sections on purpose. This is
+		not a standing preference like "prefer lossless" — it is a one-shot override
+		for the next repair pass, and leaving it sitting among the download settings
+		invites the question "what does this actually affect?" with no good answer.
+	-->
+	<section class="m3-card p-5" aria-labelledby="maint-h">
+		<h2 id="maint-h" class="mb-1 text-base font-medium">Maintenance</h2>
+		<p class="mb-3 text-sm text-on-surface-variant">
+			One-shot overrides for the next repair run. They are saved, so they stay in effect until
+			you turn them off.
+		</p>
+		<label class="flex min-h-12 items-center gap-3">
+			<input
+				type="checkbox"
+				class="h-5 w-5 accent-[var(--md-primary)]"
+				bind:checked={forceTagRepair}
+			/>
+			<span class="text-sm">
+				Re-write tags on every file during repair
+				<span class="block text-xs text-on-surface-variant">
+					Normally only files with missing or broken tags are touched.
+				</span>
+			</span>
+		</label>
 	</section>
 
 	<!-- Engine -->
