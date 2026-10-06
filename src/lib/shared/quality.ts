@@ -73,6 +73,30 @@ export function shouldSkipRefetch(
 	return { skip: false, reason: null };
 }
 
+/**
+ * Should a download stop because this recording is already on disk?
+ *
+ * Separate from `shouldSkipRefetch`, which answers a different question: not
+ * "do we have it" but "can the incoming copy be better". That gap is what produced
+ * `07 - sludgecrank (2).flac` and `(3).flac` beside the original — a higher-ranked
+ * copy was fetched, got tagged (so its bytes differed), and `moveIntoLibrary`
+ * could not recognise it and suffixed instead of replacing. Navidrome then saw
+ * several files claiming one track number and greyed the album out.
+ *
+ * An explicit upgrade is exempt, and only that: replacing a file on request is the
+ * entire purpose of the quality pipeline.
+ */
+export function shouldStopAlreadyDownloaded(input: {
+	/** A prior row for this recording has a file that still exists. */
+	hasFileOnDisk: boolean;
+	/** This run was explicitly asked to replace what is there. */
+	isUpgrade: boolean;
+}): { skip: boolean; reason: string | null } {
+	if (input.isUpgrade) return { skip: false, reason: null };
+	if (input.hasFileOnDisk) return { skip: true, reason: 'already_downloaded' };
+	return { skip: false, reason: null };
+}
+
 /** Pick the best stream offer from a provider's candidates under user policy. */
 export function selectBestQuality(
 	candidates: QualityDescriptor[],

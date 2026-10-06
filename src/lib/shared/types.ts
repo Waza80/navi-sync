@@ -30,7 +30,14 @@ export interface TrackDTO {
 	/** 'completed' | 'failed' | 'pending' — failed rows have no file yet. */
 	downloadStatus: 'completed' | 'failed' | 'pending';
 	/** User has given up on ever fetching this; retries skip it. */
-	refetchBlocked?: boolean;
+	refetchBlocked: boolean;
+	/** Absolute path once filed; null for a failed download. */
+	filePath: string | null;
+	albumArtist: string | null;
+	genre: string | null;
+	coverPath: string | null;
+	/** Outcome of the last metadata pass: corrected | verified | no-source | null. */
+	metadataStatus: string | null;
 	createdAt: string;
 }
 

@@ -46,6 +46,12 @@ export const load: PageServerLoad = async ({ url }) => {
 			sizeBytes: number | null;
 			lyricsStatus: string;
 			downloadStatus: string;
+			refetchBlocked: boolean;
+			filePath: string | null;
+			albumArtist: string | null;
+			genre: string | null;
+			coverPath: string | null;
+			metadataStatus: string | null;
 			createdAt: Date;
 		};
 		return {
@@ -66,6 +72,17 @@ export const load: PageServerLoad = async ({ url }) => {
 			sizeBytes: row.sizeBytes,
 			lyricsStatus: (row.lyricsStatus as TrackDTO['lyricsStatus']) ?? 'none',
 			downloadStatus: (row.downloadStatus as TrackDTO['downloadStatus']) ?? 'completed',
+			// Was missing, so TrackCard read `undefined` forever: the block button
+			// never flipped to its "resume" state and every click therefore sent the
+			// same `blocked: true`. Blocking DID work — listTracks excludes blocked
+			// rows from every scope, so the row left the failed list — but with no
+			// visible state change the button looked dead.
+			refetchBlocked: row.refetchBlocked,
+			filePath: row.filePath,
+			albumArtist: row.albumArtist,
+			genre: row.genre,
+			coverPath: row.coverPath,
+			metadataStatus: row.metadataStatus,
 			createdAt: row.createdAt.toISOString(),
 		};
 	};

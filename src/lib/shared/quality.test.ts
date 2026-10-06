@@ -4,6 +4,7 @@ import {
 	normalizeFormat,
 	qualityRank,
 	shouldSkipRefetch,
+	shouldStopAlreadyDownloaded,
 	type QualityDescriptor,
 } from './quality';
 
@@ -181,5 +182,36 @@ describe('the upgrade loop terminates', () => {
 		// One upgrade to 16-bit, then it stops — it must NOT keep refetching.
 		expect(fetches).toBe(1);
 		expect(qualityRank(existing)).toBe(3);
+	});
+});
+
+describe('shouldStopAlreadyDownloaded', () => {
+	// Regression: the quality guardrail only skips when the incoming copy cannot be
+	// better, so a higher-ranked copy came back, got tagged (different bytes), and
+	// moveIntoLibrary wrote "… (2).flac" / "(3).flac" beside the original. Navidrome
+	// then saw several files claiming one track number and greyed the album out.
+	it('stops when the recording already has a file', () => {
+		expect(shouldStopAlreadyDownloaded({ hasFileOnDisk: true, isUpgrade: false })).toEqual({
+			skip: true,
+			reason: 'already_downloaded',
+		});
+	});
+
+	it('lets an explicit upgrade through — replacing the file is its whole point', () => {
+		expect(shouldStopAlreadyDownloaded({ hasFileOnDisk: true, isUpgrade: true })).toEqual({
+			skip: false,
+			reason: null,
+		});
+	});
+
+	it('never stops when there is nothing on disk', () => {
+		expect(shouldStopAlreadyDownloaded({ hasFileOnDisk: false, isUpgrade: false })).toEqual({
+			skip: false,
+			reason: null,
+		});
+		expect(shouldStopAlreadyDownloaded({ hasFileOnDisk: false, isUpgrade: true })).toEqual({
+			skip: false,
+			reason: null,
+		});
 	});
 });

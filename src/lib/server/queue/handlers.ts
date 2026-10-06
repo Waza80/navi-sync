@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { access, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { env } from '$lib/server/env';
 import { logger } from '$lib/server/logger';
 import { getSettings } from '$lib/server/settings';
@@ -28,7 +28,7 @@ import {
 	type TrackMeta,
 	type TrackRef,
 } from '$lib/server/providers/types';
-import { shouldSkipRefetch } from '$lib/shared/quality';
+import { shouldSkipRefetch, shouldStopAlreadyDownloaded } from '$lib/shared/quality';
 import { cleanupTemp, moveIntoLibrary, sha256File } from '$lib/server/library/files';
 import { fetchCover, probeQuality, tagFlac, tagMp3 } from '$lib/server/library/tagging';
 import { trackBaseRelativePath, coverRelativePath } from '$lib/server/library/paths';
@@ -255,9 +255,53 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		meta = { ...(await enrichInline(meta)), streamToken: meta.streamToken };
 	}
 
+	// Hoisted: the already-downloaded hard stop below has to know whether this run
+	// is a deliberate upgrade, and that flag is read several hundred lines further
+	// down in the original ordering.
+	const upgradeForTrackId =
+		typeof job.payload['upgradeForTrackId'] === 'string'
+			? job.payload['upgradeForTrackId']
+			: null;
+
 	// 3. Guardrails (spec: 24-bit hard stop, no pointless re-downloads).
 	const settings = await getSettings();
 	const existing = await findExistingTrack(meta);
+
+	// 3a. HARD STOP: this recording already has audio on disk.
+	//
+	// The quality guardrail below only skips when the incoming copy cannot be
+	// better, so anything ranked higher came back through — and when it did, the new
+	// file was byte-different (it gets tagged, and a corrected year or embedded
+	// lyrics changes the bytes) so `moveIntoLibrary` could not recognise it and wrote
+	// "…(2).flac", "…(3).flac" beside the original. That is how one Tanger album
+	// accumulated suffixed copies, and why Navidrome greys the album out: it sees
+	// several files claiming one track number.
+	//
+	// An explicit upgrade still proceeds — that is the whole point of
+	// `upgradeForTrackId`. Everything else stops, because a routine re-download of a
+	// recording we already hold is never what was asked for.
+	const hasFileOnDisk =
+		existing != null &&
+		typeof existing.filePath === 'string' &&
+		existing.filePath.length > 0 &&
+		(await access(existing.filePath).then(
+			() => true,
+			() => false,
+		));
+	const hardStop = shouldStopAlreadyDownloaded({
+		hasFileOnDisk,
+		isUpgrade: upgradeForTrackId != null,
+	});
+	if (hardStop.skip) {
+		log.info('download skipped — this recording already has a file', {
+			jobId: job.id,
+			title: meta.title,
+			artist: meta.artist,
+			existingFile: existing?.filePath,
+		});
+		return { skipped: true, reason: hardStop.reason, trackId: existing?.id };
+	}
+
 	if (existing) {
 		const verdict = shouldSkipRefetch(
 			{
@@ -464,10 +508,6 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	// 9. Lyrics BEFORE moving (sidecar lands next to audio path directly).
 	// Fetch ONLY when the song misses lyrics or was just upgraded — never
 	// re-hit dead APIs for sidecars that already exist on disk.
-	const upgradeForTrackId =
-		typeof job.payload['upgradeForTrackId'] === 'string'
-			? job.payload['upgradeForTrackId']
-			: null;
 	await ctx.report(84, 'lyrics');
 	const existingSidecar = await lyricsSidecar(meta);
 	let lyrics: DownloadLyricsResult;

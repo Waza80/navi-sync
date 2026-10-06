@@ -222,6 +222,15 @@
 	function downloadTrackFile(id: string) {
 		window.open(`/api/tracks/${id}/file`, '_blank');
 	}
+	// Local mirror of the failed list so a block action can remove a row on click
+	// instead of after the round trip. Page data is read-only.
+	// Mirror of the failed list so a block action can remove a row on click rather
+	// than after the round trip. Writable $derived: page data is the source, the
+	// optimistic removal is the local edit.
+	let failedLocal = $state<TrackDTO[] | null>(null);
+	let failedTracks = $derived(failedLocal ?? data.failedTracks);
+	let blocking = new SvelteSet<string>();
+
 	let upgrading = new SvelteSet<string>();
 	async function forceUpgrade(id: string) {
 		upgrading.add(id);
@@ -244,20 +253,34 @@
 		}
 	}
 	async function setRefetchBlock(id: string, blocked: boolean) {
+		// Optimistic: drop it from the failed list on click rather than after the
+		// round trip, and put it back if the server disagrees. Without this the row
+		// sat there unchanged until invalidateAll() resolved, which is indistinguishable
+		// from a dead button.
+		const snapshot: TrackDTO[] = failedTracks;
+		blocking.add(id);
 		try {
+			if (blocked) {
+				failedLocal = failedTracks.filter((t) => t.id !== id);
+			}
 			const res = await fetch(`/api/tracks/${id}/refetch-block`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ blocked }),
 			});
 			if (!res.ok) {
+				failedLocal = snapshot;
 				toast('error', `Could not change refetch (HTTP ${res.status})`);
 				return;
 			}
 			toast('ok', blocked ? 'Stopped refetching this track.' : 'Refetching resumed.');
 			await invalidateAll();
+			failedLocal = null;
 		} catch {
+			failedTracks = snapshot;
 			toast('error', 'Could not change refetch (network).');
+		} finally {
+			blocking.delete(id);
 		}
 	}
 
@@ -1372,7 +1395,7 @@
 		</div>
 	{/if}
 
-	{#if data.failedTracks.length > 0}
+	{#if failedTracks.length > 0}
 		<div class="mt-8 mb-3 flex flex-wrap items-center gap-2">
 			<h2 class="text-base font-medium">
 				Failed downloads <span class="text-sm text-on-surface-variant"
@@ -1384,13 +1407,13 @@
 			</p>
 		</div>
 		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-			{#each data.failedTracks as track (track.id)}
+			{#each failedTracks as track (track.id)}
 				<TrackCard
 					{track}
 					playing={false}
 					ondelete={deleteTrack}
 					onplay={(id: string) => {
-						const t = data.failedTracks.find((x) => x.id === id);
+						const t = failedTracks.find((x) => x.id === id);
 						if (t) void togglePlay(t);
 					}}
 					ondownload={downloadTrackFile}
