@@ -7,6 +7,18 @@ import type { RequestHandler } from './$types';
 
 const log = logger;
 
+const METADATA_FIELDS = [
+	'album',
+	'albumArtist',
+	'coverUrl',
+	'genre',
+	'year',
+	'trackNumber',
+	'discNumber',
+	'isrc',
+	'artistMbid',
+] as const;
+
 const bodySchema = z.object({
 	/** Rows to enqueue this call. The sweep loops until nothing is left. */
 	batch: z.number().int().min(1).max(500).default(100),
@@ -17,6 +29,17 @@ const bodySchema = z.object({
 	freshnessHours: z.number().int().min(0).max(8760).default(24),
 	/** Only these artists, for a targeted pass. */
 	artist: z.string().min(1).max(200).optional(),
+	/**
+	 * Re-ask for these fields ONLY, even where they are already filled.
+	 *
+	 * This exists because `force` re-asks for everything, which is right once and
+	 * wasteful forever. Genre was the case that needed it: empty on every row because
+	 * no source implemented it, then implemented — but rows already verified in an
+	 * earlier pass were never revisited, since a field is only requested while it is
+	 * missing. `fields: ['genre']` is one cheap request per track and touches nothing
+	 * else.
+	 */
+	fields: z.array(z.enum(METADATA_FIELDS)).max(9).optional(),
 });
 
 /**
@@ -51,7 +74,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!locals.user) return unauthorizedResponse();
 	const parsed = bodySchema.safeParse(await request.json().catch(() => ({})));
 	if (!parsed.success) return badRequest('Invalid reindex options.', 'INVALID_BODY');
-	const { batch, freshnessHours, artist } = parsed.data;
+	const { batch, freshnessHours, artist, fields } = parsed.data;
 
 	// Skip anything already queued or running. Timestamps alone are not enough:
 	// a row's metadata_refreshed_at is only stamped when its job RUNS, so a caller
@@ -84,7 +107,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	for (const trackId of picked) {
 		await enqueueJob({
 			type: 'metadata_repair',
-			payload: { trackId, reason: 'reindex', force: true },
+			payload: {
+				trackId,
+				reason: fields ? `reindex:${fields.join('+')}` : 'reindex',
+				force: true,
+				...(fields ? { fields } : {}),
+			},
 			// Required, not decorative: tracksWithPendingJob dedupes on jobs.track_id,
 			// so without it the reindex's own guard can never match and the sweep
 			// re-enqueues the same rows forever. That shipped broken and produced
@@ -97,5 +125,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	}
 	log.info('metadata reindex batch enqueued', { count: picked.length, artist, freshnessHours });
 
-	return json({ enqueued: picked.length, ...(await metadataReindexSummary()) });
+	return json({
+		enqueued: picked.length,
+		fields: fields ?? 'all',
+		...(await metadataReindexSummary()),
+	});
 };

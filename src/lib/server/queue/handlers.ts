@@ -28,6 +28,7 @@ import {
 	type TrackMeta,
 	type TrackRef,
 } from '$lib/server/providers/types';
+import type { MetadataField } from '$lib/server/metadata/types';
 import { shouldSkipRefetch, shouldStopAlreadyDownloaded } from '$lib/shared/quality';
 import { cleanupTemp, moveIntoLibrary, sha256File } from '$lib/server/library/files';
 import { fetchCover, probeQuality, tagFlac, tagMp3 } from '$lib/server/library/tagging';
@@ -1034,7 +1035,12 @@ async function enrichInline(meta: TrackMeta): Promise<TrackMeta> {
  * All three are best-effort: the job succeeds and reports what it fixed.
  */
 async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<string, unknown>> {
-	const payload = job.payload as { trackId?: string; reason?: string; force?: boolean };
+	const payload = job.payload as {
+		trackId?: string;
+		reason?: string;
+		force?: boolean;
+		fields?: string[];
+	};
 	if (typeof payload.trackId !== 'string') throw new Error('metadata_repair missing trackId');
 	const row = await getTrackById(payload.trackId);
 	if (!row) throw new Error(`Track not found: ${payload.trackId}`);
@@ -1044,6 +1050,7 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 	}
 
 	const { enrichTrackMetadata, neededFieldsFor } = await import('$lib/server/metadata');
+	const { ALL_FIELDS } = await import('$lib/server/metadata/types');
 	const { fetchFirstImage } = await import('$lib/server/metadata/cover');
 	const { applyMetadataPatch, setCoverPath, markMetadataStatus } = await import(
 		'$lib/server/db/tracks'
@@ -1051,23 +1058,31 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 	const { coverRelativePath, trackBaseRelativePath } = await import('$lib/server/library/paths');
 
 	const force = payload.force === true;
-	const needed = neededFieldsFor(
-		{
-			album: row.album,
-			albumArtist: row.albumArtist,
-			coverPath: row.coverPath,
-			genre: row.genre,
-			releaseYear: row.releaseYear,
-			trackNumber: row.trackNumber,
-			discNumber: row.discNumber,
-			isrc: row.isrc,
-			artistMbid: row.artistMbid,
-		},
-		// A forced pass re-asks for every field. This is the whole point of a
-		// reindex: the gap-only rule can never correct a value that is present but
-		// wrong, which is how releaseYear stayed 2013 on a 1998 album.
-		{ force },
+	const gapFields = neededFieldsFor({
+		album: row.album,
+		albumArtist: row.albumArtist,
+		coverPath: row.coverPath,
+		genre: row.genre,
+		releaseYear: row.releaseYear,
+		trackNumber: row.trackNumber,
+		discNumber: row.discNumber,
+		isrc: row.isrc,
+		artistMbid: row.artistMbid,
+	});
+
+	// A FIELD-SCOPED forced pass: re-ask for these fields even when they are filled.
+	//
+	// `force: true` re-asks for everything, which is right once and wasteful
+	// repeatedly. Genre needed exactly this: it was empty for every row because no
+	// source implemented it, then a source was added — but the rows already
+	// "verified" in a previous pass were never revisited, because genre was only
+	// requested while it was missing. Asking for `['genre']` alone is one cheap
+	// request per track instead of four, and cannot churn anything else.
+	const requested = Array.isArray(payload.fields) ? payload.fields : null;
+	const valid = requested?.filter((f): f is MetadataField =>
+		(ALL_FIELDS as readonly string[]).includes(f),
 	);
+	const needed = valid && valid.length > 0 ? valid : gapFields;
 
 	// ── 1. Metadata pass ────────────────────────────────────────────────────
 	let patch: Awaited<ReturnType<typeof enrichTrackMetadata>>['patch'] = {};
