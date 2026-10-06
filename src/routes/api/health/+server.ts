@@ -11,11 +11,16 @@ export const GET: RequestHandler = async () => {
 	} catch {
 		dbOk = false;
 	}
+	// Report the REAL version. This was a hardcoded '0.1.0' that had never tracked
+	// a release, which made it worse than useless: I sat polling it to detect a
+	// deploy for fourteen minutes while it cheerfully reported the same string it
+	// would have reported if nothing had deployed at all.
+	const { APP_VERSION } = await import('$lib/version');
 	const body = {
 		status: dbOk ? 'ok' : 'degraded',
 		db: dbOk,
 		uptimeSec: Math.round(process.uptime()),
-		version: '0.1.0',
+		version: APP_VERSION,
 	};
 	return json(body, { status: dbOk ? 200 : 503 });
 };
