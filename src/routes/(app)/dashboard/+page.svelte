@@ -59,20 +59,41 @@
 	// writes to — that re-triggers the effect forever (page freeze).
 	$effect(() => {
 		const snapshot = data.jobs;
-		// Read through a local cast: the generated PageServerData is stale for the
-		// new `jobCounts` key and regenerating it does not pick the change up. The
-		// loader does return it (see +page.server.ts) and the build passes; only the
-		// inferred type lags. Read INSIDE the effect so it tracks `data`.
-		const counts = (
-			data as unknown as {
-				jobCounts?: { total: number; active: number; byStatus: Record<string, number> };
-			}
-		).jobCounts ?? { total: 0, active: 0, byStatus: {} };
 		untrack(() => {
-			live.jobCounts = counts;
+			// Seed from what we were handed so the badges are never a flash of 0, then
+			// replace with the server's real totals. Counting the snapshot is only a
+			// floor — it cannot know about jobs older than the window — so it is
+			// immediately corrected rather than trusted.
+			live.jobCounts = countFrom(snapshot);
 			live.hydrate(snapshot);
 			live.pruneNotIn(snapshot);
 		});
+	});
+
+	// Authoritative totals come from /api/jobs, whose `counts` is grouped over the
+	// whole table. Not from the loader: adding a field there produced a
+	// PageServerData that would not regenerate AND came through undefined at
+	// runtime, so the panel rendered a confident zero.
+	async function refreshJobCounts() {
+		try {
+			const res = await fetch('/api/jobs?limit=100');
+			if (!res.ok) return;
+			const body = (await res.json()) as {
+				counts?: { total: number; active: number; byStatus: Record<string, number> };
+			};
+			if (body.counts) live.jobCounts = body.counts;
+		} catch {
+			// Offline or aborted: the snapshot-seeded counts stay on screen, which is
+			// a lower bound rather than a wrong total.
+		}
+	}
+	$effect(() => {
+		void refreshJobCounts();
+		// Also on tab focus, so a queue left open overnight does not report stale
+		// totals after SSE has reconnected and finished draining.
+		const onFocus = () => void refreshJobCounts();
+		window.addEventListener('focus', onFocus);
+		return () => window.removeEventListener('focus', onFocus);
 	});
 
 	let queueFilter = $state<'all' | 'active' | 'done' | 'failed'>('all');
@@ -108,17 +129,33 @@
 	);
 	const pageCount = $derived(Math.max(1, Math.ceil(data.tracksTotal / 50)));
 	const filteredTracks = $derived(data.tracks);
+	/** Lower-bound counts from a page of jobs, used only until the server answers. */
+	function countFrom(rows: { status: string }[]) {
+		const byStatus: Record<string, number> = {};
+		for (const r of rows) byStatus[r.status] = (byStatus[r.status] ?? 0) + 1;
+		return {
+			total: rows.length,
+			active: (byStatus['queued'] ?? 0) + (byStatus['running'] ?? 0),
+			byStatus,
+		};
+	}
 	// Badges are the SERVER's counts over the whole jobs table. Counting
 	// `live.recentJobs` reported the size of the slice we happened to be holding,
 	// so "Active 30" meant "30 of 30 rows I was sent" — indistinguishable from
 	// "there are 30", and wrong whenever the queue was deeper.
 	const byStatus = $derived(live.jobCounts.byStatus);
+
 	const queueCounts = $derived({
 		all: live.jobCounts.total,
 		active: byStatus['queued'] ?? 0,
 		done: (byStatus['succeeded'] ?? 0) + (byStatus['cancelled'] ?? 0),
 		failed: (byStatus['failed'] ?? 0) + (byStatus['dead'] ?? 0),
 	});
+
+	/** True when the visible list is a window rather than every job. */
+	const truncated = $derived(
+		live.recentJobs.length > 0 && live.recentJobs.length < queueCounts.all,
+	);
 	const visibleJobs = $derived(
 		queueFilter === 'all'
 			? live.recentJobs
@@ -1200,6 +1237,18 @@
 <section class="mb-8" aria-label="Download queue" aria-live="polite">
 	<div class="mb-3 flex flex-wrap items-center gap-2">
 		<h2 class="text-base font-medium">Queue</h2>
+		{#if truncated}
+			<!-- Truncation is stated where the list is, once, and only when it is
+			     real. Doing it in the empty state was wrong: an empty state and a
+			     truncated window are different facts, and conflating them made a
+			     100-row slice look like the whole table. -->
+			<span
+				class="m3-chip bg-surface-highest px-2 py-1 text-xs text-on-surface-variant"
+				title="Older jobs are not listed here. Filter or clear finished jobs to see them."
+			>
+				Newest {live.recentJobs.length} of {queueCounts.all}
+			</span>
+		{/if}
 		<div class="ml-auto flex flex-wrap gap-1" role="tablist" aria-label="Queue filter">
 			{#each [['all', `All ${queueCounts.all}`], ['active', `Active ${queueCounts.active}`], ['done', `Done ${queueCounts.done}`], ['failed', `Failed ${queueCounts.failed}`]] as [key, label] (key)}
 				<button
@@ -1226,11 +1275,7 @@
 	</div>
 	{#if visibleJobs.length === 0}
 		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
-			{queueFilter === 'all'
-				? 'No jobs yet.'
-				: live.recentJobs.length >= queueCounts.all
-					? 'Nothing in this filter.'
-					: `Showing the ${live.recentJobs.length} most recent of ${queueCounts.all}.`}
+			{queueFilter === 'all' ? 'No jobs yet.' : 'Nothing in this filter.'}
 		</p>
 	{:else}
 		<div class="flex flex-col gap-3">

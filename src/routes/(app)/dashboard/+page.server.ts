@@ -1,4 +1,4 @@
-import { jobCounts, listJobs } from '$lib/server/queue/jobs';
+import { listJobs } from '$lib/server/queue/jobs';
 import { listTracks, trackStats } from '$lib/server/db/tracks';
 import { ensureMigrated } from '$lib/server/db';
 import type { TrackDTO } from '$lib/shared/types';
@@ -9,15 +9,14 @@ export const load: PageServerLoad = async ({ url }) => {
 	const q = url.searchParams.get('q');
 	const page = Number.parseInt(url.searchParams.get('page') ?? '1', 10);
 
-	// 100 rows, not 30, and `jobCounts` counted over the whole table.
-	//
-	// The queue panel's badges were computed by counting the returned window, so
-	// "Active 30" was really "30 of the 30 rows I was handed". The counts are now
-	// a separate query against the real table, which is the only way the number can
-	// survive the window being a window.
-	const [jobs, counts, tracksResult, failedResult, stats] = await Promise.all([
+	// 100 rows, not 30. The queue panel's badges were counting this window, so
+	// "Active 30" really meant "30 of the 30 rows I was handed". The authoritative
+	// totals are NOT returned from here: they arrive from /api/jobs, whose response
+	// already carries `counts` and whose type generates correctly. Adding a field
+	// to this loader produced a PageServerData that would not regenerate and came
+	// through undefined at runtime, which showed as a confident 0.
+	const [jobs, tracksResult, failedResult, stats] = await Promise.all([
 		listJobs(100),
-		jobCounts(),
 		listTracks({
 			q: q ?? undefined,
 			page: Number.isFinite(page) ? page : 1,
@@ -74,7 +73,6 @@ export const load: PageServerLoad = async ({ url }) => {
 	const failedDtos: TrackDTO[] = failedResult.items.map(toDto);
 
 	return {
-		jobCounts: counts,
 		jobs: jobs.map((j) => ({
 			id: j.id,
 			type: j.type,
