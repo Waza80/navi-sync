@@ -314,3 +314,115 @@ normalised before the assertion ran, so the test compared a string with itself
 and passed for the wrong reason. Use explicit `\uXXXX` escapes. When a test
 asserts "these two inputs differ", assert that FIRST — it is the assertion the
 rest depends on, and it catches the mistake in the fixture itself.
+
+## ffprobe lies three different ways. Verify the probe before believing it.
+
+Three separate audits of this library reported confident, entirely false findings
+because the *probe* was wrong. Each was a case where I believed a number instead
+of checking the tool that produced it.
+
+1. **`-show_entries` may be repeated but only the LAST section wins.**
+   `-show_entries format_tags=album:format_tags=title` silently reports only
+   `title`. Every album and title read as empty. Use ONE `format_tags` and read
+   all keys.
+2. **Case is not normalised.** ffprobe lowercases tags it RECOGNISES and passes
+   unrecognised Vorbis comments through verbatim. A FLAC written by metaflac
+   reports `ALBUM`, `ARTIST`, `GENRE` in caps, plus a lowercase `album_artist`
+   for the one key it does recognise. Reading only `album` reports every intact
+   file as empty. Fold case: `{k.lower(): v for k, v in raw.items()}`.
+3. **`albumartist` is not the key.** ID3v2's album artist is `album_artist`.
+   Vorbis ALBUMARTIST also surfaces as `album_artist`. Filtering on
+   `albumartist` yields `{}` for every file, which reads exactly like "no
+   metadata exists" — and I reported "0 of 675 files carry ALBUMARTIST" and built
+   a whole theory on it. All 675 carry one.
+
+**Correct audit, always:** one `format_tags` section, fold case, probe EVERY key
+you care about explicitly, and confirm the key set on one known-good file before
+trusting a count. A probe that reports "everything is broken" deserves suspicion
+before it deserves a fix.
+
+Also: Python `glob` with `*CUT4*` matched nothing for the album whose directory
+is `#CUT4<combining marks>Z...`, which read as "the files are gone". They were
+not; 675 files were on disk the whole time. Walk and test the name, don't glob.
+
+## Never point a new write path at production without staging it first
+
+I deployed six times and ran a real repair after each, with no copy of the
+library anywhere. Turning on the repair path produced `retagged: 401` — the first
+non-zero that project has ever logged — and I read that as success.
+
+It was not, necessarily: `--remove-all-tags` plus write-only-what-you-are-given
+means a null field is ERASED, not left alone. On rows the gap rule leaves null
+that deletes the fields the pass had no opinion about. The database is
+authoritative for what it HAS; its silence is not evidence the file's value
+should be blanked. `ensureFileTags` now carries the file's own value forward for
+any field it was not handed.
+
+**The rule I broke:** stage the write path against a copy, diff the tags, then
+run it. "The job reported a plausible number" is not verification. The number was
+plausible and the tags were, for one run, not intact.
+
+## Split albums: three separate mechanisms, three separate fixes
+
+1. **NFC** — one album, two byte-strings. `sanitizeComponent` normalised paths;
+   the tag writers did not. Fixed at both writers. **But comparing NFC on both
+   sides in `tagsDisagree` then HID the damage forever**, because a
+   non-canonical tag normalises to the same string as its row and is therefore
+   "in agreement". Fixing a writer only affects future writes; repairing
+   existing files needs the RAW form compared as well.
+2. **Per-track credit strings** — Navidrome's album identity is (album, album
+   artist) on raw bytes. PRETTY DOLLCORPSE had two artist DIRECTORIES differing
+   by one credit, and the tag took its value from the directory.
+3. **Same trap, one level up** — `albumArtistUpdates` originally compared
+   `canonicalArtistList(row) === target` and so skipped exactly the three rows
+   that still held repeated credits, because they DEDUPE to the target. Ten of
+   thirteen were written; the three that "looked right" were the dirty ones.
+
+The general rule: **never compare a normalised form of the thing under test
+against the target.** Normalisation hides the defect you are hunting.
+
+## `mergeCreditLists` must be order-independent, and was not
+
+First-seen union over whatever rows arrived means the same release is spelled
+differently depending on query order — the answer changes between fetches. That is
+a bug, not cosmetic. Position is now the earliest literal index across all lists,
+tie-broken by lists-crediting-it, then total occurrences, then code point. Fully
+deterministic; permutation tests pin it.
+
+## Expunged MusicBrainz releases: artwork yes, identity never
+
+PRETTY DOLLCORPSE is release `5cfb3294`, `status: Expunged`, 13 tracks, no ISRC,
+with approved front AND back art in the Cover Art Archive. `isCanonicalRelease`
+correctly rejects Expunged, which left the album permanently uncoverable. A
+matched recording with only an Expunged release now yields `coverUrl` alone —
+album, year and numbering stay withheld. Do not relax the identity rule.
+
+MusicBrainz cover art had also never worked at all: CAA returns `thumbnails` as
+a map of size -> URL **string** and the code read `thumbs[size]?.url`. `.url` on
+a string is undefined, so `coverUrlFor` returned null for every release ever.
+
+## Measured state at v0.8.2
+
+```
+675 files, 675 filed rows
+title/artist/album/album_artist present: 675/675
+genre present: 484/675        date present: 419/675
+CUT4 album-tag forms: chars=60 bytes=115 on all 11 files  (was 60 and 62)
+albums whose album artist is not unique: 1
+DOLLCORPSE album_artist: 1 value across all 13 files, on disk and in the DB
+retagged: 401
+```
+
+**Known remaining, unfixed:**
+- 13 files still carry the repeated credits in their ARTIST tag (the
+  album_artist was unified; `artist` was not). Same duplication artefact.
+- Two artist DIRECTORIES still hold that corrupt name. navi-sync owns them, so
+  they will keep splitting anything filed under them.
+- `don dada mixtape vol 1` has two album artists (Alpha Wann, Nekfeu). Genuine
+  mixtape, correctly left alone by the "variants must share a credit" guard.
+  Merging it needs a rule that does not also merge two unrelated acts' "Greatest
+  Hits". Deliberate decision, not an oversight.
+- "MAEVEMADEAMAZE twice" appears NOWHERE in any tag of any file — not album, not
+  artist, not album_artist, not title. It is a Navidrome-side artefact, almost
+  certainly a stale index row: a full scan does not purge old albums, and those
+  must be cleared in the Navidrome UI. Unconfirmed.
