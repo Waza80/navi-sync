@@ -98,7 +98,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		// window silently returned `enqueued: 0` for rows refreshed minutes earlier
 		// — which reads as "there is nothing to fetch" when in fact the fetch was
 		// never attempted.
-		if (!fields && cutoff && row.metadataRefreshedAt && row.metadataRefreshedAt.getTime() > cutoff)
+		if (
+			!fields &&
+			cutoff &&
+			row.metadataRefreshedAt &&
+			row.metadataRefreshedAt.getTime() > cutoff
+		)
 			continue;
 		picked.push(row.id);
 	}
