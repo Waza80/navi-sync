@@ -427,3 +427,81 @@ retagged: 401
   artist, not album_artist, not title. It is a Navidrome-side artefact, almost
   certainly a stale index row: a full scan does not purge old albums, and those
   must be cleared in the Navidrome UI. Unconfirmed.
+
+## A ' (n)' suffix is NOT evidence of a duplicate. Measure before stripping.
+
+Measured over all 675 files: **156** filenames end in ` (n)`, and only **6** have
+a same-length twin elsewhere. The other 150 are part of the real title —
+`Moog City 2 (2)`, `The Tourist (2)`, `souvenir (2)`, `Creep (11)` — because a
+song is called that. Stripping the suffix from those invents a song that does not
+exist and renames a real recording to a different one.
+
+The rule that works is evidence-based: **a twin with the same title-minus-index and
+the same duration on the SAME album.** That is the signature of a download
+collision. `isDuplicateOfSibling` implements it; `albumfold.test.ts` pins both
+directions, including the 150 real titles that must be left alone.
+
+The suffix may sit on either member of the pair. The first fetch can write `X` and
+a retry `X (2)`, in which case the PLAIN file is the one carrying the artefact. An
+early `if (no suffix on this title) return false` skipped exactly that case.
+
+Also: the suffix must be stripped from the FILENAME stem, never rebuilt from the
+title. Titles carry no track number, so `03 - dogbone (2).flac` rebuilt from the
+title becomes `dogbone.flac` and loses the prefix. `apply.ts` now asserts
+`/^\d{2} - /` on every destination before it will run.
+
+## Refuse to file a copy you already have — never append ' (2)'
+
+`dedupe.ts`. Compared by **checksum** (proof) first, then **size AND duration**
+together (inference, 1.5s tolerance). Never by title: `POCKET ROCKET` and
+`POCKET ROCKET (Remix)` are the same length to within a second, and a title match
+would refuse a remix as the original.
+
+`targetExists` is deliberately not a find-a-free-name helper. When the
+destination is occupied the caller must **skip the write** and leave the existing
+file, which is also the better copy — it is the one already indexed and matched to
+its row. Appending ` (2)` is precisely how one recording becomes two songs on the
+player.
+
+## Album-name variants split releases. Fold case and colon, nothing else.
+
+16 of 675 tracks sit in folders whose ALBUM tag differs only in case or a colon:
+`NODA: le monde et les humains` / `NODA le monde et les humains` (the split you
+saw), `Koi no Yokan` / `Koi No Yokan`, `Prefer Not To Say` / `Prefer not to say`,
+`Les étoiles vagabondes : expansion` / `... Expansion`. Each is two albums on
+Navidrome.
+
+`foldAlbum` drops case and **a colon** — a catalogue number, not part of a title —
+and reduces other punctuation without discarding it, so `Y&W L'album` and `Black
+Album` stay distinct and years are not conflated. `planAlbumRename` takes the most
+common spelling, tie-breaking on length then lexicographic order, so the plan is
+byte-identical regardless of row order, and `updates` is sorted by id for the same
+reason.
+
+Disc numbers ride through unchanged. `Prefer not to say` is a 3-disc release; a
+rename must not flatten it, and one album being multi-disc while its sibling is
+standalone is a property of the release, not a duplicate to collapse.
+
+## Zalgo hides from substring search — strip combining marks first
+
+`MAEVEMADEAMAZE` appears twice inside CUT4ZALGO and a plain
+`if 'MAEVE' in value.upper()` finds **nothing in any file**, because the letters
+carry combining marks. Search on `''.join(c for c in unicodedata.normalize('NFD', v)
+if not unicodedata.combining(c))`.
+
+This is the same lesson as the ffprobe case-sensitivity trap, one level up: any
+string comparison against a library that contains Zalgo must fold
+normalisation, or it silently reports zero and reads as "absent".
+
+## Always stage a write path before production
+
+Ran the plan against production directly. It passed its dry run and its
+assertions, and the renames were still wrong — the destination was rebuilt from
+the title, so all four would have lost their `03 - ` prefix. The guard that
+catches it (`/^\d{2} - /`) and the sandbox run (`scripts`-style: copy to a scratch
+dir, rename, compare md5, delete) only exist because the dry run was not trusted to
+be the last word.
+
+Order that works: pure function -> unit tests -> dry run with exact expected
+counts asserted -> sandbox on copies of the real files -> single apply with the
+same assertions -> independent verification that reads the result back.
