@@ -375,17 +375,51 @@ export async function ensureFileTags(
 ): Promise<'ok' | 'skipped' | 'failed'> {
 	try {
 		const ext = filePath.toLowerCase().endsWith('.flac') ? 'flac' : 'mp3';
+		const info = await parseFile(filePath, { duration: false }).catch(() => null);
+		const common = (info?.common ?? null) as Record<string, unknown> | null;
+
+		// Carry forward whatever this pass was NOT asked to change.
+		//
+		// Both writers rebuild the tag block from scratch (`metaflac
+		// --remove-all-tags`, `NodeID3.removeTags`) and then write only the fields they
+		// were handed. A field that is null in the caller's TagData is therefore not
+		// left alone — it is ERASED. Turning the repair path on for the first time in
+		// 0.7.2 measured 651 of 675 files stripped of album, title, artist and date,
+		// and 675 of 675 stripped of genre, because the gap rule leaves those null on
+		// any row the metadata pass has not filled.
+		//
+		// The database is authoritative for the fields it HAS; its silence about a
+		// field is not evidence the file's value should be blanked. Absent means
+		// "not this pass's business", so the file's own value survives.
+		const text = (v: unknown): string | null => {
+			if (typeof v === 'string' && v !== '') return v;
+			if (Array.isArray(v) && typeof v[0] === 'string' && v[0] !== '') return v[0];
+			return null;
+		};
+		const num = (v: unknown): number | null =>
+			typeof v === 'number' && Number.isFinite(v) && v !== 0 ? v : null;
+		const carried: TagData = {
+			title: tags.title ?? text(common?.title) ?? 'Unknown Title',
+			artist: tags.artist ?? text(common?.artist) ?? 'Unknown Artist',
+			album: tags.album ?? text(common?.album),
+			albumArtist: tags.albumArtist ?? text(common?.albumartist),
+			genre: tags.genre ?? text(common?.genre),
+			year: tags.year ?? num(common?.year),
+			trackNumber:
+				tags.trackNumber ?? num((common?.track as { no?: unknown } | undefined)?.no),
+			discNumber: tags.discNumber ?? num((common?.disk as { no?: unknown } | undefined)?.no),
+			cover: tags.cover,
+			lyricsPlain: tags.lyricsPlain,
+			lyricsSynced: tags.lyricsSynced,
+		};
+
 		let disagreeing: string[] = [];
 		if (!opts.force) {
-			const info = await parseFile(filePath, { duration: false }).catch(() => null);
-			disagreeing = tagsDisagree(
-				tags,
-				(info?.common as Record<string, unknown> | undefined) ?? null,
-			);
+			disagreeing = tagsDisagree(carried, common);
 			if (disagreeing.length === 0) return 'skipped';
 		}
-		if (ext === 'flac') await tagFlac(filePath, tags);
-		else tagMp3(filePath, tags);
+		if (ext === 'flac') await tagFlac(filePath, carried);
+		else tagMp3(filePath, carried);
 		log.info('repaired embedded tags', {
 			filePath,
 			force: opts.force ?? false,
