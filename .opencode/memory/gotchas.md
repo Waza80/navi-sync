@@ -642,3 +642,85 @@ MusicBrainz release.
 provider change — and refuses anything that is not a real JPEG/PNG, is oversized,
 is outside the library root, or contains a NUL. `tagFlac` still preserves an
 existing PICTURE block when the result is null, so this can only add art.
+
+## padTrackNumber returned '00', inventing a track that does not exist
+
+`padTrackNumber` mapped null/0/NaN to the literal string `'00'`, so
+`trackBaseRelativePath` wrote `00 - <title>` for every track whose number was
+unknown. **Twelve of PRETTY DOLLCORPSE's thirteen files** were named that way, the
+album had no usable order, and a `splitTrackFilename` round-trip read `00` back as
+track zero. One file was `100 - 100 000 LUMEN.mp3` — a track number of 100,
+because the title's own leading digits had become the prefix.
+
+An absent number now emits **no prefix**. `Title.flac` is honest; `00 - Title.flac`
+asserts track 0 and obliges a later rename. The prefix is also omitted above 999 so
+a title beginning with digits cannot be mistaken for a number.
+
+The sequence itself came from the release's own track list at MusicBrainz
+(5cfb3294). GEIGER COUNTER had been recorded as track 1 when it is track 5.
+
+## A cover needs three things, in this order
+
+PRETTY DOLLCORPSE had no art and fixing it took three separate unblocks:
+
+1. **Bytes must be EMBEDDED.** A `cover_path` beside the track is invisible to
+   Navidrome. Both re-tag paths passed `cover: null`.
+2. **Bytes must EXIST.** All 13 rows had `cover_path IS NULL`, so there was
+   nothing to embed.
+3. **The lookup must succeed.** Two layers blocked it: the query was
+   `recording:"T" AND artist:"<artist>"` and the artist is a merged credit list of
+   six names, which MusicBrainz will not match; and the release is `Expunged`, so
+   `isCanonicalRelease` rejected it. Fixed by a title-only retry plus an
+   artwork-only pass gated on the exact title being UNIQUE.
+
+And a non-force repair did nothing at all, because `tagsDisagree` compared only
+TEXT fields — a file with correct tags but no picture was `skipped` forever.
+**Missing artwork is now a disagreement**, which is what finally moved the number.
+
+Verified, not assumed:
+
+```
+audio files: 1050 | with embedded picture: 1050 | without: 0
+PRETTY DOLLCORPSE: 13 files, 13 with embedded picture
+```
+
+**Check for embedded art by parsing the file** — a FLAC PICTURE metadata block
+(type 6) or an ID3 `APIC` frame. Do not infer it from `cover_path`.
+
+## A field-scoped reindex must ignore the freshness window
+
+`{"fields":["coverUrl"]}` returned `enqueued: 0 — nothing to re-fetch` for rows
+refreshed minutes earlier. The window exists to stop a routine sweep redoing its
+own work, but an explicit field request is an instruction to go and get that
+field. Honouring the window means the fetch is never attempted while the response
+claims there is nothing to do. It now returns 25.
+
+## `ssh 'python3 -'` reads stdin as the PROGRAM
+
+A JSON payload cannot also travel on stdin — it becomes the source and fails with
+`NameError: name 'null' is not defined`, because JSON's `null` is not Python. Embed
+it as a JSON literal, or base64 it:
+
+```python
+spec = json.loads(base64.b64decode("...").decode())
+```
+
+## Chained gates are only as strong as their last command
+
+`bun run format:check && ... && git commit` short-circuits: when format:check
+failed the chain stopped, but a later `&& git commit` in the same line still ran
+and shipped an unformatted file. Check each gate's own output.
+
+## Outstanding, not yet fixed
+
+- **Jobs panel shows tracks as failed that are present.** Not `download_status` —
+  0 rows are non-completed. It is the two dead Deezer jobs ("No stream available
+  (tier/region)") for tracks later fetched from another provider. They should be
+  marked superseded when their `track_id` now has a file, and excluded from the
+  failed count and filter.
+- **Jobs panel height bounces the page.** Needs a fixed-height scroll container;
+  the SSE counts must keep updating inside it.
+- **New adds appear to do nothing while downloads run.** Not queue starvation —
+  at measurement there were 3 queued and 1 running. Undiagnosed.
+- **4 stale Navidrome rows** (deleted/renamed behind its back, `missing=1`). A full
+  scan only flags them; they need the UI or `Scan.PurgeMissing="always"`.
