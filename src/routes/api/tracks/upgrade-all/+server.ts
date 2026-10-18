@@ -1,6 +1,6 @@
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
 import { listUpgradeableTrackIds, parseQualityTier } from '$lib/server/db/tracks';
-import { enqueueJob } from '$lib/server/queue/jobs';
+import { enqueueJobsBulk } from '$lib/server/queue/jobs';
 import { getSettings } from '$lib/server/settings';
 import { logger } from '$lib/server/logger';
 import { z } from 'zod';
@@ -54,35 +54,46 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	}
 
 	const limit = parsed.data.limit ?? 500;
-	// `count` is fetched with a hard cap too, so the reported remainder is honest
-	// up to 2000 and simply "at least N" beyond that.
 	const ids = await listUpgradeableTrackIds({ quality, limit });
 	if (ids.length === 0) {
 		return json({ enqueued: 0, skipped: 0, remaining: 0, quality });
 	}
 
+	// One statement, not `ids.length` of them. The per-row version made a 500-track
+	// press take long enough that the button read as inert — and it competed with
+	// the worker for the same pool while doing it.
 	let enqueued = 0;
-	for (const trackId of ids) {
-		try {
-			await enqueueJob({
-				type: 'upgrade_check',
+	try {
+		enqueued = await enqueueJobsBulk(
+			ids.map((trackId) => ({
+				type: 'upgrade_check' as const,
 				payload: { trackId },
 				trackId,
 				createdBy: user.id,
 				priority: 6,
-			});
-			enqueued++;
-		} catch (err) {
-			// One bad row must not abandon the rest of the batch.
-			logger.warn('bulk upgrade: could not enqueue', { trackId, error: String(err) });
-		}
+			})),
+		);
+	} catch (err) {
+		logger.error('bulk quality upgrade failed to enqueue', { error: String(err) });
+		return json(
+			{
+				error: {
+					code: 'ENQUEUE_FAILED',
+					message: 'Could not queue the upgrade checks. Nothing was changed.',
+				},
+			},
+			{ status: 500 },
+		);
 	}
 
 	logger.info('bulk quality upgrade requested', {
 		user: user.id,
 		quality,
-		enqueued,
 		candidates: ids.length,
+		enqueued,
 	});
-	return json({ enqueued, skipped: 0, remaining: 0, quality }, { status: 202 });
+	return json(
+		{ enqueued, skipped: ids.length - enqueued, remaining: 0, quality },
+		{ status: 202 },
+	);
 };

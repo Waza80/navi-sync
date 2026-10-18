@@ -53,6 +53,11 @@
 	// Enabled providers (local working copy; persisted via Save settings)
 	let aliveBusy: Record<string, boolean> = $state({});
 	let aliveResult: { id: string; ok: boolean; text: string } | null = $state(null);
+	// Its own state rather than the page-wide `message`, which renders at the
+	// bottom of the page: pressing "Test connection" appeared to do nothing until
+	// you scrolled to the foot of the document. The provider alive check already
+	// reported inline, next to the row it describes.
+	let pingResult: { ok: boolean; text: string } | null = $state(null);
 
 	function toggleProvider(id: string, on: boolean) {
 		enabled = on ? [...new Set([...enabled, id])] : enabled.filter((x) => x !== id);
@@ -117,6 +122,7 @@
 
 	async function testConnection() {
 		message = null;
+		pingResult = null;
 		pingBusy = true;
 		try {
 			const res = await fetch('/api/navidrome/scan', {
@@ -129,12 +135,12 @@
 				serverVersion?: string;
 				error?: string;
 			};
-			message = body.ok
+			pingResult = body.ok
 				? {
-						tone: 'ok',
+						ok: true,
 						text: `Connected. Server version: ${body.serverVersion ?? 'unknown'}`,
 					}
-				: { tone: 'error', text: `Connection failed: ${body.error ?? 'unknown error'}` };
+				: { ok: false, text: `Connection failed: ${body.error ?? 'unknown error'}` };
 		} finally {
 			pingBusy = false;
 		}
@@ -275,6 +281,17 @@
 					{repairBusy ? 'Repairing…' : 'Repair indexation'}
 				</button>
 			</div>
+			{#if pingResult}
+				<p
+					class="mt-3 rounded-lg px-3 py-2 text-sm {pingResult.ok
+						? 'bg-surface-highest text-on-surface-variant'
+						: 'text-error'}"
+					role="status"
+					data-testid="navidrome-ping"
+				>
+					{pingResult.text}
+				</p>
+			{/if}
 		</div>
 	</section>
 
@@ -287,12 +304,12 @@
 			credentials on the Providers page.
 		</p>
 		<div class="flex flex-col gap-3">
-			{#each [{ id: 'deezer', label: 'Deezer', desc: 'FLAC 16-bit · 320/128 MP3' }, { id: 'tidal', label: 'Tidal (hiFi instance)', desc: 'FLAC up to 24/192 — fastest option, needs your instance URL' }] as prov (prov.id)}
+			{#each [{ id: 'deezer', label: 'Deezer', desc: 'FLAC 16/44.1, or 24/96 hi-res where the release has one · 320/128 MP3' }, { id: 'tidal', label: 'Tidal (hiFi instance)', desc: 'FLAC up to 24/192 — fastest option, needs your instance URL' }] as prov (prov.id)}
 				<div class="flex min-h-14 items-center gap-3 rounded-xl bg-surface-low px-3">
 					<label class="flex flex-1 cursor-pointer items-center gap-3">
 						<input
 							type="checkbox"
-							class="h-5 w-5 accent-[var(--md-primary)]"
+							class="h-5 w-5 shrink-0 accent-[var(--md-primary)]"
 							checked={enabled.includes(prov.id)}
 							onchange={(e) => toggleProvider(prov.id, e.currentTarget.checked)}
 						/>
@@ -348,7 +365,7 @@
 			<label class="flex min-h-12 items-center gap-3">
 				<input
 					type="checkbox"
-					class="h-5 w-5 accent-[var(--md-primary)]"
+					class="h-5 w-5 shrink-0 accent-[var(--md-primary)]"
 					bind:checked={preferLossless}
 				/>
 				<span class="text-sm"
@@ -359,21 +376,18 @@
 			<label class="flex min-h-12 items-center gap-3">
 				<input
 					type="checkbox"
-					class="h-5 w-5 accent-[var(--md-primary)]"
+					class="h-5 w-5 shrink-0 accent-[var(--md-primary)]"
 					bind:checked={preferHiRes}
 				/>
-				<span class="text-sm">
-					Prefer hi-res masters (24-bit above CD rate) when a provider has one
-					<span class="text-on-surface-variant">
-						— Deezer serves 24/96, Tidal up to 24/192. Roughly 3× the size of the CD
-						master, and a release with no hi-res version falls back to CD lossless.
-					</span>
-				</span>
+				<span class="text-sm"
+					>Prefer hi-res (24-bit above CD rate)
+					<span class="text-on-surface-variant">— ~3× the file size</span></span
+				>
 			</label>
 			<label class="flex min-h-12 items-center gap-3">
 				<input
 					type="checkbox"
-					class="h-5 w-5 accent-[var(--md-primary)]"
+					class="h-5 w-5 shrink-0 accent-[var(--md-primary)]"
 					bind:checked={allowLowerFallback}
 				/>
 				<span class="text-sm"
@@ -384,7 +398,7 @@
 			<label class="flex min-h-12 items-center gap-3">
 				<input
 					type="checkbox"
-					class="h-5 w-5 accent-[var(--md-primary)]"
+					class="h-5 w-5 shrink-0 accent-[var(--md-primary)]"
 					bind:checked={autoUpgradeQuality}
 				/>
 				<span class="text-sm">
@@ -413,7 +427,7 @@
 		<label class="flex min-h-12 items-center gap-3">
 			<input
 				type="checkbox"
-				class="h-5 w-5 accent-[var(--md-primary)]"
+				class="h-5 w-5 shrink-0 accent-[var(--md-primary)]"
 				bind:checked={forceTagRepair}
 			/>
 			<span class="text-sm">

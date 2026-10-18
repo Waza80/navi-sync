@@ -58,6 +58,56 @@ export async function enqueueJob(input: {
 	return job;
 }
 
+/**
+ * Enqueue many jobs in ONE statement.
+ *
+ * `enqueueJob` in a loop is the wrong shape for a bulk action: each call is an
+ * INSERT plus a `pg_notify`, so 500 of them is 1000 sequential round trips while
+ * the HTTP request is held open and the button sits on "Queueing…". It reads as
+ * an inert control, and it competes with the worker for the same 10-connection
+ * pool while doing it.
+ *
+ * Chunked so one statement never grows unbounded, and it returns the number
+ * actually written so the caller reports what happened rather than what it
+ * intended.
+ */
+export async function enqueueJobsBulk(
+	inputs: Array<{
+		type: JobType;
+		payload: Record<string, unknown>;
+		priority?: number;
+		maxAttempts?: number;
+		trackId?: string | null;
+		createdBy?: string | null;
+	}>,
+): Promise<number> {
+	if (inputs.length === 0) return 0;
+	const CHUNK = 200;
+	let written = 0;
+	for (let i = 0; i < inputs.length; i += CHUNK) {
+		const chunk = inputs.slice(i, i + CHUNK);
+		const rows = await db
+			.insert(jobs)
+			.values(
+				chunk.map((input) => ({
+					type: input.type,
+					payload: input.payload,
+					priority: input.priority ?? 5,
+					maxAttempts: input.maxAttempts ?? 3,
+					trackId: input.trackId ?? null,
+					createdBy: input.createdBy ?? null,
+				})),
+			)
+			.returning({ id: jobs.id });
+		written += rows.length;
+	}
+	// One notification for the batch, not one per row: the worker's claim loop is
+	// woken by the poller every 10s regardless, so per-row NOTIFY is pure overhead.
+	await notifyJobs({ ids: 'bulk', count: written });
+	log.info('jobs enqueued in bulk', { count: written });
+	return written;
+}
+
 /** Wake the worker via NOTIFY (fire-and-forget, non-fatal on failure). */
 async function notifyJobs(meta: Record<string, unknown>): Promise<void> {
 	try {

@@ -17,7 +17,7 @@
 		Delete02Icon,
 		GlobalRefreshIcon,
 	} from '@hugeicons/core-free-icons';
-	import type { TrackDTO } from '$lib/shared/types';
+	import type { JobDTO, TrackDTO } from '$lib/shared/types';
 
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -223,8 +223,11 @@
 			else
 				toast(
 					'ok',
+					// Each check finishes in about a second, so they land under Done rather
+					// than sitting in Active. Saying so is the difference between "it worked"
+					// and "nothing happened".
 					body.enqueued
-						? `Queued ${body.enqueued} upgrade check${body.enqueued === 1 ? '' : 's'}.`
+						? `Checked ${body.enqueued} track${body.enqueued === 1 ? '' : 's'} — results appear under Done.`
 						: 'Nothing to upgrade in this view.',
 				);
 			await invalidateAll();
@@ -270,10 +273,53 @@
 	const truncated = $derived(
 		live.recentJobs.length > 0 && live.recentJobs.length < queueCounts.all,
 	);
+	/**
+	 * Filtered tabs are fetched from the SERVER, not filtered out of the window.
+	 *
+	 * They used to be `live.recentJobs.filter(...)` over the newest 30 jobs, which
+	 * is structurally incapable of showing anything older: the eight dead jobs from
+	 * 2026-10-06 sat ~2245 positions outside the window, so the "Failed" tab was
+	 * permanently empty while the badge counted 8. A filter that can only ever
+	 * match what was already on screen is not a filter.
+	 *
+	 * `/api/jobs` has supported `?status=` all along — it was simply never asked.
+	 */
+	const FILTER_STATUS: Record<typeof queueFilter, string> = {
+		all: '',
+		active: 'queued,running',
+		done: 'succeeded,cancelled',
+		failed: 'dead,failed',
+	};
+	let filteredJobs = $state<JobDTO[] | null>(null);
+	let filteredLoading = $state(false);
+
+	async function loadQueueFilter(filter: typeof queueFilter): Promise<void> {
+		const status = FILTER_STATUS[filter];
+		if (!status) {
+			filteredJobs = null;
+			return;
+		}
+		filteredLoading = true;
+		try {
+			// 100 rather than 30: these sets are small, and the point of the tab is
+			// to show what there is.
+			const res = await fetch(`/api/jobs?limit=100&status=${status}`);
+			const body = (await res.json().catch(() => null)) as { jobs?: JobDTO[] } | null;
+			if (!res.ok || !body?.jobs) throw new Error('queue filter read failed');
+			filteredJobs = body.jobs;
+		} catch {
+			// Say so rather than showing an empty tab, which reads as "no failures".
+			queueUnavailable = true;
+			filteredJobs = [];
+		} finally {
+			filteredLoading = false;
+		}
+	}
+
 	const visibleJobs = $derived(
 		queueFilter === 'all'
 			? live.recentJobs
-			: live.recentJobs.filter((j) =>
+			: (filteredJobs ?? []).filter((j) =>
 					queueFilter === 'active'
 						? j.status === 'queued' || j.status === 'running'
 						: queueFilter === 'done'
@@ -1441,7 +1487,10 @@
 					class="rounded-full px-3 py-1.5 text-xs {queueFilter === key
 						? 'bg-secondary-container text-on-secondary-container'
 						: 'text-on-surface-variant hover:bg-surface-highest'}"
-					onclick={() => (queueFilter = key as typeof queueFilter)}
+					onclick={() => {
+						queueFilter = key as typeof queueFilter;
+						void loadQueueFilter(queueFilter);
+					}}
 				>
 					{label}
 				</button>
@@ -1477,7 +1526,11 @@
 	{/if}
 	{#if visibleJobs.length === 0}
 		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
-			{queueFilter === 'all' ? 'No jobs yet.' : 'Nothing in this filter.'}
+			{filteredLoading
+				? 'Loading…'
+				: queueFilter === 'all'
+					? 'No jobs yet.'
+					: 'Nothing in this filter.'}
 		</p>
 	{:else}
 		<!--

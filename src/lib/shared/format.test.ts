@@ -37,9 +37,12 @@ describe('qualityLabel', () => {
 });
 
 describe('qualityLabel with a sample rate', () => {
-	it('names the rate for a hi-res file', () => {
-		expect(qualityLabel('flac', null, 24, 96_000)).toBe('FLAC 24-bit · 96 kHz');
-		expect(qualityLabel('flac', null, 24, 192_000)).toBe('FLAC 24-bit · 192 kHz');
+	it('says HI-RES instead of the depth, keeping the rate', () => {
+		// A third chip for hi-res crowded the row and pushed the lyrics badge out.
+		// HI-RES also says more than "24-bit", which no longer distinguishes a
+		// 24/44.1 file from a 24/192 one.
+		expect(qualityLabel('flac', null, 24, 96_000)).toBe('HI-RES 96 kHz');
+		expect(qualityLabel('flac', null, 24, 192_000)).toBe('HI-RES 192 kHz');
 	});
 
 	it('omits the rate at CD rate, where it says nothing', () => {
