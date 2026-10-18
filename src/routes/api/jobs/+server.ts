@@ -41,7 +41,12 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// "queue unavailable" instead of the library vanishing, and the next poll
 	// recovers on its own. Only an unauthenticated request is an error.
 	let jobs: Awaited<ReturnType<typeof listJobs>> = [];
-	let counts: Awaited<ReturnType<typeof jobCounts>> = { total: 0, active: 0, byStatus: {} };
+	let counts: Awaited<ReturnType<typeof jobCounts>> = {
+		total: 0,
+		active: 0,
+		byStatus: {},
+		lastActivityAt: null,
+	};
 	let degraded = false;
 	try {
 		[jobs, counts] = await Promise.all([listJobs(limit, requested), jobCounts()]);

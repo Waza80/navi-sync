@@ -31,12 +31,34 @@ const log = logger;
 const UA =
 	'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36';
 
-type FormatId = 'FLAC' | 'MP3_320' | 'MP3_128';
+type FormatId = 'FLAC_24' | 'FLAC' | 'MP3_320' | 'MP3_128';
 
-function requestedFormats(prefs: QualityPreferences): FormatId[] {
+/**
+ * Formats requested best-first; Deezer answers with the best one the account is
+ * actually entitled to, and ignores ids it does not know.
+ *
+ * `FLAC_24` is Deezer's hi-res tier. It was added after this client was written
+ * and the app never asked for it, so every hi-res master on Deezer was being
+ * fetched at 16/44.1. Verified live 2026-10 against Pink Floyd — Money
+ * (116914026): `FLAC` returns 40.3 MiB, `FLAC_24` returns 134.7 MiB, and
+ * ffprobe reads the latter as 24-bit/96 kHz.
+ *
+ * Two things about the id are worth knowing because they cost a probe to learn:
+ *   - The id carries NO sample rate, so a `FLAC_24` stream's rate is only known
+ *     after the file is measured. Claiming a rate here would be inventing one.
+ *   - Requesting an ungranted format ALONE fails with
+ *     "License token has no sufficient rights" (error 1002), which the app reads
+ *     as NO_STREAM. Only ~1 in 7 tracks in a random spread has a hi-res master,
+ *     so the chain has to keep FLAC/MP3 behind it or most downloads would fail.
+ */
+export function requestedFormats(prefs: QualityPreferences): FormatId[] {
+	// `=== false` rather than a truthiness test: an unspecified preference means
+	// hi-res, so a caller that predates the flag keeps the better tier instead of
+	// silently losing it. Only an explicit refusal turns this off.
+	const hires: FormatId[] = prefs.preferHiRes === false ? [] : ['FLAC_24'];
 	const ordered: FormatId[] = prefs.preferLossless
-		? ['FLAC', 'MP3_320', 'MP3_128']
-		: ['MP3_320', 'MP3_128', 'FLAC'];
+		? [...hires, 'FLAC', 'MP3_320', 'MP3_128']
+		: ['MP3_320', 'MP3_128', ...hires, 'FLAC'];
 	return ordered.filter((f) => {
 		if (!prefs.allowLowerFallback && f === 'MP3_128' && prefs.minBitrateKbps > 128)
 			return false;
@@ -140,7 +162,7 @@ export async function resolveStream(
 		);
 	}
 	const cipher = cipherOf(entry);
-	const { format, ext, bitrate, lossless, bitDepth } = describeFormat(entry.format);
+	const { format, ext, bitrate, lossless, bitDepth, sampleRateHz } = describeFormat(entry.format);
 	return {
 		url,
 		format,
@@ -148,31 +170,72 @@ export async function resolveStream(
 		claimedBitrateKbps: bitrate,
 		claimedLossless: lossless,
 		claimedBitDepth: bitDepth,
+		claimedSampleRateHz: sampleRateHz,
 		cipher,
 		decryptTrackId: cipher === 'BF_CBC_STRIPE' ? trackId : null,
 	};
 }
 
 function pickBestMedia(entries: MediaEntry[]): MediaEntry {
-	const order: Record<string, number> = { FLAC: 3, MP3_320: 2, MP3_128: 1 };
+	const order: Record<string, number> = { FLAC_24: 4, FLAC: 3, MP3_320: 2, MP3_128: 1 };
 	const sorted = [...entries].sort(
 		(a, b) => (order[b.format ?? ''] ?? 0) - (order[a.format ?? ''] ?? 0),
 	);
 	return sorted[0] ?? entries[0];
 }
 
-function describeFormat(f: string): {
+/**
+ * What the format id claims. Exported for tests only.
+ *
+ * `FLAC_24` claims the depth and NOTHING about the rate: the id is the whole
+ * contract, and Deezer serves 24/96 from it. Returning `sampleRateHz: null` is
+ * deliberate — `qualityRank` reads an unstated rate as "possibly hi-res", and
+ * the file is measured immediately after download, so nothing downstream is
+ * guessing about what arrived.
+ */
+export function describeFormat(f: string): {
 	format: 'mp3' | 'flac';
 	ext: 'mp3' | 'flac';
 	bitrate: number | null;
 	lossless: boolean;
 	bitDepth: number | null;
+	sampleRateHz: number | null;
 } {
+	if (f.includes('FLAC_24'))
+		return {
+			format: 'flac',
+			ext: 'flac',
+			bitrate: null,
+			lossless: true,
+			bitDepth: 24,
+			sampleRateHz: null,
+		};
 	if (f.includes('FLAC'))
-		return { format: 'flac', ext: 'flac', bitrate: null, lossless: true, bitDepth: 16 };
+		return {
+			format: 'flac',
+			ext: 'flac',
+			bitrate: null,
+			lossless: true,
+			bitDepth: 16,
+			sampleRateHz: null,
+		};
 	if (f.includes('320'))
-		return { format: 'mp3', ext: 'mp3', bitrate: 320, lossless: false, bitDepth: null };
-	return { format: 'mp3', ext: 'mp3', bitrate: 128, lossless: false, bitDepth: null };
+		return {
+			format: 'mp3',
+			ext: 'mp3',
+			bitrate: 320,
+			lossless: false,
+			bitDepth: null,
+			sampleRateHz: null,
+		};
+	return {
+		format: 'mp3',
+		ext: 'mp3',
+		bitrate: 128,
+		lossless: false,
+		bitDepth: null,
+		sampleRateHz: null,
+	};
 }
 
 /** External dzmedia-compatible resolver (echo's getMediaUrl path). */
@@ -182,9 +245,7 @@ async function resolveViaExternal(
 ): Promise<StreamResolution> {
 	if (!env.DEEZER_RESOLVER_URL)
 		throw new ProviderError('resolver not configured', 'PROVIDER_UNAVAILABLE');
-	const ordered: string[] = prefs.preferLossless
-		? ['FLAC', 'MP3_320', 'MP3_128']
-		: ['MP3_320', 'MP3_128'];
+	const ordered: string[] = requestedFormats(prefs);
 	const res = await fetch(`${env.DEEZER_RESOLVER_URL.replace(/\/$/, '')}/get_url`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
@@ -196,7 +257,7 @@ async function resolveViaExternal(
 	const entry = pickBestMedia(body.data?.[0]?.media ?? []);
 	const url = sourceUrlOf(entry);
 	if (!url || !entry.format) throw new ProviderError('resolver returned no URL', 'NO_STREAM');
-	const { format, ext, bitrate, lossless, bitDepth } = describeFormat(entry.format);
+	const { format, ext, bitrate, lossless, bitDepth, sampleRateHz } = describeFormat(entry.format);
 	return {
 		url,
 		format,
@@ -204,6 +265,7 @@ async function resolveViaExternal(
 		claimedBitrateKbps: bitrate,
 		claimedLossless: lossless,
 		claimedBitDepth: bitDepth,
+		claimedSampleRateHz: sampleRateHz,
 		// External resolvers return pre-decrypted streams.
 		cipher: 'NONE',
 		decryptTrackId: null,

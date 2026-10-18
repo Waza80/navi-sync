@@ -19,6 +19,12 @@ export interface JobCounts {
 	total: number;
 	active: number;
 	byStatus: Record<string, number>;
+	/**
+	 * When a job was last created. Carried through to the client so the
+	 * staleness banner updates on its own from the /api/jobs poll rather than
+	 * only on navigation.
+	 */
+	lastActivityAt: string | null;
 }
 
 class LiveEventClient {
@@ -234,14 +240,19 @@ class LiveEventClient {
 	 * stayed at 0 forever — while the API was returning correct totals all along.
 	 * `jobs` is a SvelteMap and `connected` is $state; this was the odd one out.
 	 */
-	#counts = $state<JobCounts>({ total: 0, active: 0, byStatus: {} });
+	#counts = $state<JobCounts>({ total: 0, active: 0, byStatus: {}, lastActivityAt: null });
 
 	get jobCounts(): JobCounts {
 		return this.#counts;
 	}
 
 	set jobCounts(next: JobCounts) {
-		this.#counts = { total: next.total, active: next.active, byStatus: { ...next.byStatus } };
+		this.#counts = {
+			total: next.total,
+			active: next.active,
+			byStatus: { ...next.byStatus },
+			lastActivityAt: next.lastActivityAt,
+		};
 		this.#countAuthoritative = true;
 	}
 
@@ -268,6 +279,10 @@ class LiveEventClient {
 			total: this.#counts.total + (isNew ? 1 : 0),
 			active: (byStatus['queued'] ?? 0) + (byStatus['running'] ?? 0),
 			byStatus,
+			// A transition is not new activity; the /api/jobs poll carries the real
+			// timestamp. Keeping the previous value here stops the staleness banner
+			// flickering on every single status change.
+			lastActivityAt: this.#counts.lastActivityAt,
 		};
 	}
 

@@ -130,6 +130,13 @@ export const tracks = pgTable(
 		// can report clear per-track status instead of looking like a no-op.
 		metadataRefreshedAt: timestamp('metadata_refreshed_at'),
 		metadataStatus: text('metadata_status'),
+		/**
+		 * When the quality-upgrade engine last examined this row and found nothing
+		 * better. Without it the sweep's candidate ordering kept re-picking the same
+		 * oldest rows every hour, so a track no provider can improve blocked the
+		 * backlog behind it indefinitely.
+		 */
+		upgradeCheckedAt: timestamp('upgrade_checked_at'),
 		navidromeSyncedAt: timestamp('navidrome_synced_at', { withTimezone: true }),
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -190,6 +197,15 @@ export const settings = pgTable('settings', {
 	preferLossless: boolean('prefer_lossless').notNull().default(true),
 	/** Allow accepting a lower quality when the preferred tier is unavailable */
 	allowLowerFallback: boolean('allow_lower_fallback').notNull().default(true),
+	/**
+	 * Fetch hi-res masters (24-bit sampled above CD rate) when a provider has one.
+	 *
+	 * Separate from `preferLossless` because the tiers are separate — a release
+	 * can have both a 16/44.1 and a 24/96 master, and declining hi-res must still
+	 * leave CD-quality lossless available. A hi-res file is roughly 3x the size
+	 * of its CD counterpart, so this is a storage decision, not a free upgrade.
+	 */
+	preferHiRes: boolean('prefer_hi_res').notNull().default(true),
 	/**
 	 * When false, the cross-provider quality-upgrade sweep stops hunting for
 	 * better masters of tracks it already has. MISSING music is still fetched:

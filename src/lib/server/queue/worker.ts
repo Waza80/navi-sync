@@ -220,7 +220,7 @@ export function ensureWorkerStarted(): void {
 
 			/**
 			 * Quality upgrade sweep (CROSS-PROVIDER): for every track below the
-			 * 24-bit ceiling, ask ALL configured providers (Tidal AND Deezer
+			 * top tier (24/192), ask ALL configured providers (Tidal AND Deezer
 			 * AND …) for the best available version — ISRC-exact when possible.
 			 * One provider up = it takes precedence; both up = best quality wins.
 			 * Enqueued upgrades refetch lyrics; a downed lyrics API keeps existing
@@ -239,13 +239,24 @@ export function ensureWorkerStarted(): void {
 						log.debug('quality upgrade sweep disabled by settings');
 						return;
 					}
-					const { listUpgradeCandidates } = await import('$lib/server/db/tracks');
+					const { listUpgradeCandidates, markUpgradeChecked } = await import(
+						'$lib/server/db/tracks'
+					);
 					const { findBestUpgrade } = await import('./upgrades');
 					const { enqueueJob } = await import('./jobs');
+					// Wider than it looks: since sample rate became a tier, every 24-bit
+					// file below hi-res is a candidate too, not just the sub-24-bit ones.
 					const candidates = await listUpgradeCandidates('*', 25);
 					for (const track of candidates) {
 						const upgrade = await findBestUpgrade(track).catch(() => null);
-						if (!upgrade) continue;
+						if (!upgrade) {
+							// Nothing better anywhere. Stamp the row so the sweep rotates on
+							// to the next track: ordering candidates by age alone kept the same
+							// hopeless rows in every hourly window, and the backlog behind them
+							// was never reached at all.
+							void markUpgradeChecked(track.id).catch(() => undefined);
+							continue;
+						}
 						await enqueueJob({
 							type: 'download',
 							payload: {
@@ -396,6 +407,7 @@ export function ensureWorkerStarted(): void {
 										format: full.format,
 										bitrateKbps: full.bitrateKbps,
 										bitDepth: full.bitDepth,
+										sampleRateHz: full.sampleRateHz,
 										isLossless: full.isLossless,
 									},
 									{ skipRecentCheck: true },

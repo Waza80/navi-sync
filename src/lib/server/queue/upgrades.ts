@@ -5,15 +5,21 @@ import { getSettings } from '$lib/server/settings';
 import { logger } from '$lib/server/logger';
 import { enabledProviders } from '$lib/server/providers/enabled';
 import type { QualityPreferences, StreamResolution, TrackMeta } from '$lib/server/providers/types';
-import { qualityRank } from '$lib/shared/quality';
+import { isAtCeiling, qualityRank } from '$lib/shared/quality';
 
 /**
  * Cross-provider best-quality engine.
  *
- * For a track below the 24-bit ceiling, ask EVERY configured provider for the
- * best available stream (ISRC-exact when possible), then pick the highest
- * rank. "If only one is up, it takes precedence; if both work, the best
- * quality always wins." The sweep keeps iterating until everything is 24-bit.
+ * For a track below the top tier, ask EVERY configured provider for the best
+ * available stream (ISRC-exact when possible), then pick the highest rank.
+ * "If only one is up, it takes precedence; if both work, the best quality always
+ * wins."
+ *
+ * The tiers are finer than they used to be. Deezer now serves a hi-res tier
+ * (`FLAC_24`, verified 24-bit/96 kHz) alongside Tidal's 24/192, so "24-bit" is
+ * no longer the end of the road and the sweep keeps iterating until a track is
+ * at 24/192 — or until no provider has anything better, in which case the row's
+ * `upgrade_checked_at` is stamped and the sweep moves on to the next track.
  */
 
 const log = logger;
@@ -40,6 +46,8 @@ export interface TrackForUpgrade {
 	format: string;
 	bitrateKbps: number | null;
 	bitDepth: number | null;
+	/** Measured sample rate — the tier separator (24/44.1 vs 24/96 vs 24/192). */
+	sampleRateHz: number | null;
 	isLossless: boolean;
 }
 
@@ -47,11 +55,13 @@ function prefsOf(settings: {
 	preferLossless: boolean;
 	minBitrateKbps: number;
 	allowLowerFallback: boolean;
+	preferHiRes?: boolean;
 }): QualityPreferences {
 	return {
 		preferLossless: settings.preferLossless,
 		minBitrateKbps: settings.minBitrateKbps,
 		allowLowerFallback: settings.allowLowerFallback,
+		preferHiRes: settings.preferHiRes ?? true,
 	};
 }
 
@@ -84,8 +94,12 @@ export async function findBestUpgrade(
 		bitrateKbps: track.bitrateKbps,
 		bitDepth: track.bitDepth,
 		isLossless: track.isLossless,
+		sampleRateHz: track.sampleRateHz,
 	});
-	if (existingRank >= 4) return null; // 24-bit ceiling reached
+	// The ceiling moved when Deezer gained a hi-res tier. "Is it 24-bit?" stopped
+	// being the end of the question: a 24/44.1 file is still three tiers short,
+	// and answering yes here is why hi-res masters were never hunted for.
+	if (isAtCeiling(existingRank)) return null;
 	if (!opts.skipRecentCheck && (await hasRecentUpgradeAttempt(track.id, 24))) return null;
 
 	const baseMeta: TrackMeta = {
@@ -179,6 +193,7 @@ export async function findBestUpgrade(
 				bitrateKbps: resolution.claimedBitrateKbps,
 				bitDepth: resolution.claimedBitDepth ?? null,
 				isLossless: resolution.claimedLossless,
+				sampleRateHz: resolution.claimedSampleRateHz ?? null,
 			});
 			if (incomingRank > existingRank) {
 				candidates.push({ provider: provider.id, meta, resolution, incomingRank });

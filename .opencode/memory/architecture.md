@@ -4,10 +4,10 @@
 
 `src/lib/server/providers/` — registry order is precedence.
 
-| Provider | Streams | Notes                                                                                                                                                                                                 |
-| -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tidal`  | Yes     | Self-hosted `hifi-api` instance. fMP4 demuxed to FLAC in pure TS (`tidal/mp4.ts`) — the production image has no ffmpeg. No artist-track or playlist endpoint (`/artist/albums/`, `/playlist/` → 404). |
-| `deezer` | Yes     | Needs a gateway (`DEEZER_RESOLVER_URL`) for album→track and artist album listings; the public API returns `InvalidQueryException` for song ids.                                                       |
+| Provider | Streams | Notes                                                                                                                                                                                                                                 |
+| -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tidal`  | Yes     | Self-hosted `hifi-api` instance. fMP4 demuxed to FLAC in pure TS (`tidal/mp4.ts`) — the production image has no ffmpeg. No artist-track or playlist endpoint (`/artist/albums/`, `/playlist/` → 404).                                 |
+| `deezer` | Yes     | Needs a gateway (`DEEZER_RESOLVER_URL`) for album→track and artist album listings; the public API returns `InvalidQueryException` for song ids. Serves `FLAC_24` (24-bit/**96 kHz**) where a release has one; the id carries no rate. |
 
 A `Provider` exposes: `parseRef`, `matches`, `metadata`, `search`, `resolve`,
 optional `findByIsrc` / `findByIsrcInAlbum` / `albumTracks` / `albumTrackIds` /
@@ -25,8 +25,23 @@ accepts those URLs so `/api/search` can classify a pasted link and offer fan-out
 (job bodies), `relocate.ts` (re-finding a track elsewhere), `upgrades.ts`.
 
 Download handler order: route → parse ref → metadata → enrich missing →
-quality guardrail → resolve stream → download → verify integrity → tag →
+quality guardrail → resolve stream → download → verify integrity →
+**measure, and refuse to replace a file that is not an improvement** → tag →
 lyrics → file into library → embed lyrics → persist row.
+
+Quality ranks 0–6 (`src/lib/shared/quality.ts`), with sample rate separating the
+lossless tiers: 6 = 24/192 (ceiling), 5 = 24/96, 4 = 24/≤48k, 3 = 16-bit, 2 = MP3
+320, 1 = lower MP3. Two rules matter more than the numbers:
+
+- A descriptor with **no stated sample rate** ranks as hi-res. Providers
+  advertise a 24-bit tier without saying what rate it is (Deezer's id is
+  `FLAC_24`), so the optimistic reading is the only one that attempts the fetch.
+- Nothing replaces a file on a claim. The downloaded audio is probed and compared
+  with `measuredIsBetter` before it is tagged; a copy that is not strictly better
+  is discarded and the row keeps what it had.
+
+`preferHiRes` (settings) caps the fetch at 24/192 or 24/48 and is passed to
+providers as part of `QualityPreferences`.
 
 Two rescue paths exist, and they are different bugs:
 

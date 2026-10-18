@@ -776,3 +776,188 @@ It grew and shrank with the row count, moving everything below it on every job
 arrival. Now a fixed `overflow-y-auto` region, `max-height: min(70vh, 44rem)`,
 `min-height: 4rem`, `scrollbar-gutter: stable` so the scrollbar does not itself
 shift content. SSE updates inside it change nothing about the layout.
+
+## Deezer has a hi-res tier, and its format id is `FLAC_24`
+
+Verified live 2026-10-18 against Pink Floyd — Money (`116914026`):
+
+| requested                                                                             | returned  | measured          |
+| ------------------------------------------------------------------------------------- | --------- | ----------------- |
+| `FLAC`                                                                                | 40.3 MiB  | 16-bit/44.1 kHz   |
+| `FLAC_24`                                                                             | 134.7 MiB | 24-bit/**96 kHz** |
+| `FLAC_24BIT`, `FLAC_24BIT_192`, `FLAC_HIRES`, `FLAC_192`, `MAX`, `LOSSLESS`, `HI_RES` | —         | error 1002        |
+
+Four things this cost a probe to learn, none of which are guessable:
+
+1. **The id is `FLAC_24`.** Nothing else. No rate in the id, and no rate anywhere
+   in the response — `describeFormat` must claim the depth and nothing else.
+2. **It is 96 kHz, not 192.** Deezer's catalogue tops out at 96; Tidal is the
+   24/192 source. Measure, never assume.
+3. **An ungranted format requested ALONE fails.** `["FLAC_24"]` returns
+   `{"code":1002,"message":"License token has no sufficient rights..."}`, which
+   the pipeline reads as NO*STREAM. Only ~1 track in 7 has a hi-res master, so the
+   chain must keep `FLAC`/`MP3_320` behind it. Unknown ids \_inside* a list are
+   silently ignored — only a solo request errors.
+4. **`OPTIONS.lossless` is false on an account that is served FLAC.** The
+   `deezer.getUserData` OPTIONS block reports `lossless:false` and
+   `sound_quality.high:false`, yet `media/get_url` returns `FLAC` and `FLAC_24`
+   happily. Do not gate on OPTIONS — it describes the web player's preset.
+
+`MEDIA_VERSION: 2` on `song.getData` is not a quality signal either.
+
+## "24-bit" stopped being one tier, and that broke three guards at once
+
+24-bit used to be the ceiling, so `qualityRank` returned 4 for 24/44.1, 24/96 and
+24/192 alike. Every one of these was silently wrong once `FLAC_24` existed:
+
+- `shouldSkipRefetch`'s `existingRank >= 4 → '24bit_ceiling_reached'` meant a
+  24/44.1 file could never be replaced, even by a 24/96 master.
+- `findBestUpgrade`'s `if (existingRank >= 4) return null` ended the hunt at
+  24-bit, so hi-res masters were never looked for.
+- `listUpgradeCandidates`' SQL `bit_depth < 24` excluded every 24-bit row from
+  the sweep before any of that mattered — in the DATABASE, where no amount of
+  TypeScript rank change would reach it.
+
+The rank is now 0–6 with sample rate as the separator, and the DB predicate admits
+24-bit rows that are not hi-res. Look for the SQL filter whenever the quality
+model changes: it is the one place the old assumption survived the port.
+
+## A provider's claim is optimistic; only a measurement may replace a file
+
+Everything upstream of the probe compares a MEASURED file with a CLAIMED one, and
+`FLAC_24` claims nothing about its rate — so it can only be ranked "possibly
+hi-res". Ranking it optimistically is what makes the upgrade possible at all;
+taking that optimism as fact is what would eventually downgrade the library. So
+`qualityRank` reads an unstated rate as hi-res (the fetch is attempted), and
+`measuredIsBetter` runs on the PROBED file before anything is tagged (a 24/96 file
+is never replaced by a 24/44.1 one).
+
+The pre-download guardrail cannot make this call: it runs before the stream is
+resolved, so it only ever sees a guess. It now takes the true upper bound
+(`bestPossibleFetch`) instead of a flat "24-bit" — which was both too low to let
+a hi-res upgrade through and, being the ceiling, too high to matter.
+
+## `env.ts` calls dotenv with `override: true`, so exported env vars lose
+
+`config({ quiet: true, override: true })` means `DATABASE_URL=x bun script` is
+silently replaced by `.env`. A probe that needs a different database must either
+set `process.env` before the first `$lib/server/*` import, or read the row itself
+with `pg` and inject the session into the global the gateway caches.
+
+## The migration journal had stopped at 0007
+
+`drizzle/meta/_journal.json` listed entries up to `0007_refetch_blocked` while
+`0008_metadata_reindex.sql` sat on disk unrecorded. Its columns existed in
+production only because they had been applied by hand — so a FRESH database would
+have started without `artist_mbid`, `metadata_refreshed_at` or `metadata_status`,
+and the app would have failed on boot. Both 0008 and 0009 are now journalled;
+0008 uses `IF NOT EXISTS` throughout, so re-running it is safe.
+
+Ask the journal, not the `drizzle/` directory, "has this migration shipped?".
+
+## The upgrade sweep starved the backlog behind hopeless rows
+
+`listUpgradeCandidates` ordered by `created_at asc` with a LIMIT. The oldest rows
+that no provider could improve stayed in every hourly window, so nothing behind
+them was ever examined. Latent while the candidate set was only the sub-24-bit
+rows; permanent the moment every 24-bit file became a candidate. Fixed with
+`upgrade_checked_at`, stamped when an examination finds nothing better, ordered
+by `coalesce(upgrade_checked_at, created_at)`.
+
+A candidate query that filters correctly is not the same as a sweep that
+progresses. Both were wrong, in different ways.
+
+## The production database moved host (192.168.1.16 → 192.168.1.24)
+
+`docker/compose.prod.yaml` still points at the old address. Direct connections
+from the dev host to the new host succeed on the first attempt, where the old one
+needed a retry loop. Anything reading `.env` or the compose file for the DSN is
+now reading a dead address — check the running deployment's own env, not these
+files.
+
+## The app was DOWN for ten days and every number said "fine"
+
+2026-10-08 → 2026-10-18. The queue panel read "0 active", the library page
+rendered, no error surfaced anywhere. The cause was not a bug in the app:
+`DATABASE_URL` in the Coolify environment still pointed at `192.168.1.16`, and
+the whole server moved to `192.168.1.24`. The container crash-looped every 33s on
+`CREATE SCHEMA IF NOT EXISTS "drizzle"` → `migration failed` → `worker failed to
+start`.
+
+What made this invisible, and what fixes it:
+
+- **An empty queue and a dead worker produce identical readings.** Nothing looked
+  at _when_ work last happened, only at how much was outstanding. `jobCounts` now
+  returns `lastActivityAt`, the dashboard shows a banner past 6 hours, and
+  `/api/diagnostics` reports `queue.stale`. Six hours is the longest normal gap —
+  a reindex sweep's worth of quiet — so anything past it means the worker stopped,
+  not that work ran out.
+- **"Every container up" is not "every container healthy".** `docker ps` showed
+  the app `Up 6 days (unhealthy)` alongside healthy siblings; nothing flags an
+  app that is up but failing its health check for months.
+- **The restart-only deploy that "failed" on 10-08 was a red herring.** The server
+  had already moved; the restart just exposed it.
+
+Lesson worth keeping: _when a service has been down, check how long before you
+diagnose why._ Ten days of "is it broken?" would have been answered by one
+`SELECT max(created_at) FROM jobs`.
+
+## An IP in an env var is a deployment dependency
+
+`DATABASE_URL` embedding `192.168.1.16` meant a host move broke the app with no
+code change, no migration and no deploy. A container-network alias or the service
+name survives the move. Worth changing deliberately rather than one outage at a
+time.
+
+## Production has no Deezer credentials
+
+The container's environment has `DATABASE_URL`, `APP_SECRET`, origins and nothing
+provider-specific — no `DEEZER_EMAIL` / `DEEZER_PASSWORD`. The gateway can
+refresh its CSRF token from the stored ARL (that works, verified by hand), so the
+session heals itself indefinitely. But when the ARL itself expires there is no
+fallback: `loginFull` throws `NO_CREDENTIALS` and every Deezer download fails
+until someone re-adds credentials in Providers. Silent until it is total.
+
+## Cross-provider upgrades could replace a different recording
+
+`supersededId = upgradeForTrackId ?? (existing && isSameRecording(...))` — an
+explicit upgrade target skipped the ISRC check entirely, and the supersede step
+**deletes the file it replaces**.
+
+A same-provider upgrade is safe by construction (same track id re-read). A
+cross-provider one is not: when ISRC lookup fails, `findBestUpgrade` falls back
+to an artist/title match, and a live take or a remix answers to that name exactly.
+The row would then carry the other recording's title, artist and ISRC, which
+reads as a deliberate correction rather than as data loss.
+
+Now refused unless both sides carry the same ISRC (`upgradeIdentityProven`). A
+missing ISRC proves nothing, so it is treated as unproven: refusing costs one
+missed upgrade, guessing costs the original recording.
+
+## Grouping failures by signature also redacts credentials
+
+`errorSignature` collapses a message to its shape so forty failures read as one
+problem. The rule that mattered: redact **every** `key=value` in a URL query
+string, not just ones whose name contains "token" or "key". Deezer's CDN signs
+with `hdnea`, `acl` and `hmac` — none of which match a credential-shaped
+allowlist, and the values are live access tokens. Doing this in JS rather than
+`regexp_replace` in SQL is what made it testable.
+
+## Bulk actions: the label must be the same query as the action
+
+First attempt at "Upgrade N tracks" summed the quality tiers. That looked
+equivalent to the selection query and was not — a row with a file but a
+non-completed status would be counted on the button and then not enqueued, which
+reads as a broken button rather than as two definitions that disagree. The count
+and the selection now share one predicate, verified by asserting the chip counts
+equal the list totals for every tier.
+
+Two bugs the same verification caught:
+
+- `quality=hires` returned **all 1262 rows**. `hires` IS the ceiling; the guard
+  fell through to the unfiltered predicate, so "upgrade the hi-res tracks" queued
+  the entire backlog.
+- The candidate ordering was not a total order. Bulk imports give hundreds of rows
+  the same `created_at`, so "the first 25 of the sweep" was not necessarily the
+  first 25 of the list the user had been shown. Fixed with `id` as the final
+  tiebreaker in both queries.

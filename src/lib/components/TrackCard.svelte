@@ -44,6 +44,11 @@
 		failed ? { text: 'FAILED', cls: 'bg-error-container text-on-error-container' } : null,
 	);
 	const lossless = $derived(track.isLossless || track.format === 'flac');
+	// Hi-res is only claimed when the rate is actually recorded above CD rate — the
+	// badge is a statement about the file, so an unknown rate must not produce one.
+	const hiRes = $derived(
+		lossless && (track.bitDepth ?? 16) >= 24 && (track.sampleRateHz ?? 0) > 48000,
+	);
 </script>
 
 <!--
@@ -96,8 +101,21 @@
 						? 'bg-primary-container text-on-primary-container'
 						: 'bg-secondary-container text-on-secondary-container'}"
 				>
-					{qualityLabel(track.format, track.bitrateKbps, track.bitDepth)}
+					{qualityLabel(
+						track.format,
+						track.bitrateKbps,
+						track.bitDepth,
+						track.sampleRateHz,
+					)}
 				</span>
+				{#if hiRes}
+					<span
+						class="m3-chip bg-tertiary-container text-on-tertiary-container"
+						title="Hi-res lossless: 24-bit sampled above CD rate"
+					>
+						HI-RES
+					</span>
+				{/if}
 				{#if lyricsBadge}
 					<span class="m3-chip {lyricsBadge.cls}">{lyricsBadge.text}</span>
 				{/if}

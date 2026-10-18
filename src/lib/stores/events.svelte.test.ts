@@ -93,7 +93,12 @@ describe('LiveEventClient reactivity', () => {
 		live.start();
 		// Authoritative totals first: deltas are ignored until real numbers arrive,
 		// otherwise a seed would compound into a wrong count.
-		live.jobCounts = { total: 100, active: 0, byStatus: { succeeded: 100 } };
+		live.jobCounts = {
+			total: 100,
+			active: 0,
+			byStatus: { succeeded: 100 },
+			lastActivityAt: null,
+		};
 		live.start();
 
 		lastES().onmessage?.({ data: statusEvt('job.queued', 'job-a') });

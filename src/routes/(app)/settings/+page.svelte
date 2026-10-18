@@ -9,6 +9,7 @@
 		minBitrateKbps: number;
 		preferLossless: boolean;
 		allowLowerFallback: boolean;
+		preferHiRes: boolean;
 		autoUpgradeQuality: boolean;
 		forceTagRepair: boolean;
 		enabledProviders: string[];
@@ -31,6 +32,8 @@
 	let preferLossless = $state(data.settings.preferLossless);
 	// svelte-ignore state_referenced_locally
 	let allowLowerFallback = $state(data.settings.allowLowerFallback);
+	// svelte-ignore state_referenced_locally
+	let preferHiRes = $state(data.settings.preferHiRes);
 	// svelte-ignore state_referenced_locally
 	let autoUpgradeQuality = $state(data.settings.autoUpgradeQuality);
 	// svelte-ignore state_referenced_locally
@@ -84,6 +87,7 @@
 				minBitrateKbps,
 				preferLossless,
 				allowLowerFallback,
+				preferHiRes,
 				autoUpgradeQuality,
 				forceTagRepair,
 				enabledProviders: enabled.length > 0 ? enabled : ['deezer'],
@@ -348,9 +352,23 @@
 					bind:checked={preferLossless}
 				/>
 				<span class="text-sm"
-					>Prefer lossless (FLAC). Hard ceiling: 24-bit — never fetches above or
-					re-fetches below.</span
+					>Prefer lossless (FLAC). Ceiling: 24-bit — never fetches above, never re-fetches
+					below.</span
 				>
+			</label>
+			<label class="flex min-h-12 items-center gap-3">
+				<input
+					type="checkbox"
+					class="h-5 w-5 accent-[var(--md-primary)]"
+					bind:checked={preferHiRes}
+				/>
+				<span class="text-sm">
+					Prefer hi-res masters (24-bit above CD rate) when a provider has one
+					<span class="text-on-surface-variant">
+						— Deezer serves 24/96, Tidal up to 24/192. Roughly 3× the size of the CD
+						master, and a release with no hi-res version falls back to CD lossless.
+					</span>
+				</span>
 			</label>
 			<label class="flex min-h-12 items-center gap-3">
 				<input
@@ -370,7 +388,7 @@
 					bind:checked={autoUpgradeQuality}
 				/>
 				<span class="text-sm">
-					Keep hunting for better masters (hourly, up to 24-bit).
+					Keep hunting for better masters (hourly, up to 24/192).
 					<span class="text-on-surface-variant">
 						Turning this off stops only the upgrade sweep — missing songs are still
 						fetched.

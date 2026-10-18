@@ -8,6 +8,7 @@ import { db } from '$lib/server/db';
 import { tracks } from '$lib/server/db/schema';
 import type { TrackMeta, StreamResolution } from '$lib/server/providers/types';
 import type { ProbedQuality } from '$lib/server/library/tagging';
+import { HIRES_MIN_SAMPLE_RATE_HZ } from '$lib/shared/quality';
 import { logger } from '$lib/server/logger';
 
 const log = logger;
@@ -22,6 +23,8 @@ export interface ExistingTrack {
 	format: string;
 	bitrateKbps: number | null;
 	bitDepth: number | null;
+	/** Measured sample rate; separates 24/44.1 from 24/96 and 24/192. */
+	sampleRateHz: number | null;
 	isLossless: boolean;
 }
 
@@ -37,6 +40,10 @@ export async function findExistingTrack(meta: TrackMeta): Promise<ExistingTrack 
 				format: tracks.format,
 				bitrateKbps: tracks.bitrateKbps,
 				bitDepth: tracks.bitDepth,
+				// Needed by the quality guardrail: without the rate a 24-bit file
+				// cannot be told apart from a 24/96 one, and the guardrail compared
+				// two of them as equals.
+				sampleRateHz: tracks.sampleRateHz,
 				isLossless: tracks.isLossless,
 				filePath: tracks.filePath,
 			})
@@ -54,6 +61,7 @@ export async function findExistingTrack(meta: TrackMeta): Promise<ExistingTrack 
 			format: tracks.format,
 			bitrateKbps: tracks.bitrateKbps,
 			bitDepth: tracks.bitDepth,
+			sampleRateHz: tracks.sampleRateHz,
 			isLossless: tracks.isLossless,
 			filePath: tracks.filePath,
 		})
@@ -184,10 +192,13 @@ export async function listTracks(opts: {
 	pageSize?: number;
 	/** 'filed' = rows with a file (the actual library); 'failed' = file-less failed rows. */
 	scope?: 'all' | 'filed' | 'failed';
+	/** Quality tier. Defaults to 'all'. */
+	quality?: QualityTier;
 }): Promise<TrackListResult> {
 	const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 50));
 	const page = Math.max(1, opts.page ?? 1);
 	const scope = opts.scope ?? 'all';
+	const quality = opts.quality ?? 'all';
 	const conditions = [];
 	if (opts.q) {
 		const like = `%${opts.q}%`;
@@ -201,6 +212,13 @@ export async function listTracks(opts: {
 	if (scope === 'filed') conditions.push(isNotNull(tracks.filePath));
 	else if (scope === 'failed')
 		conditions.push(and(eq(tracks.downloadStatus, 'failed'), isNull(tracks.filePath)));
+	// Quality only means something for a row that has audio. Without this scope
+	// the filter counted file-less failed rows as "lossy" and the counts on the
+	// filter chips disagreed with the list they opened.
+	if (quality !== 'all') {
+		conditions.push(isNotNull(tracks.filePath));
+		conditions.push(QUALITY_TIERS[quality]);
+	}
 	const filter = conditions.length > 0 ? and(...conditions) : undefined;
 
 	const [{ value: total }] = await db.select({ value: count() }).from(tracks).where(filter);
@@ -225,11 +243,45 @@ export async function deleteTrackRow(id: string): Promise<boolean> {
 	return rows.length > 0;
 }
 
+/**
+ * Quality tiers, as one place. The library filter, the stats panel and the bulk
+ * upgrade all have to agree on what "hi-res" means, or the button count and the
+ * filtered list disagree — which reads as a bug in one of them and is actually a
+ * disagreement in three definitions.
+ *
+ * Deliberately expressed in SQL rather than derived from `qualityRank`, because
+ * these run as COUNT/filter predicates over ~1300 rows and a TypeScript-side
+ * classification would have to fetch every row first.
+ */
+export type QualityTier = 'all' | 'lossy' | 'cd16' | 'bit24' | 'hires';
+
+export const QUALITY_TIERS: Record<Exclude<QualityTier, 'all'>, ReturnType<typeof sql>> = {
+	// Anything lossy: MP3 at any bitrate, or a file whose container we could not
+	// identify as lossless.
+	lossy: sql`${tracks.isLossless} = false`,
+	// Lossless at CD depth — the bulk of a well-kept library.
+	cd16: sql`${tracks.isLossless} = true AND (${tracks.bitDepth} IS NULL OR ${tracks.bitDepth} < 24)`,
+	// 24-bit but not hi-res: 24/44.1 and 24/48. A real tier, because these are
+	// exactly the rows an upgrade sweep can still improve.
+	bit24: sql`${tracks.isLossless} = true AND ${tracks.bitDepth} = 24 AND (${tracks.sampleRateHz} IS NULL OR ${tracks.sampleRateHz} <= ${HIRES_MIN_SAMPLE_RATE_HZ})`,
+	// 24-bit above CD rate. An unknown rate is NOT counted: the badge would be a
+	// claim the library cannot back.
+	hires: sql`${tracks.isLossless} = true AND ${tracks.bitDepth} = 24 AND ${tracks.sampleRateHz} > ${HIRES_MIN_SAMPLE_RATE_HZ}`,
+};
+
+/** Reject anything that is not a known tier rather than silently showing all. */
+export function parseQualityTier(v: string | null | undefined): QualityTier {
+	return v === 'lossy' || v === 'cd16' || v === 'bit24' || v === 'hires' ? v : 'all';
+}
+
 export async function trackStats(): Promise<{
 	total: number;
 	lossless: number;
 	withLyrics: number;
 	failed: number;
+	byQuality: Record<Exclude<QualityTier, 'all'>, number>;
+	/** Rows the upgrade sweep could still improve — the number the button wants. */
+	upgradeable: number;
 }> {
 	const [totalRow] = await db.select({ value: count() }).from(tracks);
 	const [losslessRow] = await db
@@ -244,11 +296,44 @@ export async function trackStats(): Promise<{
 		.select({ value: count() })
 		.from(tracks)
 		.where(eq(tracks.downloadStatus, 'failed'));
+
+	// Counts must sum to the filed library, so the scope here is exactly the one
+	// the filter uses: real files, not the failed rows that carry no audio.
+	const filed = and(eq(tracks.refetchBlocked, false), isNotNull(tracks.filePath));
+	const tierCounts = await Promise.all(
+		(Object.keys(QUALITY_TIERS) as Array<Exclude<QualityTier, 'all'>>).map(async (tier) => {
+			const [row] = await db
+				.select({ value: count() })
+				.from(tracks)
+				.where(and(filed, QUALITY_TIERS[tier]));
+			return [tier, row?.value ?? 0] as const;
+		}),
+	);
+	const byQuality = Object.fromEntries(tierCounts) as Record<Exclude<QualityTier, 'all'>, number>;
+
+	// Mirrors `listUpgradeableTrackIds`' predicate EXACTLY — same below-the-ceiling
+	// test, same completed/filed/unblocked conditions. Summing the tiers instead
+	// looked equivalent and was not: a row with a file but a non-completed status
+	// would have been counted on the button and then not enqueued, which reads as
+	// a broken button rather than as two definitions that disagree.
+	const [upgradeableRow] = await db
+		.select({ value: count() })
+		.from(tracks)
+		.where(
+			and(
+				filed,
+				eq(tracks.downloadStatus, 'completed'),
+				sql`(${tracks.isLossless} = false OR ${tracks.bitDepth} IS NULL OR ${tracks.bitDepth} < 24 OR (${tracks.bitDepth} = 24 AND (${tracks.sampleRateHz} IS NULL OR ${tracks.sampleRateHz} <= ${HIRES_MIN_SAMPLE_RATE_HZ})))`,
+			),
+		);
+
 	return {
 		total: totalRow?.value ?? 0,
 		lossless: losslessRow?.value ?? 0,
 		withLyrics: lyricsRow?.value ?? 0,
 		failed: failedRow?.value ?? 0,
+		byQuality,
+		upgradeable: upgradeableRow?.value ?? 0,
 	};
 }
 
@@ -315,10 +400,10 @@ export async function findLibraryDuplicate(
 
 /**
  * Upgrade-sweep candidates: tracks that (a) have a real file, (b) sit below
- * the 24-bit ceiling, (c) belong to the given provider.
+ * the top tier, (c) belong to the given provider.
  */
 /**
- * Tracks below the 24-bit ceiling that are worth an upgrade attempt.
+ * Tracks below the top tier that are worth an upgrade attempt.
  *
  * `providerId` accepts `'*'` to mean EVERY provider — the sweep uses that,
  * because the point is cross-provider: the current provider may not have a
@@ -345,6 +430,7 @@ export async function listUpgradeCandidates(providerId: string, limit = 10) {
 				format: tracks.format,
 				bitrateKbps: tracks.bitrateKbps,
 				bitDepth: tracks.bitDepth,
+				sampleRateHz: tracks.sampleRateHz,
 				isLossless: tracks.isLossless,
 				filePath: tracks.filePath,
 				durationSec: tracks.durationSec,
@@ -359,14 +445,96 @@ export async function listUpgradeCandidates(providerId: string, limit = 10) {
 					// candidates and no track was ever upgraded.
 					providerId === '*' ? undefined : eq(tracks.provider, providerId),
 					eq(tracks.downloadStatus, 'completed'),
-					sql`(${tracks.isLossless} = false OR ${tracks.bitDepth} IS NULL OR ${tracks.bitDepth} < 24)`,
+					// Anything that could still be better. This used to stop at
+					// `bit_depth < 24`, which was the ceiling when 24-bit was one tier.
+					// Now it also admits 24-bit files that are NOT hi-res — 24/44.1 and
+					// 24/48 are three tiers below a 24/96 master, and a row sitting at one
+					// of them is exactly the row an upgrade sweep exists to improve.
+					// A 24-bit row with no recorded rate is included: the rate is unknown,
+					// so whether it is already hi-res cannot be claimed.
+					sql`(${tracks.isLossless} = false OR ${tracks.bitDepth} IS NULL OR ${tracks.bitDepth} < 24 OR (${tracks.bitDepth} = 24 AND (${tracks.sampleRateHz} IS NULL OR ${tracks.sampleRateHz} <= ${HIRES_MIN_SAMPLE_RATE_HZ})))`,
 				),
 			)
-			// Oldest-first: a track that has been waiting longest gets its attempt
-			// first, so the sweep makes forward progress through the backlog.
-			.orderBy(asc(tracks.createdAt))
+			// Least-recently-examined first. This was `created_at asc`, which with a
+			// limit meant the same oldest rows were re-examined on every hourly run:
+			// a track with no better master anywhere stayed in the window forever and
+			// the backlog behind it never advanced. Widening the candidate set to
+			// every 24-bit file would have made that starvation permanent rather than
+			// latent, so the sweep now rotates through what it has already looked at.
+			// `id` last, for a total order — see the note in listUpgradeableTrackIds.
+			.orderBy(
+				asc(sql`coalesce(${tracks.upgradeCheckedAt}, ${tracks.createdAt})`),
+				asc(tracks.id),
+			)
 			.limit(limit)
 	);
+}
+
+/**
+ * Record that the upgrade engine has just examined a track.
+ *
+ * Best-effort and deliberately not awaited by the caller: it is sweep bookkeeping,
+ * so a failure costs a repeated examination, never a missed upgrade.
+ */
+export async function markUpgradeChecked(trackId: string): Promise<void> {
+	await db.update(tracks).set({ upgradeCheckedAt: new Date() }).where(eq(tracks.id, trackId));
+}
+
+/**
+ * Track ids a "upgrade these" action should enqueue for.
+ *
+ * Three conditions, each with a specific reason to be there:
+ *  - below the ceiling, using the SAME predicate as `listUpgradeCandidates`, so
+ *    the button never queues a check for a track the sweep would refuse anyway;
+ *  - only filed, completed, unblocked rows — a blocked row is one the user asked
+ *    to leave alone, and a failed row has nothing to upgrade;
+ *  - nothing already queued or running, so pressing the button twice does not
+ *    double the provider traffic. The hourly sweep's cooldown is deliberately
+ *    NOT consulted here: the user just asked, and that is the whole point.
+ */
+export async function listUpgradeableTrackIds(opts: {
+	quality?: QualityTier;
+	limit: number;
+}): Promise<string[]> {
+	const quality = opts.quality ?? 'all';
+	// `hires` IS the ceiling: a filtered view of hi-res tracks has nothing to
+	// upgrade. Falling through to the unfiltered predicate here would have made
+	// "Upgrade" on the hi-res chip queue all 1262 rows below it — the exact
+	// opposite of what the user asked, and invisible until the queue filled up.
+	if (quality === 'hires') return [];
+	const rows = await db
+		.select({ id: tracks.id })
+		.from(tracks)
+		.where(
+			and(
+				eq(tracks.downloadStatus, 'completed'),
+				eq(tracks.refetchBlocked, false),
+				isNotNull(tracks.filePath),
+				// Same "could still be better" test as the sweep.
+				sql`(${tracks.isLossless} = false OR ${tracks.bitDepth} IS NULL OR ${tracks.bitDepth} < 24 OR (${tracks.bitDepth} = 24 AND (${tracks.sampleRateHz} IS NULL OR ${tracks.sampleRateHz} <= ${HIRES_MIN_SAMPLE_RATE_HZ})))`,
+				quality !== 'all' ? QUALITY_TIERS[quality] : undefined,
+				sql`NOT EXISTS (
+					SELECT 1 FROM jobs j
+					WHERE j.track_id = ${tracks.id}
+					  AND j.type = 'upgrade_check'
+					  AND j.status IN ('queued','running')
+				)`,
+			),
+		)
+		// Least-recently-examined first, so a bulk run works through the backlog in
+		// the same fair order the hourly sweep uses.
+		//
+		// `id` is the final tiebreaker and is not decoration: bulk imports give
+		// hundreds of rows the SAME created_at, and without a total order Postgres
+		// is free to return those rows in a different order on a different query —
+		// which is how "the first 25 of the sweep" silently stops being the first 25
+		// of the same list the user was shown.
+		.orderBy(
+			asc(sql`coalesce(${tracks.upgradeCheckedAt}, ${tracks.createdAt})`),
+			asc(tracks.id),
+		)
+		.limit(Math.max(1, Math.min(2000, opts.limit)));
+	return rows.map((r) => r.id);
 }
 
 /**

@@ -31,7 +31,25 @@
 			tracksTotal: number;
 			failedTracks: TrackDTO[];
 			failedTotal: number;
-			stats: { total: number; lossless: number; withLyrics: number; failed: number };
+			jobCounts: {
+				total: number;
+				active: number;
+				byStatus: Record<string, number>;
+				lastActivityAt: string | null;
+			};
+			// Hand-written rather than inferred, so it has to be widened by hand when
+			// trackStats gains a field. The quality counts drive the filter chips and
+			// the bulk-upgrade label, and a stale shape here is a type error at build
+			// time rather than a silent undefined at runtime.
+			stats: {
+				total: number;
+				lossless: number;
+				withLyrics: number;
+				failed: number;
+				byQuality: { lossy: number; cd16: number; bit24: number; hires: number };
+				/** Rows below the top tier — what "Upgrade N tracks" counts. */
+				upgradeable: number;
+			};
 		};
 	} = $props();
 
@@ -133,6 +151,15 @@
 	});
 
 	let queueFilter = $state<'all' | 'active' | 'done' | 'failed'>('all');
+	// Six hours. Longest gap in normal operation is a reindex sweep's worth of
+	// quiet; anything past it means the worker stopped, not that work ran out.
+	const queueStale = $derived.by(() => {
+		const at = live.jobCounts.lastActivityAt ?? data.jobCounts.lastActivityAt;
+		if (!at) return null;
+		const hours = (Date.now() - new Date(at).getTime()) / 3_600_000;
+		if (!Number.isFinite(hours) || hours <= 6) return null;
+		return new Date(at).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+	});
 	/** True when the queue could not be read; the panel says so instead of lying. */
 	let queueUnavailable = $state(false);
 	// Library filter + pagination are server-driven so they cover the whole
@@ -162,6 +189,52 @@
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		void goto(`${page.url.pathname}?${params.toString()}`, { replaceState: true });
 	}
+	function setQuality(tier: string) {
+		const params = new SvelteURLSearchParams(page.url.searchParams);
+		if (tier === 'all') params.delete('quality');
+		else params.set('quality', tier);
+		params.set('page', '1');
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		void goto(`${page.url.pathname}?${params.toString()}`, {
+			replaceState: true,
+			keepFocus: true,
+		});
+	}
+	const activeQuality = $derived(page.url.searchParams.get('quality') ?? 'all');
+
+	// Bulk upgrade. Queues an upgrade_check for every row below the ceiling that
+	// the current filter selects, not just the page on screen — the sweep does 25
+	// an hour, which is right unattended and useless the moment you want it.
+	let bulkUpgrading = $state(false);
+	async function upgradeAll() {
+		if (bulkUpgrading) return;
+		bulkUpgrading = true;
+		try {
+			const res = await fetch('/api/tracks/upgrade-all', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ quality: activeQuality === 'all' ? 'all' : activeQuality }),
+			});
+			const body = (await res.json().catch(() => ({}))) as {
+				enqueued?: number;
+				error?: { message?: string };
+			};
+			if (!res.ok) toast('error', body.error?.message ?? 'Could not queue upgrades.');
+			else
+				toast(
+					'ok',
+					body.enqueued
+						? `Queued ${body.enqueued} upgrade check${body.enqueued === 1 ? '' : 's'}.`
+						: 'Nothing to upgrade in this view.',
+				);
+			await invalidateAll();
+		} catch {
+			toast('error', 'Could not reach the server.');
+		} finally {
+			bulkUpgrading = false;
+		}
+	}
+
 	const currentPage = $derived(
 		Number.parseInt(page.url.searchParams.get('page') ?? '1', 10) || 1,
 	);
@@ -173,7 +246,12 @@
 	// "there are 30", and wrong whenever the queue was deeper.
 	// Authoritative counts, rendered by the server on every load. The live store is
 	// an enhancement on top; this is what makes the badges correct on first paint.
-	let serverJobCounts = $state<JobCounts>({ total: 0, active: 0, byStatus: {} });
+	let serverJobCounts = $state<JobCounts>({
+		total: 0,
+		active: 0,
+		byStatus: {},
+		lastActivityAt: null,
+	});
 
 	// The store is the live view; the server counts are the floor. Prefer whichever
 	// actually knows something, so a store that has not been seeded yet cannot blank
@@ -1384,6 +1462,19 @@
 			this page is current.
 		</p>
 	{/if}
+	<!--
+		The staleness banner. An empty queue and a dead worker are the same reading
+		on every other number on this page — which is why the app was able to be
+		down for ten days without any surface saying so. This compares WHEN work
+		last happened, not how much was outstanding.
+	-->
+	{#if queueStale}
+		<p class="m3-card p-3 text-sm text-error" role="status" data-testid="queue-stale">
+			No job has been queued since {queueStale}. The worker is probably not running —
+			automatic upgrades, lyrics backfill and retry sweeps have all been paused. Check
+			<code>/api/health</code> and the container logs.
+		</p>
+	{/if}
 	{#if visibleJobs.length === 0}
 		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
 			{queueFilter === 'all' ? 'No jobs yet.' : 'Nothing in this filter.'}
@@ -1420,6 +1511,34 @@
 			bind:value={trackFilter}
 			oninput={onFilterInput}
 		/>
+		<div
+			class="mt-2 flex flex-wrap items-center gap-2"
+			role="group"
+			aria-label="Filter by quality"
+		>
+			{#each [{ id: 'all', label: 'All', n: null }, { id: 'lossy', label: 'Lossy', n: data.stats.byQuality.lossy }, { id: 'cd16', label: 'FLAC 16-bit', n: data.stats.byQuality.cd16 }, { id: 'bit24', label: '24-bit CD', n: data.stats.byQuality.bit24 }, { id: 'hires', label: 'Hi-res', n: data.stats.byQuality.hires }] as chip (chip.id)}
+				<button
+					type="button"
+					class="m3-chip {activeQuality === chip.id
+						? 'bg-primary-container text-on-primary-container'
+						: 'bg-surface-highest text-on-surface-variant'}"
+					aria-pressed={activeQuality === chip.id}
+					onclick={() => setQuality(chip.id)}
+				>
+					{chip.label}{#if chip.n != null}<span class="ml-1 opacity-70">{chip.n}</span
+						>{/if}
+				</button>
+			{/each}
+			<button
+				type="button"
+				class="m3-btn m3-btn-text ml-auto h-9 min-h-9 px-3 text-sm"
+				disabled={bulkUpgrading || data.stats.upgradeable === 0}
+				title="Queue a better-master check for every track in this view that is below the top tier"
+				onclick={() => void upgradeAll()}
+			>
+				{bulkUpgrading ? 'Queueing…' : `Upgrade ${data.stats.upgradeable} tracks`}
+			</button>
+		</div>
 		{#if pageCount > 1}
 			<div
 				class="ml-auto flex items-center gap-2 text-sm text-on-surface-variant"
@@ -1490,8 +1609,8 @@
 	</div>
 	{#if filteredTracks.length === 0}
 		<p class="m3-card p-6 text-center text-sm text-on-surface-variant">
-			{trackFilter
-				? `No tracks match "${trackFilter}".`
+			{trackFilter || activeQuality !== 'all'
+				? 'No tracks match this view. Clear the filter to see the whole library.'
 				: 'Nothing here yet — queue your first download above.'}
 		</p>
 	{:else}

@@ -57,6 +57,20 @@
 			"when": 1791164000000,
 			"tag": "0007_refetch_blocked",
 			"breakpoints": true
+		},
+		{
+			"idx": 8,
+			"version": "7",
+			"when": 1791168000000,
+			"tag": "0008_metadata_reindex",
+			"breakpoints": true
+		},
+		{
+			"idx": 9,
+			"version": "7",
+			"when": 1791172000000,
+			"tag": "0009_upgrade_checked_at",
+			"breakpoints": true
 		}
 	]
 }

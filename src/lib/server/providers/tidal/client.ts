@@ -284,7 +284,17 @@ export class TidalClient {
 		const preferred: Array<TidalConfig['quality']> =
 			prefs?.preferLossless === false
 				? ['LOW', 'LOSSLESS']
-				: [this.#config.quality ?? 'HI_RES_LOSSLESS', 'LOSSLESS', 'LOW'];
+				: [
+						// `LOSSLESS` is Tidal's 16/44.1 tier. Asking for it when hi-res is
+						// declined is what makes the preference real: Tidal answers with the
+						// best it has for the tier asked, so requesting HI_RES_LOSSLESS
+						// unconditionally would hand back a 24/192 file no matter what.
+						prefs?.preferHiRes === false
+							? 'LOSSLESS'
+							: (this.#config.quality ?? 'HI_RES_LOSSLESS'),
+						'LOSSLESS',
+						'LOW',
+					];
 
 		const tried: string[] = [];
 		for (const quality of preferred) {
@@ -340,6 +350,10 @@ export class TidalClient {
 			claimedBitrateKbps: null,
 			claimedLossless: plan.quality !== 'LOW',
 			claimedBitDepth: plan.bitDepth,
+			// Tidal states the rate for the release it actually has, so this is a
+			// measurement rather than a guess. It is what separates a 24/192 master
+			// from a 24/96 one when the upgrade engine compares the two providers.
+			claimedSampleRateHz: plan.sampleRateHz,
 			cipher: 'NONE',
 			decryptTrackId: null,
 			segments: {

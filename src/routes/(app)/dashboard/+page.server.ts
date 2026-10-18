@@ -1,5 +1,5 @@
 import { jobCounts, listJobs } from '$lib/server/queue/jobs';
-import { listTracks, trackStats } from '$lib/server/db/tracks';
+import { listTracks, parseQualityTier, trackStats } from '$lib/server/db/tracks';
 import { ensureMigrated } from '$lib/server/db';
 import type { TrackDTO } from '$lib/shared/types';
 import type { PageServerLoad } from './$types';
@@ -13,6 +13,10 @@ export const load: PageServerLoad = async ({ url }) => {
 	});
 	const q = url.searchParams.get('q');
 	const page = Number.parseInt(url.searchParams.get('page') ?? '1', 10);
+	// The quality filter is part of the URL like the search term is, so a filtered
+	// view is linkable and survives a reload — and so the bulk-upgrade action can
+	// act on exactly what is on screen.
+	const quality = parseQualityTier(url.searchParams.get('quality'));
 
 	// 100 rows, not 30. The queue panel's badges were counting this window, so
 	// "Active 30" really meant "30 of the 30 rows I was handed". The authoritative
@@ -54,7 +58,12 @@ export const load: PageServerLoad = async ({ url }) => {
 
 	const [jobs, counts, tracksResult, failedResult, stats] = await Promise.all([
 		settle('jobs', () => listJobs(30), [] as Panels['jobs']),
-		settle('counts', () => jobCounts(), { total: 0, active: 0, byStatus: {} }),
+		settle('counts', () => jobCounts(), {
+			total: 0,
+			active: 0,
+			byStatus: {},
+			lastActivityAt: null,
+		}),
 		settle(
 			'tracks',
 			() =>
@@ -63,11 +72,19 @@ export const load: PageServerLoad = async ({ url }) => {
 					page: Number.isFinite(page) ? page : 1,
 					pageSize: 50,
 					scope: 'filed',
+					quality,
 				}),
 			EMPTY_TRACKS,
 		),
 		settle('failed', () => listTracks({ pageSize: 100, scope: 'failed' }), EMPTY_TRACKS),
-		settle('stats', () => trackStats(), { total: 0, lossless: 0, withLyrics: 0, failed: 0 }),
+		settle('stats', () => trackStats(), {
+			total: 0,
+			lossless: 0,
+			withLyrics: 0,
+			failed: 0,
+			byQuality: { lossy: 0, cd16: 0, bit24: 0, hires: 0 },
+			upgradeable: 0,
+		}),
 	]);
 
 	const toDto = (t: (typeof tracksResult.items)[number]): TrackDTO => {
@@ -135,6 +152,8 @@ export const load: PageServerLoad = async ({ url }) => {
 	return {
 		/** Panels that failed to load, so the UI can say so instead of showing zeros. */
 		degradedPanels: degraded,
+		/** Echoed back so the UI can mark the active chip without re-parsing the URL. */
+		quality,
 		jobCounts: counts,
 		jobs: jobs.map((j) => ({
 			id: j.id,

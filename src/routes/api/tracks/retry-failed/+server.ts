@@ -68,6 +68,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				format: full.format,
 				bitrateKbps: full.bitrateKbps,
 				bitDepth: full.bitDepth,
+				sampleRateHz: full.sampleRateHz,
 				isLossless: full.isLossless,
 			},
 			{ skipRecentCheck: true },

@@ -1,12 +1,12 @@
 import { z } from 'zod';
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
-import { listTracks } from '$lib/server/db/tracks';
+import { listTracks, parseQualityTier } from '$lib/server/db/tracks';
 import { enqueueJob } from '$lib/server/queue/jobs';
 import { findProviderForUrl, getProvider, providers } from '$lib/server/providers/registry';
 import { isProviderEnabled } from '$lib/server/providers/enabled';
 import type { RequestHandler } from './$types';
 
-/** GET /api/tracks?q=&page=&pageSize=&scope= — paginated, filtered track listing. */
+/** GET /api/tracks?q=&page=&pageSize=&scope=&quality= — paginated, filtered listing. */
 export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!locals.user) return unauthorizedResponse();
 	const q = url.searchParams.get('q') ?? undefined;
@@ -19,6 +19,10 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 		page: Number.isFinite(page) ? page : 1,
 		pageSize: Number.isFinite(pageSize) ? pageSize : 50,
 		scope,
+		// parseQualityTier rejects anything unrecognised rather than falling through
+		// to 'all', so a typo in a URL shows the unfiltered library instead of an
+		// empty list that looks like data loss.
+		quality: parseQualityTier(url.searchParams.get('quality')),
 	});
 	return json(result);
 };

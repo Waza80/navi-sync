@@ -350,6 +350,16 @@ export async function jobCounts(): Promise<{
 	total: number;
 	active: number;
 	byStatus: Record<string, number>;
+	/**
+	 * When a job was last created.
+	 *
+	 * This is the number that would have shown the app was dead. It was down for
+	 * ten days with a queue that read "0 active" the whole time — indistinguishable
+	 * from a healthy idle system — because nothing anywhere looked at WHEN the last
+	 * work happened, only at how much was outstanding. An empty queue and a dead
+	 * worker produce identical readings.
+	 */
+	lastActivityAt: string | null;
 }> {
 	const rows = await db
 		.select({ status: jobs.status, n: sql<number>`count(*)::int` })
@@ -361,12 +371,18 @@ export async function jobCounts(): Promise<{
 		byStatus[r.status] = Number(r.n);
 		total += Number(r.n);
 	}
+	const [newest] = await db.select({ at: sql<Date | null>`max(${jobs.createdAt})` }).from(jobs);
 	// `active` means queued + running and nothing else, so it agrees with what the
 	// dashboard's "Active" tab shows. It previously also counted `failed`, which is
 	// a retryable terminal-ish state — so any consumer of counts.active disagreed
 	// with the filter the user was looking at.
 	const active = (byStatus['queued'] ?? 0) + (byStatus['running'] ?? 0);
-	return { total, active, byStatus };
+	return {
+		total,
+		active,
+		byStatus,
+		lastActivityAt: newest?.at ? new Date(newest.at).toISOString() : null,
+	};
 }
 
 export async function getJob(jobId: string): Promise<JobRow | null> {

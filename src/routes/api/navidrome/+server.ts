@@ -20,6 +20,9 @@ const patchSchema = z.object({
 	minBitrateKbps: z.coerce.number().int().min(64).max(1411).optional(),
 	preferLossless: z.boolean().optional(),
 	allowLowerFallback: z.boolean().optional(),
+	// Same trap as forceTagRepair below: a field the settings type declares and
+	// the client sends is silently stripped unless the whitelist carries it.
+	preferHiRes: z.boolean().optional(),
 	autoUpgradeQuality: z.boolean().optional(),
 	// Was MISSING from this schema, so zod stripped it on every save and the
 	// toggle silently reset. Same shape as the genre bug: a field that is declared in

@@ -33,6 +33,7 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 			format: track.format,
 			bitrateKbps: track.bitrateKbps,
 			bitDepth: track.bitDepth,
+			sampleRateHz: track.sampleRateHz,
 			isLossless: track.isLossless,
 		},
 		{ skipRecentCheck: true },

@@ -17,6 +17,8 @@ export interface AppSettings {
 	minBitrateKbps: number;
 	preferLossless: boolean;
 	allowLowerFallback: boolean;
+	/** Fetch hi-res (24-bit above CD rate) masters when a provider has one. */
+	preferHiRes: boolean;
 	/**
 	 * Hunt for better masters of tracks we already have. Does NOT govern
 	 * fetching MISSING music — the retry sweep runs regardless of this.
@@ -38,6 +40,7 @@ const DEFAULTS = {
 	minBitrateKbps: 320,
 	preferLossless: true,
 	allowLowerFallback: true,
+	preferHiRes: true,
 	autoUpgradeQuality: true,
 	forceTagRepair: false,
 	// Order matters: the registry keeps this order, so Tidal is asked before
@@ -76,6 +79,7 @@ export async function getSettings(): Promise<AppSettings> {
 		minBitrateKbps: row.minBitrateKbps,
 		preferLossless: row.preferLossless,
 		allowLowerFallback: row.allowLowerFallback,
+		preferHiRes: row.preferHiRes,
 		autoUpgradeQuality: row.autoUpgradeQuality,
 		forceTagRepair: row.forceTagRepair,
 		enabledProviders: Array.isArray(row.enabledProviders)
@@ -93,6 +97,7 @@ export interface SettingsPatch {
 	minBitrateKbps?: number;
 	preferLossless?: boolean;
 	allowLowerFallback?: boolean;
+	preferHiRes?: boolean;
 	autoUpgradeQuality?: boolean;
 	forceTagRepair?: boolean;
 	enabledProviders?: string[];
@@ -112,6 +117,7 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
 	if (patch.preferLossless !== undefined) values.preferLossless = patch.preferLossless;
 	if (patch.allowLowerFallback !== undefined)
 		values.allowLowerFallback = patch.allowLowerFallback;
+	if (patch.preferHiRes !== undefined) values.preferHiRes = patch.preferHiRes;
 	if (patch.autoUpgradeQuality !== undefined)
 		values.autoUpgradeQuality = patch.autoUpgradeQuality;
 	if (patch.forceTagRepair !== undefined) values.forceTagRepair = patch.forceTagRepair;
@@ -132,6 +138,7 @@ export async function getPublicSettings(): Promise<{
 	minBitrateKbps: number;
 	preferLossless: boolean;
 	allowLowerFallback: boolean;
+	preferHiRes: boolean;
 	/**
 	 * Hunt for better masters of tracks we already have. Does NOT govern
 	 * fetching MISSING music — the retry sweep runs regardless of this.
@@ -151,6 +158,7 @@ export async function getPublicSettings(): Promise<{
 		minBitrateKbps: s.minBitrateKbps,
 		preferLossless: s.preferLossless,
 		allowLowerFallback: s.allowLowerFallback,
+		preferHiRes: s.preferHiRes,
 		autoUpgradeQuality: s.autoUpgradeQuality,
 		forceTagRepair: s.forceTagRepair,
 		concurrentDownloads: s.concurrentDownloads,

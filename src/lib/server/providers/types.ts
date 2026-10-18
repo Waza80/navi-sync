@@ -47,6 +47,16 @@ export interface QualityPreferences {
 	preferLossless: boolean;
 	minBitrateKbps: number;
 	allowLowerFallback: boolean;
+	/**
+	 * Ask for hi-res masters (24-bit above CD rate) when a provider has one.
+	 *
+	 * Separate from `preferLossless` because the tiers are separate: a provider
+	 * can have a 16/44.1 master and a 24/96 one for the same track, and refusing
+	 * hi-res must still leave CD-quality lossless available. Hi-res files are
+	 * roughly 3x the size of their CD counterparts, so this is a real choice
+	 * rather than a free upgrade.
+	 */
+	preferHiRes?: boolean;
 }
 
 export interface StreamResolution {
@@ -58,6 +68,15 @@ export interface StreamResolution {
 	claimedLossless: boolean;
 	/** Bit depth as claimed (16 for standard FLAC, 24 for hires). */
 	claimedBitDepth?: number | null;
+	/**
+	 * Sample rate as claimed, when the provider states one.
+	 *
+	 * Null means "the provider did not say", which is the common case: Deezer's
+	 * hi-res format id is `FLAC_24` with the rate nowhere in the response. The
+	 * ranker reads that as "possibly hi-res" and the downloaded file is measured
+	 * immediately, so an unstated rate is never taken as fact.
+	 */
+	claimedSampleRateHz?: number | null;
 	/** 'BF_CBC_STRIPE' → file must be decrypted locally before use. */
 	cipher: 'NONE' | 'BF_CBC_STRIPE';
 	/** Provider track id — required to derive the decryption key. */

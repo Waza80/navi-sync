@@ -27,7 +27,7 @@ export const providerDescriptors: ProviderDescriptor[] = [
 		id: 'deezer',
 		displayName: 'Deezer',
 		description:
-			'Full-quality streams (FLAC/MP3 320) using your own Deezer account. Credentials are used once to derive an encrypted session — the password itself is not required after login, but keeping it allows automatic re-login when the session expires.',
+			'Full-quality streams (FLAC/MP3 320) using your own Deezer account. Serves its hi-res tier (24-bit/96 kHz) where a release has one, and CD-quality lossless where it does not. Credentials are used once to derive an encrypted session — the password itself is not required after login, but keeping it allows automatic re-login when the session expires.',
 		credentialsOptional: false,
 		fields: [
 			{

@@ -29,7 +29,23 @@ import {
 	type TrackRef,
 } from '$lib/server/providers/types';
 import type { MetadataField } from '$lib/server/metadata/types';
-import { shouldSkipRefetch, shouldStopAlreadyDownloaded } from '$lib/shared/quality';
+import {
+	bestPossibleFetch,
+	mayReplaceFile,
+	upgradeIdentityProven,
+	qualityRank,
+	shouldSkipRefetch,
+	shouldStopAlreadyDownloaded,
+} from '$lib/shared/quality';
+
+/** The best lossy copy the app will fetch, used when lossless is declined. */
+const MP3_320_UPPER_BOUND = {
+	format: 'mp3',
+	bitrateKbps: 320,
+	bitDepth: null,
+	sampleRateHz: null,
+	isLossless: false,
+} as const;
 import { cleanupTemp, moveIntoLibrary, sha256File } from '$lib/server/library/files';
 import { fetchCover, probeQuality, tagFlac, tagMp3 } from '$lib/server/library/tagging';
 import { trackBaseRelativePath, coverRelativePath } from '$lib/server/library/paths';
@@ -275,7 +291,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 			? job.payload['upgradeForTrackId']
 			: null;
 
-	// 3. Guardrails (spec: 24-bit hard stop, no pointless re-downloads).
+	// 3. Guardrails (spec: hard stop at the top tier, no pointless re-downloads).
 	const settings = await getSettings();
 	const existing = await findExistingTrack(meta);
 
@@ -321,14 +337,14 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 				bitrateKbps: existing.bitrateKbps,
 				bitDepth: existing.bitDepth,
 				isLossless: existing.isLossless,
+				sampleRateHz: existing.sampleRateHz,
 			},
-			// Incoming can't be better than the provider's best possible offer:
-			{
-				format: settings.preferLossless ? 'flac' : 'mp3',
-				bitrateKbps: null,
-				bitDepth: settings.preferLossless ? 24 : null,
-				isLossless: settings.preferLossless,
-			},
+			// The incoming copy cannot beat the best this app will ever fetch:
+			//   - lossless + 24-bit, up to 24/192 when hi-res is wanted, else 24/48.
+			// This bound used to be a flat "24-bit", which made it the CEILING as
+			// well: a 24/44.1 file ranked 4 and nothing outranked it, so a hi-res
+			// master could never replace it even when one was on offer.
+			settings.preferLossless ? bestPossibleFetch(settings.preferHiRes) : MP3_320_UPPER_BOUND,
 		);
 		if (verdict.skip) {
 			log.info('download skipped by quality guardrail', {
@@ -361,6 +377,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 			preferLossless: settings.preferLossless,
 			minBitrateKbps: settings.minBitrateKbps,
 			allowLowerFallback: settings.allowLowerFallback,
+			preferHiRes: settings.preferHiRes,
 		});
 	} catch (err) {
 		if (!isStreamUnavailable(err)) throw err;
@@ -409,6 +426,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 			preferLossless: settings.preferLossless,
 			minBitrateKbps: settings.minBitrateKbps,
 			allowLowerFallback: settings.allowLowerFallback,
+			preferHiRes: settings.preferHiRes,
 		});
 	}
 
@@ -492,6 +510,131 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	// 7. Probe real quality (DB stores measured, not claimed).
 	await ctx.report(74, 'verifying audio');
 	const probed = await probeQuality(finalTmp).catch(() => null);
+
+	// 7b. An upgrade replaces a file, so it is checked against what is actually on
+	// disk rather than against what the provider promised.
+	//
+	// Everything upstream of here compares a MEASURED existing file with a CLAIMED
+	// incoming one, and claims are optimistic by construction: Deezer's hi-res
+	// format id says "24-bit" and nothing about the rate, so it can only be ranked
+	// as "possibly hi-res". Taking that claim at face value is how a 24/96 file
+	// gets replaced by a 24/44.1 one that happened to arrive from a provider
+	// advertising its 24-bit tier.
+	//
+	// Both sides are measured here, so the comparison is honest. A downloaded copy
+	// that is not strictly better is discarded before it is tagged, so nothing
+	// touches the library and the existing file keeps its row.
+	if (upgradeForTrackId != null) {
+		const { getTrackById } = await import('$lib/server/db/tracks');
+		const current = await getTrackById(upgradeForTrackId).catch(() => null);
+
+		// ── 7b-i. Identity: is this the SAME recording? ──
+		//
+		// A same-provider upgrade is safe by construction — `findBestUpgrade` re-reads
+		// the same provider track id. A CROSS-provider one is not: when ISRC lookup
+		// fails, the engine falls back to matching on artist/title, and a live take
+		// or a remix answers to that name exactly. The supersede step below deletes
+		// the file it replaces, so an unproven match there destroys the wrong song —
+		// and the row then carries the new recording's title, artist and ISRC, which
+		// makes it look deliberate afterwards.
+		//
+		// ISRC on both sides and equal is the only proof this codebase accepts
+		// anywhere else (`isSameRecording` says so explicitly), so it is the only
+		// proof accepted here.
+		const identityProven =
+			current == null ||
+			upgradeIdentityProven({
+				fromProvider: current.provider,
+				toProvider: activeProvider.id,
+				fromIsrc: current.isrc,
+				toIsrc: meta.isrc,
+			});
+		if (!identityProven) {
+			await cleanupTemp(finalTmp);
+			log.warn('upgrade refused — cross-provider identity not proven', {
+				jobId: job.id,
+				title: meta.title,
+				trackId: upgradeForTrackId,
+				from: `${current.provider} isrc=${current.isrc ?? 'none'}`,
+				to: `${activeProvider.id} isrc=${meta.isrc ?? 'none'}`,
+			});
+			return {
+				skipped: true,
+				reason: 'upgrade_identity_unproven',
+				trackId: upgradeForTrackId,
+			};
+		}
+
+		// ── 7b-ii. Quality: is the fetched copy an improvement? ──
+		//
+		// Everything upstream of here compares a MEASURED file with a CLAIMED one,
+		// and claims are optimistic by construction: Deezer's hi-res format id says
+		// "24-bit" and nothing about the rate, so it can only be ranked "possibly
+		// hi-res". Taking that claim at face value is how a 24/96 file gets replaced
+		// by a 24/44.1 one that happened to arrive from a provider advertising its
+		// 24-bit tier.
+		//
+		// Both sides are measured here, so the comparison is honest. A copy that is
+		// not strictly better is discarded before it is tagged, so nothing touches
+		// the library and the existing file keeps its row.
+		//
+		// Only a row that actually HAS a file is protected. A row whose file is
+		// missing has nothing to lose, and refusing there would strand the track
+		// with no audio at all — the one outcome this gate must never produce.
+		const protectedRow =
+			current != null && typeof current.filePath === 'string' && current.filePath.length > 0
+				? { ...current, hasFile: true }
+				: null;
+		const incoming = {
+			format: probed?.container ?? resolution.ext,
+			bitrateKbps: probed?.bitrateKbps ?? resolution.claimedBitrateKbps,
+			bitDepth: probed?.bitDepth ?? resolution.claimedBitDepth ?? null,
+			isLossless: probed?.lossless ?? resolution.claimedLossless,
+			sampleRateHz: probed?.sampleRateHz ?? resolution.claimedSampleRateHz ?? null,
+		};
+		const currentRank = protectedRow
+			? qualityRank({
+					format: protectedRow.format,
+					bitrateKbps: protectedRow.bitrateKbps,
+					bitDepth: protectedRow.bitDepth,
+					isLossless: protectedRow.isLossless,
+					sampleRateHz: protectedRow.sampleRateHz,
+				})
+			: -1;
+		const incomingRank = qualityRank(incoming);
+		if (protectedRow != null && !mayReplaceFile(protectedRow, incoming)) {
+			await cleanupTemp(finalTmp);
+			log.info('upgrade discarded — the fetched copy is not an improvement', {
+				jobId: job.id,
+				title: meta.title,
+				trackId: upgradeForTrackId,
+				currentRank,
+				incomingRank,
+				current: `${protectedRow.format} ${protectedRow.bitDepth ?? '?'}bit/${protectedRow.sampleRateHz ?? '?'}Hz`,
+				incoming: `${incoming.format} ${incoming.bitDepth ?? '?'}bit/${incoming.sampleRateHz ?? '?'}Hz`,
+			});
+			// The row keeps the file and the status it already had. This is not a
+			// failure and must not be recorded as one.
+			return {
+				skipped: true,
+				reason: 'no_better_version_found',
+				trackId: upgradeForTrackId,
+				currentRank,
+				incomingRank,
+			};
+		}
+		log.info(
+			protectedRow
+				? 'upgrade verified better'
+				: 'upgrade fetched, nothing on disk to protect',
+			{
+				jobId: job.id,
+				trackId: upgradeForTrackId,
+				from: currentRank,
+				to: incomingRank,
+			},
+		);
+	}
 
 	// 8. Tag + embed cover.
 	await ctx.report(78, 'tagging');
@@ -1368,6 +1511,7 @@ async function runUpgradeCheck(job: JobRow, ctx: JobContext): Promise<Record<str
 			format: t.format,
 			bitrateKbps: t.bitrateKbps,
 			bitDepth: t.bitDepth,
+			sampleRateHz: t.sampleRateHz,
 			isLossless: t.isLossless,
 		},
 		{ skipRecentCheck: true },
