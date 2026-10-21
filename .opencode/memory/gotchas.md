@@ -982,3 +982,11 @@ The tag that reaches Navidrome is `LYRICS` (aliases `uslt:description`, `lyrics`
 `unsyncedlyrics`). `LRC` is not an alias. Stamps must be **inside** `LYRICS`:
 `model/lyrics_lrc.go` sets `synced` from `[mm:ss.xx]`, and without that flag the
 player discards the whole entry.
+
+## The version is a literal, not `package.json`
+
+`/api/health` reports `APP_VERSION` from `src/lib/version.ts`, which is inlined at
+build time. Bumping `package.json` alone ships code that reports the OLD version —
+I polled for `0.12.1`, saw `0.12.0` with a reset uptime, and briefly believed the
+webhook had deployed the wrong commit. Bump both, and trust the container image
+tag (`docker ps` shows the commit SHA) over the reported version when in doubt.
