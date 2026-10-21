@@ -10,9 +10,10 @@ library file (2026-10-21).
 `lyricsList` or `structuredLyrics`. Its only lyric path is:
 
 ```js
-const { lyrics: n } = song;          // media_file.lyrics, the DB column
-if (n) for (const i of JSON.parse(n))
-         if (i.synced) for (const o of i.line) emit(`[mm:ss.xx] ${o.value}`);
+const { lyrics: n } = song; // media_file.lyrics, the DB column
+if (n)
+	for (const i of JSON.parse(n))
+		if (i.synced) for (const o of i.line) emit(`[mm:ss.xx] ${o.value}`);
 ```
 
 So the player renders **only entries marked `synced`** from the scanned row, and
@@ -71,6 +72,30 @@ The fix: one `LYRICS` tag carrying the timestamps; `embedLyrics()` shared by the
 download path and the lyrics job; `ensureFileTags` reads the sidecar beside the
 file instead of honouring a `null`; `lyrics_embedded_at` marks rows whose tag is
 written so the backfill terminates; `lyrics` sweep embeds 40 tracks per tick.
+
+## Measured result of the rework (2026-10-21)
+
+Before: 84 of 1309 `media_file` rows had any lyric content, and **all 84 were
+`"synced": false`** — so the web player rendered lyrics for **zero** tracks while
+`getLyricsBySongId` returned perfect synced lyrics for hundreds.
+
+After the backfill (v0.12.1, 815 embedded jobs, 0 dead):
+
+| measure                          | before |   after |
+| -------------------------------- | -----: | ------: |
+| Postgres rows claiming lyrics    |    822 |     815 |
+| Postgres rows with tag embedded  |      0 |     815 |
+| `media_file.lyrics` non-empty    |     84 |     818 |
+| `media_file` with `synced: true` |      0 | **718** |
+
+718 is the number the player can actually display. The remaining 97 are
+plain-only: Navidrome drops every unsynced entry, so they stay invisible until a
+synced source turns up (the sweep retries them weekly).
+
+The 5 tracks that finished last had `lyrics_embedded_at IS NULL` with a
+`succeeded` job: the embed had failed once (file mid-move), and the 24h jobs guard
+then parked them. Re-enqueueing via `POST /api/lyrics/fetch/:id` fixed all five —
+the guard limits retries, so a transient embed failure waits a day.
 
 ## Verifying after a deploy
 
