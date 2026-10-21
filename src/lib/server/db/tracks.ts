@@ -80,6 +80,8 @@ export interface UpsertTrackInput {
 	sizeBytes: number | null;
 	checksumSha256: string | null;
 	lyricsStatus: 'none' | 'synced' | 'plain' | 'failed';
+	/** Set only when the lyrics were written into the file in this same flow. */
+	lyricsEmbeddedAt?: Date | null;
 }
 
 /** Insert or update the library row for a provider track (measured quality). */
@@ -109,6 +111,9 @@ export async function upsertTrack(input: UpsertTrackInput): Promise<string> {
 		filePath: input.filePath,
 		coverPath: input.coverPath,
 		lyricsStatus: input.lyricsStatus,
+		// Only overwrite the marker when this flow embedded lyrics. A download
+		// that fetched nothing must not clear an older embed.
+		...(input.lyricsEmbeddedAt ? { lyricsEmbeddedAt: input.lyricsEmbeddedAt } : {}),
 		updatedAt: new Date(),
 	};
 	// Reuse an existing shell before inserting.
@@ -374,10 +379,20 @@ export async function listFiledTracks(): Promise<
 export async function updateLyricsStatus(
 	id: string,
 	status: 'none' | 'synced' | 'plain' | 'failed',
+	/**
+	 * Set when the lyrics have just been written into the audio file. Absent
+	 * means "the status changed but nothing was embedded" — a failed fetch must
+	 * not clear an older marker and enqueue the file again.
+	 */
+	embeddedAt?: Date,
 ): Promise<void> {
 	await db
 		.update(tracks)
-		.set({ lyricsStatus: status, updatedAt: new Date() })
+		.set({
+			lyricsStatus: status,
+			updatedAt: new Date(),
+			...(embeddedAt ? { lyricsEmbeddedAt: embeddedAt } : {}),
+		})
 		.where(eq(tracks.id, id));
 }
 
@@ -586,6 +601,56 @@ export async function listLyricsBackfillCandidates(limit = 5): Promise<
 			),
 		)
 		.limit(limit);
+}
+
+/**
+ * Rows that HAVE lyrics but have not written them into their audio file yet.
+ *
+ * This is the gap that made lyrics look broken: the fetch writes a sidecar and
+ * sets `lyrics_status`, but nothing ever embedded it, and Navidrome's player
+ * reads the tag, not the sidecar. The backfill is bounded by
+ * `lyrics_embedded_at`, so the sweep drains instead of re-queueing the library
+ * on every tick.
+ *
+ * The jobs-table guard caps retries at one per track per day: a row whose file
+ * has vanished would otherwise be re-queued every five minutes forever.
+ *
+ * Plain rows come back after a week. The Navidrome player renders only entries
+ * flagged `synced`, so a plain sidecar is still invisible there; the spec says to
+ * keep asking until a synced version turns up, and the marker is what paces that.
+ */
+export async function listLyricsEmbedCandidates(limit = 25): Promise<string[]> {
+	const rows = await db
+		.select({ id: tracks.id })
+		.from(tracks)
+		.where(
+			and(
+				isNotNull(tracks.filePath),
+				sql`${tracks.lyricsStatus} IN ('synced','plain')`,
+				sql`(
+					${tracks.lyricsEmbeddedAt} IS NULL
+					OR (${tracks.lyricsStatus} = 'plain'
+					    AND ${tracks.lyricsEmbeddedAt} < now() - interval '7 days')
+				)`,
+				sql`NOT EXISTS (
+					SELECT 1 FROM jobs j
+					WHERE j.track_id = ${tracks.id}
+					  AND j.type = 'lyrics'
+					  AND j.status IN ('queued','running')
+				)`,
+				sql`NOT EXISTS (
+					SELECT 1 FROM jobs j
+					WHERE j.track_id = ${tracks.id}
+					  AND j.type = 'lyrics'
+					  AND j.status IN ('dead','succeeded')
+					  AND j.created_at > now() - interval '24 hours'
+				)`,
+			),
+		)
+		// Oldest first, so a stalled backfill cannot starve the tail of the queue.
+		.orderBy(asc(tracks.updatedAt))
+		.limit(limit);
+	return rows.map((r) => r.id);
 }
 
 /**

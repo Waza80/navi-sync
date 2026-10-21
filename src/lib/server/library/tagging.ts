@@ -2,7 +2,8 @@ import * as NodeID3 from 'node-id3';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { stat } from 'node:fs/promises';
-import { rename, unlink, writeFile } from 'node:fs/promises';
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { readLyricsSidecar } from '$lib/server/lyrics/sidecar';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
@@ -27,11 +28,10 @@ export interface TagData {
 	cover: Buffer | null;
 	lyricsPlain: string | null;
 	/**
-	 * Timestamped lyrics (LRC format) to embed alongside `lyricsPlain`.
+	 * Timestamped lyrics (LRC format). Written to the ONE lyrics tag Navidrome
+	 * reads; see `buildVorbisFields` for why the stamps must be in that tag.
 	 *
-	 * Navidrome does not read .lrc sidecar files — only tags — so without this
-	 * the dashboard shows lyrics while Navidrome reports "No lyrics". The
-	 * sidecar is still written for other players.
+	 * The sidecar is still written for other players.
 	 */
 	lyricsSynced: string | null;
 }
@@ -93,7 +93,7 @@ export function tagMp3(path: string, tags: TagData): void {
 	}
 	if (tags.cover) {
 		frames.image = {
-			mime: 'image/jpeg',
+			mime: coverMimeOf(tags.cover),
 			type: 3,
 			description: 'Cover',
 			imageBuffer: tags.cover,
@@ -124,6 +124,27 @@ function nfc(value: string | null | undefined): string | undefined {
 }
 
 /**
+ * MIME type of cover bytes, from the bytes themselves.
+ *
+ * Hardcoding `image/jpeg` labelled every PNG cover as a JPEG. Navidrome and
+ * browsers sniff the payload anyway, so nothing broke visibly, but the tag was
+ * simply wrong — and a wrong tag is what a re-import turns into a wrong picture.
+ */
+function coverMimeOf(bytes: Buffer): string {
+	if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e) {
+		return 'image/png';
+	}
+	return 'image/jpeg';
+}
+
+/** First embedded picture, as bytes, for the writers to re-embed. */
+function embeddedPicture(common: Record<string, unknown> | null): Buffer | null {
+	const pics = (common?.picture as Array<{ data?: Uint8Array }> | undefined) ?? [];
+	const data = pics[0]?.data;
+	return data && data.length > 0 ? Buffer.from(data) : null;
+}
+
+/**
  * Build canonical Vorbis comment fields from tag data (pure — unit-tested).
  * Store downloads carry junk or empty tags (e.g. a lone "Processed by SoX"
  * comment), which is exactly why Navidrome shows [Unknown] artists/albums.
@@ -142,12 +163,20 @@ export function buildVorbisFields(tags: TagData): Array<[string, string]> {
 	if (tags.year != null) fields.push(['DATE', String(tags.year)]);
 	const genre = nfc(tags.genre);
 	if (genre) fields.push(['GENRE', genre]);
-	if (tags.lyricsPlain) fields.push(['LYRICS', tags.lyricsPlain.replace(/\r/g, '')]);
-	// Also write the timestamped form. Navidrome reads USLT/UNSYNCEDLYRICS for
-	// plain lyrics but shows nothing at all when only a .lrc sidecar exists —
-	// it never reads sidecar files. Writing LRC (synced) alongside LYRICS lets
-	// Navidrome display and highlight lyrics for every track we have them for.
-	if (tags.lyricsSynced) fields.push(['LRC', tags.lyricsSynced.replace(/\r/g, '')]);
+	// ONE lyrics tag, and it must carry the timestamps when we have them.
+	//
+	// Navidrome reads exactly one tag here: `LYRICS` (mappings.yaml aliases are
+	// `uslt:description`, `lyrics`, `unsyncedlyrics`). `LRC` is NOT one of them,
+	// so writing the synced copy there hid it completely — what reached Navidrome
+	// was the plain text under `LYRICS`, which it indexes as `"synced": false`.
+	// Its web player only renders entries whose `synced` is true, so even the
+	// tracks that did carry a lyrics tag showed nothing.
+	//
+	// Navidrome's `model.ParseLyrics` falls through to the LRC parser and sets
+	// `synced` from the presence of `[mm:ss.xx]` stamps, so the stamps belong in
+	// `LYRICS` itself. Plain text is only the fallback when no synced form exists.
+	const lyrics = tags.lyricsSynced ?? tags.lyricsPlain;
+	if (lyrics) fields.push(['LYRICS', lyrics.replace(/\r/g, '')]);
 	return fields;
 }
 
@@ -164,7 +193,7 @@ export function buildVorbisFields(tags: TagData): Array<[string, string]> {
  * multi-line lyrics must be passed via `--set-tag-from-file`. Everything else is
  * single-line and goes through the normal argument path.
  */
-const MULTILINE_FIELDS = new Set(['LYRICS', 'LRC']);
+const MULTILINE_FIELDS = new Set(['LYRICS']);
 
 export async function tagFlac(path: string, tags: TagData): Promise<void> {
 	// `--remove-all-tags` also deletes the PICTURE block. Every whole-library
@@ -211,9 +240,10 @@ export async function tagFlac(path: string, tags: TagData): Promise<void> {
 		coverTmp = `${path}.cover.tmp`;
 		await writeFile(coverTmp, tags.cover);
 		// Empty dimensions are accepted — metaflac fills them in.
-		args.push(`--import-picture-from=3|image/jpeg|||${coverTmp}`);
+		args.push(`--import-picture-from=3|${coverMimeOf(tags.cover)}|||${coverTmp}`);
 	} else if (preserved) {
-		args.push(`--import-picture-from=3|image/jpeg|||${preserved}`);
+		const bytes = await readFile(preserved);
+		args.push(`--import-picture-from=3|${coverMimeOf(bytes)}|||${preserved}`);
 	}
 	args.push(path);
 	try {
@@ -414,6 +444,23 @@ export async function ensureFileTags(
 		};
 		const num = (v: unknown): number | null =>
 			typeof v === 'number' && Number.isFinite(v) && v !== 0 ? v : null;
+		// Lyrics are re-derived from disk rather than carried from the file.
+		//
+		// Every caller that retags from the database (adoption, metadata repair,
+		// the Navidrome repair pass) passes null for both lyrics fields, and the
+		// writers rebuild the tag block from scratch — so each pass ERASED the
+		// lyrics it was supposed to leave alone. That is why 1225 of 1309 files
+		// carried no lyrics tag at all while the dashboard reported 822 tracks
+		// with lyrics: the sidecar existed, the tag did not.
+		//
+		// The sidecar beside the file wins because it is what the fetch wrote and
+		// it keeps its timestamps. Only when there is no sidecar do we fall back
+		// to whatever tag the file already had, so a re-tag still loses nothing.
+		const sidecar =
+			tags.lyricsSynced || tags.lyricsPlain ? null : await readLyricsSidecar(filePath);
+		const fileLyrics =
+			(common?.lyrics as Array<{ text?: string }> | undefined)?.find((l) => l?.text)?.text ??
+			null;
 		const carried: TagData = {
 			title: tags.title ?? text(common?.title) ?? 'Unknown Title',
 			artist: tags.artist ?? text(common?.artist) ?? 'Unknown Artist',
@@ -424,9 +471,13 @@ export async function ensureFileTags(
 			trackNumber:
 				tags.trackNumber ?? num((common?.track as { no?: unknown } | undefined)?.no),
 			discNumber: tags.discNumber ?? num((common?.disk as { no?: unknown } | undefined)?.no),
-			cover: tags.cover,
-			lyricsPlain: tags.lyricsPlain,
-			lyricsSynced: tags.lyricsSynced,
+			// The writers wipe every block, picture included, before writing. Reading
+			// the existing art back costs a tag parse we already did and prevents a
+			// lyrics pass from stripping covers off every MP3 in the library.
+			cover: tags.cover ?? embeddedPicture(common),
+			lyricsSynced: tags.lyricsSynced ?? (sidecar?.synced ? sidecar.text : null),
+			lyricsPlain:
+				tags.lyricsPlain ?? (sidecar ? (sidecar.synced ? null : sidecar.text) : fileLyrics),
 		};
 
 		let disagreeing: string[] = [];
@@ -448,6 +499,31 @@ export async function ensureFileTags(
 		log.warn('tag repair failed', { filePath, error: String(err) });
 		return 'failed';
 	}
+}
+
+/**
+ * Write lyrics into the audio file itself.
+ *
+ * This is the step that makes them visible in Navidrome: its web player reads
+ * the `LYRICS` tag from its scanned row — never the `.lrc` sidecar — and renders
+ * only entries flagged `synced`. Download and backfill both come through here so
+ * there is exactly one definition of "the lyrics are in the file".
+ */
+export async function embedLyrics(
+	filePath: string,
+	tags: TagData,
+	lyrics: { text: string; synced: boolean },
+): Promise<'ok' | 'failed'> {
+	const outcome = await ensureFileTags(
+		filePath,
+		{
+			...tags,
+			lyricsSynced: lyrics.synced ? lyrics.text : null,
+			lyricsPlain: lyrics.synced ? null : lyrics.text,
+		},
+		{ force: true },
+	);
+	return outcome === 'ok' ? 'ok' : 'failed';
 }
 
 /** Probe real audio properties — DB stores measured values, not claims. */

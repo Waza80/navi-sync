@@ -1,8 +1,9 @@
-import { mkdir, writeFile, stat } from 'node:fs/promises';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { trackBaseRelativePath } from '$lib/server/library/paths';
 import { logger } from '$lib/server/logger';
 import { env } from '$lib/server/env';
+import { readLyricsSidecar, sidecarBase } from './sidecar';
 import { lrclibSource } from './lrclib';
 import { appleMusicSource } from './apple-music';
 import { deezerPipeSource } from './deezer-pipe';
@@ -64,29 +65,25 @@ export async function lyricsSidecar(
 	meta: TrackMeta,
 	root: string = env.MUSIC_LIBRARY_DIR,
 ): Promise<ExistingSidecar | null> {
-	const base = join(root, trackBaseRelativePath(meta));
-	const lrc = `${base}.lrc`;
-	if (
-		await stat(lrc).then(
-			() => true,
-			() => false,
-		)
-	) {
-		return { kind: 'synced', path: lrc };
-	}
-	const txt = `${base}.txt`;
-	if (
-		await stat(txt).then(
-			() => true,
-			() => false,
-		)
-	) {
-		return { kind: 'plain', path: txt };
-	}
-	return null;
+	// Only used before a file exists (the download handler, pre-move). Once the
+	// audio is on disk, call `readLyricsSidecar(filePath)` instead: the sidecar
+	// must be looked up beside the file, not recomputed from its tags.
+	const found = await readLyricsSidecar(join(root, trackBaseRelativePath(meta)));
+	return found ? { kind: found.synced ? 'synced' : 'plain', path: found.path } : null;
 }
 
-export async function downloadLyrics(meta: TrackMeta): Promise<DownloadLyricsResult> {
+export async function downloadLyrics(
+	meta: TrackMeta,
+	/**
+	 * Absolute path of the audio file these lyrics belong to.
+	 *
+	 * When supplied, the sidecar is written next to THAT file. Without it the
+	 * path is rebuilt from the track's tags, which can disagree with where the
+	 * file was actually filed (a merged artist credit, a renamed album) and puts
+	 * the sidecar somewhere Navidrome never looks.
+	 */
+	audioPath?: string,
+): Promise<DownloadLyricsResult> {
 	const query: LyricsQuery = {
 		title: meta.title,
 		artist: meta.artist,
@@ -104,12 +101,15 @@ export async function downloadLyrics(meta: TrackMeta): Promise<DownloadLyricsRes
 				continue;
 			}
 			if (result.synced) {
-				const path = await writeSidecar(meta, `${result.synced}\n`, 'lrc');
+				const path = await writeSidecar(meta, `${result.synced}\n`, 'lrc', audioPath);
+				// A synced copy supersedes a plain one. Leaving both beside the file
+				// makes "which sidecar is canonical" depend on read order.
+				await unlink(path.replace(/\.lrc$/, '.txt')).catch(() => {});
 				log.info('lyrics fetched (synced)', { source: source.id, path });
 				return { success: true, path, synced: true };
 			}
 			if (result.plain) {
-				const path = await writeSidecar(meta, `${result.plain}\n`, 'txt');
+				const path = await writeSidecar(meta, `${result.plain}\n`, 'txt', audioPath);
 				log.info('lyrics fetched (plain)', { source: source.id, path });
 				return { success: true, path, synced: false };
 			}
@@ -129,8 +129,16 @@ export async function downloadLyrics(meta: TrackMeta): Promise<DownloadLyricsRes
 	return { success: false, error: failures.join('; ') };
 }
 
-async function writeSidecar(meta: TrackMeta, content: string, ext: 'lrc' | 'txt'): Promise<string> {
-	const absPath = join(env.MUSIC_LIBRARY_DIR, `${trackBaseRelativePath(meta)}.${ext}`);
+async function writeSidecar(
+	meta: TrackMeta,
+	content: string,
+	ext: 'lrc' | 'txt',
+	audioPath?: string,
+): Promise<string> {
+	const base = audioPath
+		? sidecarBase(audioPath)
+		: join(env.MUSIC_LIBRARY_DIR, trackBaseRelativePath(meta));
+	const absPath = `${base}.${ext}`;
 	await mkdir(dirname(absPath), { recursive: true });
 	await writeFile(absPath, content, 'utf8');
 	return absPath;

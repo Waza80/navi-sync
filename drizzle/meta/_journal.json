@@ -71,6 +71,13 @@
 			"when": 1791172000000,
 			"tag": "0009_upgrade_checked_at",
 			"breakpoints": true
+		},
+		{
+			"idx": 10,
+			"version": "7",
+			"when": 1791258400000,
+			"tag": "0010_lyrics_embedded_at",
+			"breakpoints": true
 		}
 	]
 }

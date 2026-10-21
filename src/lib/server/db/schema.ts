@@ -113,6 +113,17 @@ export const tracks = pgTable(
 		coverPath: text('cover_path'),
 		/** 'none' | 'synced' | 'plain' | 'failed' */
 		lyricsStatus: text('lyrics_status').notNull().default('none'),
+		/**
+		 * When these lyrics were last written INTO the audio file.
+		 *
+		 * `lyrics_status` only says a sidecar exists. Navidrome's web player never
+		 * reads sidecars — it renders the `LYRICS` tag captured at scan time — so
+		 * "sidecar on disk" and "lyrics you can see" are different states. Without
+		 * this marker the backfill had no way to tell which of the 822 rows with
+		 * lyrics still needed embedding, and no way to finish: it would re-enqueue
+		 * every track forever.
+		 */
+		lyricsEmbeddedAt: timestamp('lyrics_embedded_at', { withTimezone: true }),
 		/** 'completed' | 'failed' | 'pending' — failed rows are visible in the
 		 * library (no file) and auto-retried by the sweep. */
 		downloadStatus: text('download_status').notNull().default('completed'),

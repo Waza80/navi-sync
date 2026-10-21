@@ -1,15 +1,16 @@
 import type { RequestHandler } from './$types';
-import { readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { json, badRequest, notFound, unauthorizedResponse } from '$lib/server/api';
 import { env } from '$lib/server/env';
 import { logger } from '$lib/server/logger';
 import { cleanupTemp, moveIntoLibrary, sha256File } from '$lib/server/library/files';
-import { probeQuality, tagFlac, tagMp3 } from '$lib/server/library/tagging';
+import { embedLyrics, probeQuality, tagFlac, tagMp3 } from '$lib/server/library/tagging';
 import { coverRelativePath, trackBaseRelativePath } from '$lib/server/library/paths';
 import { findLibraryDuplicate, upsertTrack } from '$lib/server/db/tracks';
-import { downloadLyrics, lyricsSidecar } from '$lib/server/lyrics';
+import { downloadLyrics } from '$lib/server/lyrics';
+import { readLyricsSidecar } from '$lib/server/lyrics/sidecar';
 import type { TrackMeta } from '$lib/server/providers/types';
 
 const log = logger;
@@ -187,25 +188,27 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 	// bare Deezer album search if that yields nothing.
 	const coverBytes = await resolveUploadCover(input, input.isrc ?? null);
 
+	// Canonical tag values, shared by the initial write and the lyrics embed.
+	const tagData = {
+		title: input.title,
+		artist: input.artist,
+		album: input.album,
+		albumArtist: input.albumArtist ?? input.artist,
+		trackNumber: input.trackNumber ?? null,
+		discNumber: input.discNumber ?? null,
+		year: input.year ?? null,
+		genre: input.genre ?? null,
+		cover: coverBytes,
+		lyricsPlain: null,
+		lyricsSynced: null,
+	};
+
 	// Tag the file. `cover` is embedded AND written as a canonical cover.jpg so
 	// Navidrome (which ignores embedded art for MP3 in some paths) finds it.
 	async function ctxTag() {
-		const tags = {
-			title: input.title,
-			artist: input.artist,
-			album: input.album,
-			albumArtist: input.albumArtist ?? input.artist,
-			trackNumber: input.trackNumber ?? null,
-			discNumber: input.discNumber ?? null,
-			year: input.year ?? null,
-			genre: input.genre ?? null,
-			cover: coverBytes,
-			lyricsPlain: null,
-			lyricsSynced: null,
-		};
 		try {
-			if (container === 'flac') await tagFlac(tmpPath, tags);
-			else if (container === 'mp3') tagMp3(tmpPath, tags);
+			if (container === 'flac') await tagFlac(tmpPath, tagData);
+			else if (container === 'mp3') tagMp3(tmpPath, tagData);
 		} catch (err) {
 			// Tagging failing means Navidrome cannot identify the file at all, so
 			// this is worth surfacing rather than silently filing a blank file.
@@ -216,26 +219,48 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 	// Containers with no tagging writer keep whatever tags they arrived with.
 	if (taggable) await ctxTag();
 
+	// The final path is needed BEFORE the move: the lyrics sidecar has to be
+	// written beside the audio, not at a path re-derived from its tags.
+	const relPath = `${trackBaseRelativePath(meta)}.${container}`;
+	const plannedPath = join(env.MUSIC_LIBRARY_DIR, relPath);
+
 	// Lyrics: embedded ones were already tagged by the uploader — otherwise
-	// fetch ONLY when the song misses lyrics (no sidecar at its library path).
+	// fetch ONLY when the song misses lyrics (no sidecar beside its final path).
 	let lyricsStatus: 'none' | 'synced' | 'plain' | 'failed' = 'none';
-	let lyricsPath: string | null = null;
+	let pendingLyrics: { text: string; synced: boolean } | null = null;
 	if (input.embeddedLyrics) {
 		lyricsStatus = 'plain';
-	} else if (input.fetchLyrics && (await lyricsSidecar(meta)) == null) {
-		const result = await downloadLyrics(meta);
-		if (result.success) {
-			lyricsStatus = result.synced ? 'synced' : 'plain';
-			lyricsPath = result.path ?? null;
+	} else if (input.fetchLyrics) {
+		let current = await readLyricsSidecar(plannedPath);
+		if (!current || !current.synced) {
+			const result = await downloadLyrics(meta, plannedPath);
+			if (result.success && result.path) {
+				current = {
+					text: await readFile(result.path, 'utf8'),
+					synced: result.synced === true,
+					path: result.path,
+				};
+			}
+		}
+		if (current) {
+			lyricsStatus = current.synced ? 'synced' : 'plain';
+			pendingLyrics = current;
 		}
 	}
 
 	// File into the library.
 	const checksum = await sha256File(tmpPath);
 	const probed = await probeQuality(tmpPath).catch(() => null);
-	const relPath = `${trackBaseRelativePath(meta)}.${container}`;
 	const finalPath = await moveIntoLibrary(tmpPath, relPath);
 	await cleanupTemp(tmpPath);
+
+	// Embed fetched lyrics into the filed copy. The sidecar alone is invisible to
+	// Navidrome, whose player renders the `LYRICS` tag captured at scan time.
+	let lyricsEmbeddedAt: Date | null = null;
+	if (pendingLyrics) {
+		const embedded = await embedLyrics(finalPath, { ...tagData, cover: null }, pendingLyrics);
+		if (embedded === 'ok') lyricsEmbeddedAt = new Date();
+	}
 
 	// Write the canonical cover.jpg next to the track so Navidrome's folder-based
 	// artwork lookup finds it, and record the path.
@@ -279,8 +304,8 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 		sizeBytes: size,
 		checksumSha256: checksum,
 		lyricsStatus,
+		lyricsEmbeddedAt,
 	});
-	void lyricsPath;
 
 	log.info('upload finalized', { trackId, filePath: finalPath, lyricsStatus });
 	return json({

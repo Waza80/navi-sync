@@ -1,0 +1,12 @@
+-- Lyrics exist in two places and only one of them is visible to Navidrome.
+--
+-- `lyrics_status` records that a .lrc/.txt sidecar was written. Navidrome's web
+-- player ignores sidecars: it renders the `LYRICS` tag captured at scan time,
+-- and only lines flagged `synced`. So "sidecar on disk" and "lyrics visible in
+-- the player" are different states, and the app had no way to tell them apart —
+-- 822 rows reported lyrics while 1225 of 1309 files carried no tag at all.
+--
+-- This marks when the lyrics were last written into the file itself, which makes
+-- the backfill bounded: it selects rows with lyrics and a NULL marker, and
+-- finishes when that set is empty.
+ALTER TABLE "tracks" ADD COLUMN IF NOT EXISTS "lyrics_embedded_at" timestamp with time zone;

@@ -961,3 +961,24 @@ Two bugs the same verification caught:
   the same `created_at`, so "the first 25 of the sweep" was not necessarily the
   first 25 of the list the user had been shown. Fixed with `id` as the final
   tiebreaker in both queries.
+
+## Navidrome's player ignores lyric sidecars — and drops unsynced lyrics
+
+The web UI never calls `getLyricsBySongId`. Its only lyric path JSON-parses the
+song's `lyrics` field — the `media_file.lyrics` column — and renders a line only
+when its entry has `"synced": true`. That column is populated by the scanner from
+**embedded tags only**, so a perfect `.lrc` sidecar can sit next to a file while
+the player shows "No lyric".
+
+Two consequences that cost a long debugging session:
+
+- `getLyricsBySongId` (and legacy `getLyrics`) read sidecars live. They return
+  full synced lyrics for tracks the player shows as empty. Querying them cannot
+  tell you what a user sees; query `media_file.lyrics` instead.
+- `length(lyrics) > 0` counts `[]`. Measure `lyrics <> '[]'`, or 1225 empty rows
+  read as "1309/1309 have lyrics".
+
+The tag that reaches Navidrome is `LYRICS` (aliases `uslt:description`, `lyrics`,
+`unsyncedlyrics`). `LRC` is not an alias. Stamps must be **inside** `LYRICS`:
+`model/lyrics_lrc.go` sets `synced` from `[mm:ss.xx]`, and without that flag the
+player discards the whole entry.

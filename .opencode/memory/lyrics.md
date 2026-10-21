@@ -1,40 +1,112 @@
 # Lyrics
 
-## State: tags are embedded, Navidrome still reports nothing
+## How Navidrome 0.64.2 actually resolves lyrics
 
-The download pipeline writes a sidecar **and** embeds into the file:
+Verified by reading the shipped UI bundle and the Go source, then proven on one
+library file (2026-10-21).
 
-- descriptor-less USLT frame carries synced lyrics — that alias is what Navidrome
-  reads;
-- plain lyrics go in when no timestamps exist.
+**The web player never asks for lyrics over the API.** The bundle (
+`/app/assets/index-*.js`) contains zero references to `getLyricsBySongId`,
+`lyricsList` or `structuredLyrics`. Its only lyric path is:
 
-Navidrome v0.64.2 (`openSubsonic: true`, no plugins, no `ND_LYRICSPRIORITY`) has
-`media_file.lyrics` **non-empty for 584/584** rows, in OpenSubsonic v2 structured
-form `[{"lang":"xxx","line":[{"value":…}]}]`.
+```js
+const { lyrics: n } = song;          // media_file.lyrics, the DB column
+if (n) for (const i of JSON.parse(n))
+         if (i.synced) for (const o of i.line) emit(`[mm:ss.xx] ${o.value}`);
+```
 
-But: `kind` is `null`, `lang` is `xxx` for every row, and **0 rows contain a
-word-level `cue`**.
+So the player renders **only entries marked `synced`** from the scanned row, and
+prints "No lyric" for everything else. Plain lyrics are invisible there.
 
-An earlier "0 lyrics" report here was a measurement error — it read the legacy
-`getLyrics` `value`/`synced` fields, which Navidrome does not populate. Verify
-against its SQLite DB, not the Subsonic API.
+That column is filled by the **scanner, from embedded tags only**. Sidecars are
+read at request time by `getLyricsBySongId` (and the legacy `getLyrics`), which is
+why the API can return full synced lyrics for a track whose player shows nothing.
+**`getLyricsBySongId` is not evidence that a user can see the lyrics.**
 
-So lyrics are present and parseable; what is unproven is _why_ Navidrome
-classifies our LRC as `kind: null` with no cues. Default `LyricsPriority` is
-`".ttml,.yaml,.yml,.elrc,.lrc,.srt,.txt,embedded"` with no override, so sidecars
-and embedded tags are both in scope. Start from the Navidrome DB as the lens.
+### Which tag, and why timestamps must be in it
 
-## Not yet built
+`resources/mappings.yaml` maps exactly one lyrics field:
 
-The agreed spec, still unimplemented:
+```yaml
+lyrics:
+  aliases: [uslt:description, lyrics, unsyncedlyrics]
+```
+
+`LRC` is **not** an alias — a separate `LRC` tag is dropped on the floor. With the
+timestamped text in `LRC` and the plain text in `LYRICS`, Navidrome indexed the
+plain copy as `"synced": false`, so even the tracks that "had lyrics" showed
+nothing in the player.
+
+`model/lyrics_parse.go` falls through to `parseLRC`, and `lyrics_lrc.go` sets
+`synced` from the presence of `[mm:ss.xx]` stamps. Therefore the **timestamped**
+text goes in `LYRICS` itself; plain text is only the fallback when no synced form
+exists. Same for MP3: the USLT frame carries the stamps.
+
+## Measurement traps that hid this for days
+
+- `length(lyrics) > 0` counts `[]` (two characters). The real distribution was
+  **1225 rows `[]` / 84 with content**, not "584/584 have lyrics". Measure
+  `lyrics <> '[]'` (or `length > 2`).
+- The legacy `getLyrics` fields (`value`/`synced`) are not populated; the
+  OpenSubsonic `getLyricsBySongId` endpoint is. Both read sidecars live.
+- `media_file` in 0.64.2 has **no `kind` column**; prior notes about `kind: null`
+  came from an older schema.
+
+## What was broken (fixed in the lyrics rework)
+
+1. `runLyrics` (the backfill job) wrote a sidecar and set `lyrics_status`, but
+   **never embedded** into the audio file. Only the download path embedded, so the
+   vast majority of the 822 tracks had a sidecar and no tag.
+2. The tag writer put the plain copy in `LYRICS` and the synced copy in `LRC`
+   (ignored). Even embedded lyrics were therefore `"synced": false`.
+3. `ensureFileTags` re-derived every carried field except lyrics: it took the
+   caller's `null` verbatim. Every retag-from-DB pass (adoption, metadata repair,
+   Navidrome repair) **erased** the lyrics it was supposed to preserve.
+4. Sidecars were written at a path rebuilt from tags (`<artist>/<album>/<title>`),
+   not beside the audio. A merged artist credit or a renamed album stranded them
+   in a directory the file never lived in (152 such files found).
+5. `LRC` was written as its own tag, which nothing reads.
+
+The fix: one `LYRICS` tag carrying the timestamps; `embedLyrics()` shared by the
+download path and the lyrics job; `ensureFileTags` reads the sidecar beside the
+file instead of honouring a `null`; `lyrics_embedded_at` marks rows whose tag is
+written so the backfill terminates; `lyrics` sweep embeds 40 tracks per tick.
+
+## Verifying after a deploy
+
+```sql
+-- Navidrome truth, not the API
+select count(*) from media_file where lyrics <> '[]';        -- should climb to ~800
+select json_extract(lyrics, '$[0].synced') from media_file
+ where path like '%Fear and Trembling%';                     -- want 1
+```
+
+The UI bundle check, if the player ever regresses again:
+
+```sh
+curl -s https://navi.orbitsc.net/app/ | grep -o 'assets/index-[^"]*\.js'
+# then grep that file for structuredLyrics — 0 means it still uses song.lyrics
+```
+
+Navidrome rescans on mtime change; `ND_SCANSCHEDULE=1h`. Trigger
+`startScan.view` (admin) to see a backfill immediately.
+
+## Still not built
+
+The agreed priority spec, from before this rework:
 
 1. Priority **word-by-word > sentence-synced > plain**.
 2. Fetch periodically **until a synced lyric is found** — absence is retryable.
-3. The periodic sweep must **never** upgrade synced → word-by-word. That is a
-   manual button only.
-4. Toggle `auto_upgrade_lyrics`, mirroring `auto_upgrade_quality` semantics: off
-   stops _upgrades_, missing lyrics are still fetched.
+   (Partially built: the lyrics job now retries a plain sidecar for a synced
+   version, and the 24h jobs guard caps the retry rate.)
+3. The periodic sweep must **never** upgrade synced → word-by-word. Manual only.
+4. Toggle `auto_upgrade_lyrics`, mirroring `auto_upgrade_quality`: off stops
+   _upgrades_, missing lyrics are still fetched.
 5. A manual button that does manage word-by-word.
+
+Word-level cues are still `kind: null` / zero `cue` entries. Navidrome renders the
+line-level `start` values fine, so this is cosmetic until a word-by-word source is
+wired.
 
 ## Deezer LRC timestamps
 

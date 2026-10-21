@@ -4,7 +4,8 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { buildVorbisFields, tagMp3, tagsDisagree, type TagData } from './tagging';
+import { buildVorbisFields, ensureFileTags, tagMp3, tagsDisagree, type TagData } from './tagging';
+import { readLyricsSidecar } from '$lib/server/lyrics/sidecar';
 import { resolveLibraryPath } from './paths';
 
 const exec = promisify(execFile);
@@ -111,8 +112,83 @@ describe('tagMp3', () => {
 	});
 });
 
+describe('readLyricsSidecar', () => {
+	it('prefers the synced .lrc over a plain .txt', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'lyrics-sidecar-'));
+		try {
+			const audio = await makeMp3(dir, '01 - Song.mp3');
+			await writeFile(join(dir, '01 - Song.txt'), 'plain words\n', 'utf8');
+			await writeFile(join(dir, '01 - Song.lrc'), '[00:01.00]synced words\n', 'utf8');
+			const found = await readLyricsSidecar(audio);
+			expect(found?.synced).toBe(true);
+			expect(found?.text).toContain('[00:01.00]');
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('ignores a blank sidecar instead of treating it as lyrics', async () => {
+		// A zero-byte .lrc is a failed write, not a lyric. Reporting it as
+		// synced would stop the next fetch from ever trying again.
+		const dir = await mkdtemp(join(tmpdir(), 'lyrics-sidecar-'));
+		try {
+			const audio = await makeMp3(dir, '01 - Song.mp3');
+			await writeFile(join(dir, '01 - Song.lrc'), '   \n', 'utf8');
+			await writeFile(join(dir, '01 - Song.txt'), 'plain words\n', 'utf8');
+			const found = await readLyricsSidecar(audio);
+			expect(found?.synced).toBe(false);
+			expect(found?.text).toContain('plain words');
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe('ensureFileTags', () => {
+	it('keeps lyrics from the sidecar when the caller passes none', async () => {
+		// Every retag-from-database caller passes null lyrics. The writers rebuild
+		// the whole tag block, so before this the metadata-repair pass erased the
+		// lyrics it was supposed to preserve.
+		const dir = await mkdtemp(join(tmpdir(), 'lyrics-carry-'));
+		try {
+			const audio = await makeMp3(dir, '01 - Song.mp3');
+			await writeFile(join(dir, '01 - Song.lrc'), '[00:01.00]first line\n', 'utf8');
+			const outcome = await ensureFileTags(
+				audio,
+				{
+					title: 'Song',
+					artist: 'Artist',
+					album: null,
+					albumArtist: null,
+					trackNumber: null,
+					discNumber: null,
+					year: null,
+					genre: null,
+					cover: null,
+					lyricsPlain: null,
+					lyricsSynced: null,
+				},
+				{ force: true },
+			);
+			expect(outcome).toBe('ok');
+			const { stdout } = await exec('ffprobe', [
+				'-v',
+				'error',
+				'-show_entries',
+				'format_tags',
+				'-of',
+				'default=nw=1',
+				audio,
+			]);
+			expect(stdout).toContain('[00:01.00]first line');
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe('buildVorbisFields', () => {
-	it('emits LYRICS and LRC so Navidrome has both forms', () => {
+	it('writes ONE lyrics tag, carrying the timestamps', () => {
 		const fields = buildVorbisFields({
 			title: 'T',
 			artist: 'A',
@@ -127,11 +203,31 @@ describe('buildVorbisFields', () => {
 			lyricsSynced: '[00:01.00]plain',
 		});
 		const names = fields.map(([n]) => n);
-		// Navidrome maps `lyrics` (alias `unsyncedlyrics`) but NOT `LRC`; the
-		// timestamped form is what makes the player highlight lines.
+		// Navidrome reads exactly one lyrics tag: `LYRICS` (aliases
+		// uslt:description / lyrics / unsyncedlyrics). `LRC` is not among them, so
+		// the synced copy written there was dropped on the floor — and the plain
+		// copy that did arrive was indexed as `"synced": false`, which the player
+		// refuses to render. The stamps must therefore be in LYRICS itself.
 		expect(names).toContain('LYRICS');
-		expect(names).toContain('LRC');
-		expect(fields.find(([n]) => n === 'LYRICS')?.[1]).toBe('plain');
+		expect(names).not.toContain('LRC');
+		expect(fields.find(([n]) => n === 'LYRICS')?.[1]).toBe('[00:01.00]plain');
+	});
+
+	it('falls back to the plain copy when no synced form exists', () => {
+		const fields = buildVorbisFields({
+			title: 'T',
+			artist: 'A',
+			album: null,
+			albumArtist: null,
+			trackNumber: null,
+			discNumber: null,
+			year: null,
+			genre: null,
+			cover: null,
+			lyricsPlain: 'just words',
+			lyricsSynced: null,
+		});
+		expect(fields.find(([n]) => n === 'LYRICS')?.[1]).toBe('just words');
 	});
 
 	it('keeps non-ASCII values byte-exact', () => {

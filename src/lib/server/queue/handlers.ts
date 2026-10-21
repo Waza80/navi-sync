@@ -14,12 +14,8 @@ import {
 } from '$lib/server/db/tracks';
 import { isSameRecording } from '$lib/shared/quality';
 import { enqueueJob, updateProgress, type JobRow } from './jobs';
-import {
-	downloadLyrics,
-	lyricsSidecar,
-	stripLrcTimestamps,
-	type DownloadLyricsResult,
-} from '$lib/server/lyrics';
+import { downloadLyrics, stripLrcTimestamps, type DownloadLyricsResult } from '$lib/server/lyrics';
+import { readLyricsSidecar } from '$lib/server/lyrics/sidecar';
 import { findProviderForUrl, providers } from '$lib/server/providers/registry';
 import { enabledProviders } from '$lib/server/providers/enabled';
 import {
@@ -47,7 +43,14 @@ const MP3_320_UPPER_BOUND = {
 	isLossless: false,
 } as const;
 import { cleanupTemp, moveIntoLibrary, sha256File } from '$lib/server/library/files';
-import { fetchCover, probeQuality, tagFlac, tagMp3 } from '$lib/server/library/tagging';
+import {
+	embedLyrics,
+	fetchCover,
+	probeQuality,
+	tagFlac,
+	tagMp3,
+	type TagData,
+} from '$lib/server/library/tagging';
 import { trackBaseRelativePath, coverRelativePath } from '$lib/server/library/paths';
 import { startScan } from '$lib/server/navidrome/subsonic';
 import { decryptStripeFile } from '$lib/server/providers/deezer/blowfish';
@@ -660,14 +663,21 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		log.warn('tagging failed, storing untagged file', { error: String(err) });
 	}
 
-	// 9. Lyrics BEFORE moving (sidecar lands next to audio path directly).
-	// Fetch ONLY when the song misses lyrics or was just upgraded — never
-	// re-hit dead APIs for sidecars that already exist on disk.
+	// 9. Lyrics BEFORE moving. The sidecar is written beside the audio's FINAL
+	// path, computed from the same relative path the move will use. It used to be
+	// re-derived from the track's tags, which can disagree with where the file is
+	// actually filed (a merged artist credit, a renamed album) and left the
+	// sidecar in a directory the audio never lived in.
+	//
+	// Fetch ONLY when the song misses lyrics or was just upgraded — never re-hit
+	// dead APIs for sidecars that already exist on disk.
 	await ctx.report(84, 'lyrics');
-	const existingSidecar = await lyricsSidecar(meta);
+	const audioRel = `${trackBaseRelativePath(meta)}.${resolution.ext}`;
+	const plannedPath = join(env.MUSIC_LIBRARY_DIR, audioRel);
+	const existingSidecar = await readLyricsSidecar(plannedPath);
 	let lyrics: DownloadLyricsResult;
 	if (upgradeForTrackId != null || existingSidecar == null) {
-		lyrics = await downloadLyrics(meta);
+		lyrics = await downloadLyrics(meta, plannedPath);
 	} else {
 		log.info('lyrics fetch skipped — sidecar already present', {
 			jobId: job.id,
@@ -675,7 +685,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		});
 		lyrics = {
 			success: true,
-			synced: existingSidecar.kind === 'synced',
+			synced: existingSidecar.synced,
 			path: existingSidecar.path,
 		};
 	}
@@ -683,7 +693,6 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	// 10. Move into the library (Artist/Album/NN - Title.ext).
 	await ctx.report(90, 'filing into library');
 	const checksum = await sha256File(finalTmp);
-	const audioRel = `${trackBaseRelativePath(meta)}.${resolution.ext}`;
 	const finalPath = await moveIntoLibrary(finalTmp, audioRel);
 	await cleanupTemp(finalTmp);
 
@@ -694,21 +703,26 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	// Re-tagging after the move is safe because the library path is already
 	// final — the file no longer moves again, so writing it cannot desync the
 	// DB row from disk. Best-effort: a failure here must not fail the download.
+	let lyricsEmbeddedAt: Date | null = null;
 	if (lyrics.path) {
 		try {
 			const sidecarText = await readFile(lyrics.path, 'utf8');
-			const withLyrics = {
-				...tags,
-				lyricsPlain: lyrics.synced ? stripLrcTimestamps(sidecarText) : sidecarText,
-				lyricsSynced: lyrics.synced ? sidecarText : null,
-			};
-			if (resolution.ext === 'flac') await tagFlac(finalPath, withLyrics);
-			else tagMp3(finalPath, withLyrics);
-			log.info('lyrics embedded in file', {
-				jobId: job.id,
-				synced: lyrics.synced,
-				bytes: sidecarText.length,
+			// One embed path for downloads and backfills, so "lyrics are in the
+			// file" can never mean two different things.
+			const embedded = await embedLyrics(finalPath, tags, {
+				text: sidecarText,
+				synced: lyrics.synced === true,
 			});
+			if (embedded === 'ok') {
+				lyricsEmbeddedAt = new Date();
+				log.info('lyrics embedded in file', {
+					jobId: job.id,
+					synced: lyrics.synced,
+					bytes: sidecarText.length,
+				});
+			} else {
+				log.warn('lyrics embedding failed, sidecar still present', { jobId: job.id });
+			}
 		} catch (err) {
 			log.warn('lyrics embedding failed, sidecar still present', { error: String(err) });
 		}
@@ -758,6 +772,7 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		sizeBytes: size,
 		checksumSha256: checksum,
 		lyricsStatus: lyrics.success ? (lyrics.synced ? 'synced' : 'plain') : 'failed',
+		lyricsEmbeddedAt,
 	});
 	if (supersededId && supersededId !== trackId) {
 		// The old row loses: remove orphaned sidecars that no longer belong
@@ -854,6 +869,37 @@ async function decryptTo(
 
 /* ── lyrics ───────────────────────────────────────────────────────────────── */
 
+/**
+ * Canonical tag values for a track row, ready for the writers.
+ *
+ * `cover: null` is deliberate: `ensureFileTags` re-embeds the picture already in
+ * the file, so a lyrics pass neither needs one nor may replace it.
+ */
+function tagDataFor(t: {
+	title: string;
+	artist: string;
+	album: string | null;
+	albumArtist: string | null;
+	trackNumber: number | null;
+	discNumber: number | null;
+	releaseYear: number | null;
+	genre: string | null;
+}): TagData {
+	return {
+		title: t.title,
+		artist: t.artist,
+		album: t.album,
+		albumArtist: t.albumArtist,
+		trackNumber: t.trackNumber,
+		discNumber: t.discNumber,
+		year: t.releaseYear,
+		genre: t.genre,
+		cover: null,
+		lyricsPlain: null,
+		lyricsSynced: null,
+	};
+}
+
 async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, unknown>> {
 	const payload = job.payload as { trackId?: string };
 	if (typeof payload.trackId !== 'string') throw new Error('lyrics job missing trackId');
@@ -895,37 +941,69 @@ async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, u
 		sourceUrl: t.sourceUrl,
 		streamToken: null,
 	};
-	await ctx.report(50, 'querying lyrics sources');
-	const result = await downloadLyrics(meta);
-	if (!result.success) {
-		// "If the lyrics API is down, keep the same": when a sidecar already
-		// exists for this track, keep the current status untouched.
-		const base =
-			typeof t.filePath === 'string' ? t.filePath.replace(/\.(mp3|flac)$/i, '') : null;
-		const hasSidecar = base
-			? await stat(`${base}.lrc`)
-					.then(
-						() => true,
-						() => false,
-					)
-					.then(async (lrc) =>
-						lrc
-							? true
-							: await stat(`${base}.txt`).then(
-									() => true,
-									() => false,
-								),
-					)
-			: false;
-		if (hasSidecar) {
-			log.info('lyrics fetch failed — keeping existing sidecar', { trackId: t.id });
-			return { success: false, kept: true, error: result.error ?? 'all sources failed' };
+	await ctx.report(40, 'looking for an existing sidecar');
+
+	// A sidecar already on disk is the best copy we have unless it is plain and
+	// a synced version might exist — so this pass is offline for the 602 synced
+	// tracks and only reaches the network for the 220 plain ones. That is what
+	// makes backfilling the whole library safe to run.
+	const onDisk = typeof t.filePath === 'string' ? await readLyricsSidecar(t.filePath) : null;
+	let current = onDisk;
+	let fetchError: string | undefined;
+
+	if (!current || !current.synced) {
+		await ctx.report(55, 'querying lyrics sources');
+		const result = await downloadLyrics(meta, t.filePath ?? undefined);
+		if (result.success && result.path) {
+			current = {
+				text: await readFile(result.path, 'utf8'),
+				synced: result.synced === true,
+				path: result.path,
+			};
+		} else {
+			fetchError = result.error ?? 'all sources failed';
 		}
-		await updateLyricsStatus(t.id, 'failed');
-		return { success: false, error: result.error ?? 'all sources failed' };
 	}
-	await updateLyricsStatus(t.id, result.synced ? 'synced' : 'plain');
-	return { success: true, synced: result.synced ?? false, path: result.path };
+
+	if (!current) {
+		// "If the lyrics API is down, keep the same": there was nothing to keep.
+		await updateLyricsStatus(t.id, 'failed');
+		return { success: false, error: fetchError };
+	}
+
+	// Write them into the file. This is the step Navidrome actually reads: its
+	// player renders the `LYRICS` tag from its scanned row and ignores sidecars
+	// entirely, so a successful fetch that stopped at the sidecar looked like a
+	// failure in every client.
+	let embedded: 'ok' | 'failed' = 'failed';
+	if (typeof t.filePath === 'string') {
+		await ctx.report(80, 'embedding lyrics');
+		embedded = await embedLyrics(t.filePath, tagDataFor(t), current);
+		if (embedded === 'ok') {
+			log.info('lyrics embedded in file', {
+				trackId: t.id,
+				synced: current.synced,
+				bytes: current.text.length,
+			});
+		} else {
+			log.warn('lyrics embedding failed, sidecar still present', { trackId: t.id });
+		}
+	}
+
+	// The marker is only set when the tag was actually written; otherwise the
+	// backfill would consider the row done while the file still shows nothing.
+	await updateLyricsStatus(
+		t.id,
+		current.synced ? 'synced' : 'plain',
+		embedded === 'ok' ? new Date() : undefined,
+	);
+	return {
+		success: true,
+		synced: current.synced,
+		path: current.path,
+		embedded: embedded === 'ok',
+		...(fetchError ? { note: `kept existing sidecar (${fetchError})` } : {}),
+	};
 }
 
 /* ── navidrome scan ───────────────────────────────────────────────────────── */

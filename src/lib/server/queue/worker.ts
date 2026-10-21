@@ -199,8 +199,29 @@ export function ensureWorkerStarted(): void {
 
 			async function lyricsBackfillSweep(): Promise<void> {
 				try {
-					const { listLyricsBackfillCandidates } = await import('$lib/server/db/tracks');
+					const { listLyricsBackfillCandidates, listLyricsEmbedCandidates } =
+						await import('$lib/server/db/tracks');
 					const { enqueueJob } = await import('./jobs');
+
+					// First, rows that HAVE lyrics but never wrote them into their file.
+					// Navidrome's web player renders the `LYRICS` tag captured at scan
+					// time — it never reads the .lrc sidecar — so these are the tracks
+					// that look broken everywhere while the dashboard says they are done.
+					// The set is bounded by `lyrics_embedded_at`, so it drains instead of
+					// re-queueing the library on every tick.
+					const embed = await listLyricsEmbedCandidates(40);
+					for (const id of embed) {
+						await enqueueJob({
+							type: 'lyrics',
+							payload: { trackId: id },
+							trackId: id,
+							priority: 3,
+						});
+						log.info('lyrics embed enqueued', { trackId: id });
+					}
+
+					// Then tracks with no lyrics at all. The candidate query already caps
+					// retries at one per 24h, so a permanently unmatched song cannot spin.
 					const candidates = await listLyricsBackfillCandidates(5);
 					for (const track of candidates) {
 						await enqueueJob({
