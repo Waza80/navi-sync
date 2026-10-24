@@ -246,18 +246,28 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 	if (mbEnrichment.patch.artistMbid) meta.artistMbid = mbEnrichment.patch.artistMbid;
 
 	// Canonical tag values, shared by the initial write and the lyrics embed.
+	// MusicBrainz-corrected values win over user input: album, albumArtist,
+	// year, track/disc numbers and ISRC are authoritative from MusicBrainz.
 	const tagData = {
-		title: input.title,
-		artist: input.artist,
-		album: input.album,
-		albumArtist: input.albumArtist ?? input.artist,
-		trackNumber: input.trackNumber ?? null,
-		discNumber: input.discNumber ?? null,
-		year: input.year ?? null,
-		genre: input.genre ?? null,
+		title: meta.title,
+		artist: meta.artist,
+		album: meta.album,
+		albumArtist: meta.albumArtist ?? meta.artist,
+		trackNumber: meta.trackNumber,
+		discNumber: meta.discNumber,
+		year: meta.year,
+		genre: meta.genre,
 		cover: coverBytes,
 		lyricsPlain: null,
 		lyricsSynced: null,
+		// MusicBrainz identities, written to MP3/FLAC tags (WAV has no tag
+		// writer — those rows carry the identities in the DB only).
+		artistMbid: meta.artistMbid ?? null,
+		recordingMbid: meta.recordingMbid ?? null,
+		releaseMbid: meta.releaseMbid ?? null,
+		releaseGroupMbid: meta.releaseGroupMbid ?? null,
+		albumArtistMbid: meta.albumArtistMbid ?? null,
+		releaseTrackMbid: meta.releaseTrackMbid ?? null,
 	};
 
 	// Tag the file. `cover` is embedded AND written as a canonical cover.jpg so
