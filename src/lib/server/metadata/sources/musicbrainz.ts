@@ -168,6 +168,12 @@ interface Chosen {
 	 * but an expunged release must not decide this album's name, year or numbering.
 	 */
 	artworkOnly?: boolean;
+	/**
+	 * True when the release is Expunged but the recording's artist identity and
+	 * the release/release-group IDs are still safe to store. Descriptive facts
+	 * (album name, year, track numbers) are withheld.
+	 */
+	identityFromExpunged?: boolean;
 }
 
 /** A Chosen for artwork only: identity fields are withheld by `toPatch`. */
@@ -323,6 +329,26 @@ async function toPatch(chosen: Chosen, needed: MetadataQuery['needed']): Promise
 		// Cover and nothing else — see `artworkOnly`.
 		return needed.includes('coverUrl') ? { coverUrl: await coverUrlFor(release.id) } : {};
 	}
+	if (chosen.identityFromExpunged) {
+		// Expunged release: artwork is safe, artist identity is safe (the
+		// recording's artist-credit is canonical), but descriptive facts
+		// (album name, year, track numbers, ISRC) are withheld.
+		return {
+			...(needed.includes('coverUrl') ? { coverUrl: await coverUrlFor(release.id) } : {}),
+			...(needed.includes('artist') && artistName(rec) ? { artist: artistName(rec) } : {}),
+			...(needed.includes('artistMbid') && artistMbid(rec)
+				? { artistMbid: artistMbid(rec) }
+				: {}),
+			...(needed.includes('recordingMbid') && rec.id ? { recordingMbid: rec.id } : {}),
+			...(needed.includes('releaseMbid') && release.id ? { releaseMbid: release.id } : {}),
+			...(needed.includes('releaseGroupMbid') && release['release-group']?.id
+				? { releaseGroupMbid: release['release-group'].id }
+				: {}),
+			...(needed.includes('albumArtistMbid') && albumArtistMbid(release, rec)
+				? { albumArtistMbid: albumArtistMbid(release, rec) }
+				: {}),
+		};
+	}
 	return {
 		...(needed.includes('album') && release.title ? { album: release.title } : {}),
 		...(needed.includes('albumArtist') && chosen.albumArtist
@@ -404,9 +430,11 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 	// reordered names, etc.) strict title+artist matching never hits. Match by
 	// recording title AND release (album) title instead — MusicBrainz already
 	// knows the release, so this is unambiguous for one-track-per-release cases.
+	// Check ALL releases (including Expunged) for the album title match, since
+	// the only release for some recordings may be Expunged.
 	if (!wanted && query.album) {
 		const byTitleAlbum = recs.filter((r) => {
-			const releases = canonicalReleases(r);
+			const releases = r.releases ?? [];
 			return (
 				releases.some(
 					(rel) => rel.title && rel.title.toLowerCase() === query.album!.toLowerCase(),
@@ -417,11 +445,16 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 		});
 		if (byTitleAlbum.length === 1) {
 			const rec = byTitleAlbum[0];
-			const releases = canonicalReleases(rec);
+			const releases = artworkReleases(rec);
 			const release = releases.reduce((best, r) =>
 				releaseScore(r) > releaseScore(best) ? r : best,
 			);
-			return { recording: rec, release, albumArtist: artistName(rec) };
+			return {
+				recording: rec,
+				release,
+				albumArtist: artistName(rec),
+				identityFromExpunged: true,
+			};
 		}
 		if (byTitleAlbum.length > 1) {
 			// Multiple recordings with same title+album: disambiguate by duration.
@@ -432,11 +465,16 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 			);
 			if (withDuration.length === 1) {
 				const rec = withDuration[0];
-				const releases = canonicalReleases(rec);
+				const releases = artworkReleases(rec);
 				const release = releases.reduce((best, r) =>
 					releaseScore(r) > releaseScore(best) ? r : best,
 				);
-				return { recording: rec, release, albumArtist: artistName(rec) };
+				return {
+					recording: rec,
+					release,
+					albumArtist: artistName(rec),
+					identityFromExpunged: true,
+				};
 			}
 		}
 	}
@@ -471,7 +509,26 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 		// Pass 2: exact title alone, and ONLY when unambiguous. Two recordings sharing
 		// an exact title would make the cover a coin flip, so a unique match is the
 		// condition, not a preference.
-		return exactTitle.length === 1 ? artworkOnly(exactTitle[0]) : null;
+		if (exactTitle.length === 1) {
+			const rec = exactTitle[0];
+			const releases = artworkReleases(rec);
+			const release = releases.reduce((best, r) =>
+				releaseScore(r) > releaseScore(best) ? r : best,
+			);
+			// Even an Expunged release can supply the recording's artist identity
+			// (artist name + MBID) and the release/release-group IDs. Descriptive
+			// fields (album, year, track numbers) are withheld for Expunged releases.
+			return {
+				recording: rec,
+				release,
+				albumArtist: artistName(rec),
+				// Identity from Expunged release is safe to store: the recording
+				// and release IDs are stable, and the artist credit is the
+				// canonical one. Only descriptive facts are withheld.
+				identityFromExpunged: true,
+			};
+		}
+		return null;
 	}
 	return null;
 }
