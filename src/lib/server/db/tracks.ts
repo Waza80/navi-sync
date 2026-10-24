@@ -175,6 +175,8 @@ export async function upsertTrack(input: UpsertTrackInput): Promise<string> {
 		// Only overwrite the marker when this flow embedded lyrics. A download
 		// that fetched nothing must not clear an older embed.
 		...(input.lyricsEmbeddedAt ? { lyricsEmbeddedAt: input.lyricsEmbeddedAt } : {}),
+		// A track with a file on disk is completed; failed/pending rows have no file.
+		...(input.filePath ? { downloadStatus: 'completed' as const } : {}),
 		updatedAt: new Date(),
 	};
 	// Reuse an existing shell before inserting.

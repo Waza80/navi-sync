@@ -41,6 +41,13 @@ export interface TrackMeta {
 	sourceUrl: string | null;
 	/** Provider-internal stream grant (e.g. Deezer TRACK_TOKEN). Opaque. */
 	streamToken: string | null;
+	/** MusicBrainz identities — filled by enrichment when available. */
+	recordingMbid?: string | null;
+	releaseMbid?: string | null;
+	releaseGroupMbid?: string | null;
+	albumArtistMbid?: string | null;
+	releaseTrackMbid?: string | null;
+	artistMbid?: string | null;
 }
 
 export interface QualityPreferences {

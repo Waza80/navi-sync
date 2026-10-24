@@ -12,6 +12,7 @@ import { findLibraryDuplicate, upsertTrack } from '$lib/server/db/tracks';
 import { downloadLyrics } from '$lib/server/lyrics';
 import { readLyricsSidecar } from '$lib/server/lyrics/sidecar';
 import type { TrackMeta } from '$lib/server/providers/types';
+import type { MetadataPatch } from '$lib/server/metadata/types';
 
 const log = logger;
 
@@ -187,6 +188,62 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 	// MusicBrainz/Cover Art Archive → Deezer → Apple), and only falls back to the
 	// bare Deezer album search if that yields nothing.
 	const coverBytes = await resolveUploadCover(input, input.isrc ?? null);
+
+	// MusicBrainz enrichment: resolve artist/album MBIDs and correct metadata
+	// from the canonical source. This fixes cases where the user-provided artist
+	// is a merged credit list (e.g. PRETTY DOLLCORPSE) instead of the canonical
+	// MusicBrainz artist. We ask for MBIDs and any descriptive fields that are
+	// missing or look like they need correction.
+	const { enrichTrackMetadata, neededFieldsFor } = await import('$lib/server/metadata');
+	type Enrichment = { patch: MetadataPatch; filledBy: Record<string, string>; tried: string[] };
+	let mbEnrichment: Enrichment;
+	try {
+		mbEnrichment = await enrichTrackMetadata({
+			trackId: input.uploadId,
+			title: input.title,
+			artist: input.artist,
+			album: input.album ?? null,
+			isrc: input.isrc ?? null,
+			durationSec: null,
+			year: input.year ?? null,
+			needed: neededFieldsFor({
+				album: input.album,
+				albumArtist: input.albumArtist ?? input.artist,
+				coverPath: coverBytes ? 'present' : null,
+				genre: input.genre ?? null,
+				releaseYear: input.year ?? null,
+				trackNumber: input.trackNumber ?? null,
+				discNumber: input.discNumber ?? null,
+				isrc: input.isrc ?? null,
+				artistMbid: null,
+				recordingMbid: null,
+				releaseMbid: null,
+				releaseGroupMbid: null,
+				albumArtistMbid: null,
+				releaseTrackMbid: null,
+			}),
+		});
+	} catch (err) {
+		log.warn('upload MusicBrainz enrichment failed', { error: String(err) });
+		mbEnrichment = { patch: {}, filledBy: {}, tried: [] };
+	}
+	// Apply MusicBrainz corrections to meta before tagging/filing.
+	// MusicBrainz is authoritative for release facts (album, year, track/disc numbers, ISRC, MBIDs).
+	if (mbEnrichment.patch.album) meta.album = mbEnrichment.patch.album;
+	if (mbEnrichment.patch.albumArtist) meta.albumArtist = mbEnrichment.patch.albumArtist;
+	if (mbEnrichment.patch.year) meta.year = mbEnrichment.patch.year;
+	if (mbEnrichment.patch.trackNumber) meta.trackNumber = mbEnrichment.patch.trackNumber;
+	if (mbEnrichment.patch.discNumber) meta.discNumber = mbEnrichment.patch.discNumber;
+	if (mbEnrichment.patch.isrc) meta.isrc = mbEnrichment.patch.isrc;
+	if (mbEnrichment.patch.recordingMbid) meta.recordingMbid = mbEnrichment.patch.recordingMbid;
+	if (mbEnrichment.patch.releaseMbid) meta.releaseMbid = mbEnrichment.patch.releaseMbid;
+	if (mbEnrichment.patch.releaseGroupMbid)
+		meta.releaseGroupMbid = mbEnrichment.patch.releaseGroupMbid;
+	if (mbEnrichment.patch.albumArtistMbid)
+		meta.albumArtistMbid = mbEnrichment.patch.albumArtistMbid;
+	if (mbEnrichment.patch.releaseTrackMbid)
+		meta.releaseTrackMbid = mbEnrichment.patch.releaseTrackMbid;
+	if (mbEnrichment.patch.artistMbid) meta.artistMbid = mbEnrichment.patch.artistMbid;
 
 	// Canonical tag values, shared by the initial write and the lyrics embed.
 	const tagData = {

@@ -1443,6 +1443,12 @@ async function enrichInline(meta: TrackMeta): Promise<TrackMeta> {
 			trackNumber: meta.trackNumber,
 			discNumber: meta.discNumber,
 			isrc: meta.isrc,
+			artistMbid: meta.artistMbid,
+			recordingMbid: meta.recordingMbid,
+			releaseMbid: meta.releaseMbid,
+			releaseGroupMbid: meta.releaseGroupMbid,
+			albumArtistMbid: meta.albumArtistMbid,
+			releaseTrackMbid: meta.releaseTrackMbid,
 		});
 		if (needed.length === 0) return meta;
 		const { patch } = await enrichTrackMetadata({
@@ -1466,6 +1472,12 @@ async function enrichInline(meta: TrackMeta): Promise<TrackMeta> {
 			trackNumber: patch.trackNumber ?? meta.trackNumber,
 			discNumber: patch.discNumber ?? meta.discNumber,
 			isrc: patch.isrc ?? meta.isrc,
+			recordingMbid: patch.recordingMbid ?? meta.recordingMbid,
+			releaseMbid: patch.releaseMbid ?? meta.releaseMbid,
+			releaseGroupMbid: patch.releaseGroupMbid ?? meta.releaseGroupMbid,
+			albumArtistMbid: patch.albumArtistMbid ?? meta.albumArtistMbid,
+			releaseTrackMbid: patch.releaseTrackMbid ?? meta.releaseTrackMbid,
+			artistMbid: patch.artistMbid ?? meta.artistMbid,
 		};
 	} catch (err) {
 		log.debug('inline metadata enrichment skipped', { error: String(err) });
