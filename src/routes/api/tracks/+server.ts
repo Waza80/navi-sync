@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
 import { listTracks, parseQualityTier } from '$lib/server/db/tracks';
-import { enqueueJob } from '$lib/server/queue/jobs';
+import { enqueueDownloadJobs, enqueueJob } from '$lib/server/queue/jobs';
 import { findProviderForUrl, getProvider, providers } from '$lib/server/providers/registry';
+import { trackPageUrl } from '$lib/server/providers/ids';
 import { isProviderEnabled } from '$lib/server/providers/enabled';
 import type { RequestHandler } from './$types';
 
@@ -32,7 +33,7 @@ const createJobSchema = z.object({
 });
 
 /** POST /api/tracks — enqueue a download from a provider URL (or bare id). */
-export const POST: RequestHandler = async ({ locals, request }) => {
+export const POST: RequestHandler = async ({ locals, request, url }) => {
 	if (!locals.user) return unauthorizedResponse();
 	const user = locals.user;
 
@@ -41,6 +42,13 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return badRequest('Body must be {"url": "<provider track url>"}', 'INVALID_BODY');
 	}
 	const input = parsed.data.url.trim();
+	// Collection cap. The old code hardcoded 300 for playlists, so every
+	// collection past that was silently half-fetched; the provider now pages and
+	// this only bounds a pathological catalogue.
+	const maxTracks = Math.min(
+		5000,
+		Math.max(1, Number(url.searchParams.get('maxTracks') ?? 2000) || 2000),
+	);
 
 	// Validate routability BEFORE enqueueing (fail fast, actionable errors).
 	let providerId: string;
@@ -74,29 +82,37 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (provider.resolveLink) {
 		const link = await provider.resolveLink(input).catch(() => null);
 		if (link && link.kind !== 'track') {
+			if (link.kind === 'artist') {
+				// An artist is a different fan-out with its own caps and reporting;
+				// silently treating the id as a track is what produced "Deezer
+				// gateway error on song.getData" for pasted artist links.
+				return badRequest(
+					'That is an artist link. Use the artist fan-out (POST /api/artists/:id/download).',
+					'ARTIST_LINK',
+				);
+			}
 			const ids =
 				link.kind === 'album'
 					? await provider.albumTrackIds?.(link.id)
-					: await provider.playlistTrackIds?.(link.id, 300);
-			if (!ids || ids.length === 0) {
+					: await provider.playlistTrackIds?.(link.id, maxTracks);
+			const unique = [...new Set(ids ?? [])];
+			if (unique.length === 0) {
 				return badRequest(
 					`That ${link.kind} resolved but contains no downloadable tracks.`,
 					'EMPTY_COLLECTION',
 				);
 			}
-			const jobIds: string[] = [];
-			for (const trackId of ids) {
-				const job = await enqueueJob({
-					type: 'download',
-					payload: {
-						url: `https://www.deezer.com/track/${trackId}`,
-						provider: providerId,
-					},
+			const { enqueued, skipped } = await enqueueDownloadJobs(
+				unique.map((trackId) => ({
+					url: trackPageUrl(providerId, trackId) ?? trackId,
+					provider: providerId,
 					createdBy: user.id,
-				});
-				jobIds.push(job.id);
-			}
-			return json({ kind: link.kind, enqueued: jobIds.length, jobIds }, { status: 202 });
+				})),
+			);
+			return json(
+				{ kind: link.kind, enqueued, skipped, tracks: unique.length },
+				{ status: 202 },
+			);
 		}
 	}
 

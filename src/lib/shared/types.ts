@@ -8,7 +8,7 @@ export type JobType =
 	| 'upgrade_check'
 	| 'metadata_repair';
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'cancelled';
-export type LyricsStatus = 'none' | 'synced' | 'plain' | 'failed';
+export type LyricsStatus = 'none' | 'synced' | 'plain' | 'failed' | 'instrumental';
 
 export interface TrackDTO {
 	id: string;
@@ -34,6 +34,12 @@ export interface TrackDTO {
 	/** Absolute path once filed; null for a failed download. */
 	filePath: string | null;
 	albumArtist: string | null;
+	artistMbid: string | null;
+	recordingMbid: string | null;
+	releaseMbid: string | null;
+	releaseGroupMbid: string | null;
+	albumArtistMbid: string | null;
+	releaseTrackMbid: string | null;
 	genre: string | null;
 	coverPath: string | null;
 	/** Outcome of the last metadata pass: corrected | verified | no-source | null. */

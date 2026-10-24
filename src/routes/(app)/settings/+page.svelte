@@ -12,6 +12,7 @@
 		preferHiRes: boolean;
 		autoUpgradeQuality: boolean;
 		forceTagRepair: boolean;
+		autoScan: boolean;
 		enabledProviders: string[];
 		concurrentDownloads: number;
 	};
@@ -38,6 +39,8 @@
 	let autoUpgradeQuality = $state(data.settings.autoUpgradeQuality);
 	// svelte-ignore state_referenced_locally
 	let forceTagRepair = $state(data.settings.forceTagRepair);
+	// svelte-ignore state_referenced_locally
+	let autoScan = $state(data.settings.autoScan);
 	// svelte-ignore state_referenced_locally
 	let concurrentDownloads = $state(data.settings.concurrentDownloads);
 
@@ -95,6 +98,7 @@
 				preferHiRes,
 				autoUpgradeQuality,
 				forceTagRepair,
+				autoScan,
 				enabledProviders: enabled.length > 0 ? enabled : ['deezer'],
 				concurrentDownloads,
 			};
@@ -255,6 +259,20 @@
 					/>
 				</div>
 			</div>
+			<label class="flex min-h-12 items-center gap-3">
+				<input
+					type="checkbox"
+					class="h-5 w-5 shrink-0 accent-[var(--md-primary)]"
+					bind:checked={autoScan}
+				/>
+				<span class="text-sm">
+					Scan Navidrome automatically after downloads
+					<span class="block text-xs text-on-surface-variant">
+						Debounced to at most one scan every 10 minutes. Off leaves only the manual
+						button below.
+					</span>
+				</span>
+			</label>
 			<div class="flex flex-wrap gap-2">
 				<button
 					type="button"

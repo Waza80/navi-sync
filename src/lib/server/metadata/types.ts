@@ -35,7 +35,12 @@ export type MetadataField =
 	| 'trackNumber'
 	| 'discNumber'
 	| 'isrc'
-	| 'artistMbid';
+	| 'artistMbid'
+	| 'recordingMbid'
+	| 'releaseMbid'
+	| 'releaseGroupMbid'
+	| 'albumArtistMbid'
+	| 'releaseTrackMbid';
 
 /** A partial metadata update — every key is optional and only set when known. */
 export type MetadataPatch = Partial<{
@@ -48,6 +53,11 @@ export type MetadataPatch = Partial<{
 	discNumber: number | null;
 	isrc: string | null;
 	artistMbid: string | null;
+	recordingMbid: string | null;
+	releaseMbid: string | null;
+	releaseGroupMbid: string | null;
+	albumArtistMbid: string | null;
+	releaseTrackMbid: string | null;
 }>;
 
 /**
@@ -76,6 +86,11 @@ export const AUTHORITATIVE_FIELDS: ReadonlySet<MetadataField> = new Set<Metadata
 	'albumArtist',
 	'isrc',
 	'artistMbid',
+	'recordingMbid',
+	'releaseMbid',
+	'releaseGroupMbid',
+	'albumArtistMbid',
+	'releaseTrackMbid',
 	'year',
 	'trackNumber',
 	'discNumber',
@@ -91,6 +106,11 @@ export const ALL_FIELDS: MetadataField[] = [
 	'discNumber',
 	'isrc',
 	'artistMbid',
+	'recordingMbid',
+	'releaseMbid',
+	'releaseGroupMbid',
+	'albumArtistMbid',
+	'releaseTrackMbid',
 ];
 
 export interface MetadataSource {
@@ -114,6 +134,11 @@ export function neededFieldsFor(
 		isrc: string | null;
 		/** Absent on rows written before the MBID column existed. */
 		artistMbid?: string | null;
+		recordingMbid?: string | null;
+		releaseMbid?: string | null;
+		releaseGroupMbid?: string | null;
+		albumArtistMbid?: string | null;
+		releaseTrackMbid?: string | null;
 	},
 	opts: { force?: boolean } = {},
 ): MetadataField[] {
@@ -138,6 +163,14 @@ export function neededFieldsFor(
 	if (row.discNumber === null) out.push('discNumber');
 	if (missing(row.isrc)) out.push('isrc');
 	if (missing(row.artistMbid)) out.push('artistMbid');
+	// Identities are asked for whenever they are absent, independent of the
+	// descriptive fields: a row can have a perfect album/year/cover and still
+	// lack the MBIDs that Navidrome and every scrobbler key on.
+	if (missing(row.recordingMbid)) out.push('recordingMbid');
+	if (missing(row.releaseMbid)) out.push('releaseMbid');
+	if (missing(row.releaseGroupMbid)) out.push('releaseGroupMbid');
+	if (missing(row.albumArtistMbid)) out.push('albumArtistMbid');
+	if (missing(row.releaseTrackMbid)) out.push('releaseTrackMbid');
 	return out;
 }
 

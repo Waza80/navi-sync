@@ -1,6 +1,6 @@
-import { and, asc, desc, eq, inArray, isNotNull, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, lte, sql } from 'drizzle-orm';
 import { db, pool } from '$lib/server/db';
-import { jobs } from '$lib/server/db/schema';
+import { jobs, tracks } from '$lib/server/db/schema';
 import type { JobStatus, JobType, NaviEvent } from '$lib/shared/types';
 import { logger } from '$lib/server/logger';
 
@@ -108,6 +108,93 @@ export async function enqueueJobsBulk(
 	return written;
 }
 
+/**
+ * Enqueue a fan-out of download jobs without duplicating work.
+ *
+ * A fan-out used to be `for (id of ids) await enqueueJob(...)`, which meant:
+ *  - a playlist that contains the same track twice queued two jobs for it, and
+ *    whichever finished second could not recognise the first file and created a
+ *    duplicate row;
+ *  - pressing "download album" and then clicking the album's only track (or
+ *    re-pasting the link) queued a second job for a track that was already
+ *    queued, running, or sitting on disk.
+ *
+ * Three filters, in order of cheapness: the request's own duplicates, downloads
+ * already queued/running, and tracks that already have a file. The last one is
+ * what makes re-pasting a 490-track playlist a no-op instead of 490 jobs that
+ * each hard-stop in the worker.
+ */
+export async function enqueueDownloadJobs(
+	inputs: Array<{
+		url: string;
+		provider: string;
+		createdBy?: string | null;
+		priority?: number;
+	}>,
+): Promise<{ enqueued: number; skipped: number }> {
+	const unique = new Map<string, (typeof inputs)[number]>();
+	for (const input of inputs) {
+		if (typeof input.url === 'string' && input.url.trim() !== '' && !unique.has(input.url)) {
+			unique.set(input.url, input);
+		}
+	}
+	if (unique.size === 0) return { enqueued: 0, skipped: 0 };
+
+	const active = await db
+		.select({ payload: jobs.payload })
+		.from(jobs)
+		.where(and(eq(jobs.type, 'download'), inArray(jobs.status, ['queued', 'running'])));
+	const activeUrls = new Set(
+		active
+			.map((r) => (r.payload as Record<string, unknown> | null)?.['url'])
+			.filter((u): u is string => typeof u === 'string'),
+	);
+
+	// Provider-native ids from the page URLs, so a re-paste can see what is
+	// already filed. `canonicalTrackId` is provider-aware and returns a URL for
+	// providers that do not store bare ids, hence the regex here.
+	const candidates = [...unique.values()].filter(
+		(i) => !activeUrls.has(i.url) && !activeUrls.has(i.url.replace(/\/+$/, '')),
+	);
+	const byProvider = new Map<string, Map<string, string>>();
+	for (const c of candidates) {
+		const runs = c.url.match(/\d{4,15}/g);
+		const nativeId = runs && runs.length > 0 ? runs[runs.length - 1] : null;
+		if (!nativeId) continue;
+		const bucket = byProvider.get(c.provider) ?? new Map<string, string>();
+		bucket.set(nativeId, c.url);
+		byProvider.set(c.provider, bucket);
+	}
+	const filedUrls = new Set<string>();
+	for (const [provider, bucket] of byProvider) {
+		const rows = await db
+			.select({ providerTrackId: tracks.providerTrackId, filePath: tracks.filePath })
+			.from(tracks)
+			.where(
+				and(
+					eq(tracks.provider, provider),
+					inArray(tracks.providerTrackId, [...bucket.keys()]),
+					isNotNull(tracks.filePath),
+				),
+			);
+		for (const row of rows) {
+			const url = row.providerTrackId ? bucket.get(row.providerTrackId) : null;
+			if (url) filedUrls.add(url);
+		}
+	}
+
+	const fresh = candidates.filter((c) => !filedUrls.has(c.url));
+	const enqueued = await enqueueJobsBulk(
+		fresh.map((input) => ({
+			type: 'download' as const,
+			payload: { url: input.url, provider: input.provider },
+			createdBy: input.createdBy ?? null,
+			priority: input.priority ?? 5,
+		})),
+	);
+	return { enqueued, skipped: unique.size - enqueued };
+}
+
 /** Wake the worker via NOTIFY (fire-and-forget, non-fatal on failure). */
 async function notifyJobs(meta: Record<string, unknown>): Promise<void> {
 	try {
@@ -173,11 +260,27 @@ export async function claimNextJob(): Promise<JobRow | null> {
 	return job;
 }
 
-/** Debounced post-download scan: keeps Navidrome indexed without spamming
- * one scan job per finished download. Skips when a scan is already queued or
- * running — Navidrome picks up every file present when it runs.
+/**
+ * Debounced post-download scan: keeps Navidrome indexed without spamming one
+ * scan job per finished download.
+ *
+ * Three gates, each learned from a real complaint:
+ *  - `autoScan` off means the user wants to scan on their own schedule. A
+ *    400-track playlist draining over hours used to fire the debounce again and
+ *    again, each scan holding a worker slot and talking to Navidrome;
+ *  - a scan already queued/running is skipped — Navidrome picks up every file
+ *    present when it runs;
+ *  - a scan that RAN in the last 10 minutes is skipped too. The queued/running
+ *    check alone re-armed the moment the scan job finished, so a long import
+ *    produced a scan every few minutes for its entire duration.
  */
 export async function ensurePostDownloadScan(): Promise<void> {
+	const { getSettings } = await import('$lib/server/settings');
+	const settings = await getSettings();
+	if (!settings.autoScan) {
+		log.debug('post-download scan skipped (autoScan disabled)');
+		return;
+	}
 	const active = await db
 		.select({ id: jobs.id })
 		.from(jobs)
@@ -185,6 +288,20 @@ export async function ensurePostDownloadScan(): Promise<void> {
 		.limit(1);
 	if (active.length > 0) {
 		log.debug('post-download scan skipped (scan already pending)');
+		return;
+	}
+	const recent = await db
+		.select({ id: jobs.id })
+		.from(jobs)
+		.where(
+			and(
+				eq(jobs.type, 'navidrome_scan'),
+				gte(jobs.createdAt, new Date(Date.now() - 10 * 60_000)),
+			),
+		)
+		.limit(1);
+	if (recent.length > 0) {
+		log.debug('post-download scan skipped (a scan ran recently)');
 		return;
 	}
 	await enqueueJob({ type: 'navidrome_scan', payload: { reason: 'post-download' }, priority: 2 });

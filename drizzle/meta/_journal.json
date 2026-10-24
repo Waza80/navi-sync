@@ -78,6 +78,27 @@
 			"when": 1791258400000,
 			"tag": "0010_lyrics_embedded_at",
 			"breakpoints": true
+		},
+		{
+			"idx": 11,
+			"version": "7",
+			"when": 1792533600000,
+			"tag": "0011_lyrics_source",
+			"breakpoints": true
+		},
+		{
+			"idx": 12,
+			"version": "7",
+			"when": 1792620000000,
+			"tag": "0012_mbid_fields",
+			"breakpoints": true
+		},
+		{
+			"idx": 13,
+			"version": "7",
+			"when": 1792706400000,
+			"tag": "0013_single_file_owner",
+			"breakpoints": true
 		}
 	]
 }

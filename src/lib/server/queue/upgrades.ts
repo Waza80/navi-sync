@@ -1,4 +1,5 @@
 import { and, eq, gte, inArray } from 'drizzle-orm';
+import { access } from 'node:fs/promises';
 import { db } from '$lib/server/db';
 import { jobs } from '$lib/server/db/schema';
 import { getSettings } from '$lib/server/settings';
@@ -49,6 +50,14 @@ export interface TrackForUpgrade {
 	/** Measured sample rate — the tier separator (24/44.1 vs 24/96 vs 24/192). */
 	sampleRateHz: number | null;
 	isLossless: boolean;
+	/**
+	 * Where the audio actually is, when the caller knows. A row can carry quality
+	 * fields and still have no file (a failed upgrade nulls nothing; a moved
+	 * library leaves a stale path), and treating those stored numbers as a real
+	 * copy is how a file-less Deezer row was refused a perfectly good Tidal
+	 * offer: it still "ranked" 16-bit FLAC and nothing lower could beat it.
+	 */
+	filePath?: string | null;
 }
 
 function prefsOf(settings: {
@@ -89,18 +98,39 @@ export async function findBestUpgrade(
 	opts: { skipRecentCheck?: boolean } = {},
 ): Promise<UpgradeCandidate | null> {
 	const settings = await getSettings();
-	const existingRank = qualityRank({
-		format: track.format,
-		bitrateKbps: track.bitrateKbps,
-		bitDepth: track.bitDepth,
-		isLossless: track.isLossless,
-		sampleRateHz: track.sampleRateHz,
-	});
+	// Whether there is audio to protect, not whether the row claims quality.
+	// A failed row keeps its old measured numbers, so `isAtCeiling` could refuse
+	// a fresh download for a track that has no file at all — the exact case the
+	// retry path exists to fix. Rank -1 means "anything fetched is an upgrade",
+	// including an MP3 from a provider the stored FLAC-quality fields would have
+	// outranked.
+	const hasFile =
+		typeof track.filePath === 'string' &&
+		track.filePath.length > 0 &&
+		(await access(track.filePath).then(
+			() => true,
+			() => false,
+		));
+	const existingRank = hasFile
+		? qualityRank({
+				format: track.format,
+				bitrateKbps: track.bitrateKbps,
+				bitDepth: track.bitDepth,
+				isLossless: track.isLossless,
+				sampleRateHz: track.sampleRateHz,
+			})
+		: -1;
 	// The ceiling moved when Deezer gained a hi-res tier. "Is it 24-bit?" stopped
 	// being the end of the question: a 24/44.1 file is still three tiers short,
 	// and answering yes here is why hi-res masters were never hunted for.
-	if (isAtCeiling(existingRank)) return null;
-	if (!opts.skipRecentCheck && (await hasRecentUpgradeAttempt(track.id, 24))) return null;
+	// Only a real file can be at a ceiling.
+	if (hasFile && isAtCeiling(existingRank)) return null;
+	// The 24h cooldown exists to stop the hourly sweep re-asking the same
+	// question. For a row with NO file it is the wrong tool: the queue already
+	// dedupes downloads per track, and a user pressing retry on a failed row is
+	// asking for a fresh attempt, not for yesterday's answer.
+	if (hasFile && !opts.skipRecentCheck && (await hasRecentUpgradeAttempt(track.id, 24)))
+		return null;
 
 	const baseMeta: TrackMeta = {
 		provider: track.provider,

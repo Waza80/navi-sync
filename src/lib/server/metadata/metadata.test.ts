@@ -25,6 +25,11 @@ describe('neededFieldsFor', () => {
 			'discNumber',
 			'isrc',
 			'artistMbid',
+			'recordingMbid',
+			'releaseMbid',
+			'releaseGroupMbid',
+			'albumArtistMbid',
+			'releaseTrackMbid',
 		]);
 	});
 
@@ -40,6 +45,11 @@ describe('neededFieldsFor', () => {
 				discNumber: 1,
 				isrc: 'FR123400001',
 				artistMbid: 'a74b1b7f-71a5-4011-9441-d0b5e4122711',
+				recordingMbid: '85b66d88-2a30-4e3a-9a95-9e2e1f7c3d41',
+				releaseMbid: '6d9f4e2b-1a3c-4d5e-8f9a-0b1c2d3e4f5a',
+				releaseGroupMbid: '7e8f9a0b-1c2d-3e4f-5a6b-7c8d9e0f1a2b',
+				albumArtistMbid: 'a74b1b7f-71a5-4011-9441-d0b5e4122711',
+				releaseTrackMbid: '9a0b1c2d-3e4f-5a6b-7c8d-9e0f1a2b3c4d',
 			}),
 		).toEqual([]);
 	});
@@ -58,6 +68,11 @@ describe('neededFieldsFor', () => {
 			discNumber: 1,
 			isrc: 'FRZ039800080',
 			artistMbid: '9ba3809e-86c4-4d47-b856-bd5bb2d9fe79',
+			recordingMbid: '85b66d88-2a30-4e3a-9a95-9e2e1f7c3d41',
+			releaseMbid: '6d9f4e2b-1a3c-4d5e-8f9a-0b1c2d3e4f5a',
+			releaseGroupMbid: '7e8f9a0b-1c2d-3e4f-5a6b-7c8d9e0f1a2b',
+			albumArtistMbid: 'a74b1b7f-71a5-4011-9441-d0b5e4122711',
+			releaseTrackMbid: '9a0b1c2d-3e4f-5a6b-7c8d-9e0f1a2b3c4d',
 		};
 		expect(neededFieldsFor(complete)).toEqual([]);
 		expect(neededFieldsFor(complete, { force: true })).toEqual(ALL_FIELDS);
@@ -74,7 +89,14 @@ describe('neededFieldsFor', () => {
 			discNumber: 1,
 			isrc: 'FR123400001',
 		};
-		expect(neededFieldsFor(legacy)).toEqual(['artistMbid']);
+		expect(neededFieldsFor(legacy)).toEqual([
+			'artistMbid',
+			'recordingMbid',
+			'releaseMbid',
+			'releaseGroupMbid',
+			'albumArtistMbid',
+			'releaseTrackMbid',
+		]);
 	});
 
 	// Regression: cleanPatch whitelists keys explicitly, and artistMbid was missing
@@ -119,7 +141,14 @@ describe('neededFieldsFor', () => {
 			isrc: 'FR123400001',
 			artistMbid: 'a74b1b7f-71a5-4011-9441-d0b5e4122711',
 		});
-		expect(fields).toEqual(['coverUrl']);
+		expect(fields).toEqual([
+			'coverUrl',
+			'recordingMbid',
+			'releaseMbid',
+			'releaseGroupMbid',
+			'albumArtistMbid',
+			'releaseTrackMbid',
+		]);
 	});
 });
 

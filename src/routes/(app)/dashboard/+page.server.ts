@@ -112,6 +112,12 @@ export const load: PageServerLoad = async ({ url }) => {
 			genre: string | null;
 			coverPath: string | null;
 			metadataStatus: string | null;
+			artistMbid: string | null;
+			recordingMbid: string | null;
+			releaseMbid: string | null;
+			releaseGroupMbid: string | null;
+			albumArtistMbid: string | null;
+			releaseTrackMbid: string | null;
 			createdAt: Date;
 		};
 		return {
@@ -143,6 +149,12 @@ export const load: PageServerLoad = async ({ url }) => {
 			genre: row.genre,
 			coverPath: row.coverPath,
 			metadataStatus: row.metadataStatus,
+			artistMbid: row.artistMbid,
+			recordingMbid: row.recordingMbid,
+			releaseMbid: row.releaseMbid,
+			releaseGroupMbid: row.releaseGroupMbid,
+			albumArtistMbid: row.albumArtistMbid,
+			releaseTrackMbid: row.releaseTrackMbid,
 			createdAt: row.createdAt.toISOString(),
 		};
 	};

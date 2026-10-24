@@ -34,9 +34,25 @@ export const DELETE: RequestHandler = async ({ locals, params, request }) => {
 	const track = await getTrackById(params.id);
 	if (!track) return notFound('Track not found');
 
+	let fileShared = false;
 	if (typeof track.filePath === 'string' && track.filePath.length > 0) {
+		// Never unlink a file another row still points at. `tracks_file_path_uq`
+		// makes shared paths impossible going forward, but rows written before
+		// the index (or by a racing job on an old build) can still share one —
+		// and deleting the file there breaks the OTHER row, which is the exact
+		// "I deleted one duplicate and the last one broke" report.
+		const { countOtherTracksWithFilePath } = await import('$lib/server/db/tracks');
+		const others = await countOtherTracksWithFilePath(track.filePath, track.id);
+		if (others > 0) {
+			fileShared = true;
+			log.warn('file kept: another row points at the same path', {
+				trackId: track.id,
+				path: track.filePath,
+				otherRows: others,
+			});
+		}
 		try {
-			await rm(track.filePath, { force: true });
+			if (!fileShared) await rm(track.filePath, { force: true });
 		} catch (err) {
 			// The row stays so the library still points at a file that exists.
 			log.warn('delete failed at the file stage; row kept', {
@@ -77,5 +93,5 @@ export const DELETE: RequestHandler = async ({ locals, params, request }) => {
 		by: locals.user.id,
 	});
 
-	return json({ id: track.id, deleted: true, cancelledJobs: cancelled });
+	return json({ id: track.id, deleted: true, cancelledJobs: cancelled, fileKept: fileShared });
 };

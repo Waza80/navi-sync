@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { json, badRequest, notFound, unauthorizedResponse } from '$lib/server/api';
-import { enqueueJob } from '$lib/server/queue/jobs';
+import { enqueueDownloadJobs } from '$lib/server/queue/jobs';
 import { providers } from '$lib/server/providers/registry';
 import { trackPageUrl } from '$lib/server/providers/ids';
 import { enabledProviders } from '$lib/server/providers/enabled';
@@ -35,31 +35,6 @@ async function resolveAlbumProvider(preferred?: string): Promise<Provider | null
 }
 
 /**
- * Enqueue one download per track id.
- *
- * The job payload carries the OWNING provider and a provider-native URL built
- * from that provider's own page shape, so the worker's own routing agrees with
- * what we enqueued instead of having to re-derive it.
- */
-async function enqueueTracks(
-	provider: Provider,
-	trackIds: string[],
-	userId: string,
-	urlFor: (trackId: string) => string,
-): Promise<string[]> {
-	const jobs: string[] = [];
-	for (const trackId of trackIds) {
-		const job = await enqueueJob({
-			type: 'download',
-			payload: { url: urlFor(trackId), provider: provider.id },
-			createdBy: userId,
-		});
-		jobs.push(job.id);
-	}
-	return jobs;
-}
-
-/**
  * POST /api/albums/:id/download — fan out every track of an album.
  *
  * `?provider=tidal|deezer` scopes the id; without it, enabled album-capable
@@ -67,6 +42,7 @@ async function enqueueTracks(
  */
 export const POST: RequestHandler = async ({ locals, params, url }) => {
 	if (!locals.user) return unauthorizedResponse();
+	const userId = locals.user.id;
 	const albumId = params.id ?? '';
 	if (!idSchema.safeParse(albumId).success) return badRequest('Invalid album id', 'INVALID_ID');
 
@@ -99,15 +75,31 @@ export const POST: RequestHandler = async ({ locals, params, url }) => {
 		return notFound(`${provider.displayName} returned no tracks for that album.`);
 
 	try {
-		const jobs = await enqueueTracks(
-			provider,
-			trackIds,
-			locals.user.id,
-			(trackId) => trackPageUrl(provider.id, trackId) ?? trackId,
+		// One job per track, deduped against the request, the live queue and the
+		// library. `enqueueDownloadJobs` also dedupes ids, so a provider payload
+		// that lists a track twice cannot create two rows for one file.
+		const { enqueued, skipped } = await enqueueDownloadJobs(
+			[...new Set(trackIds)].map((trackId) => ({
+				url: trackPageUrl(provider.id, trackId) ?? trackId,
+				provider: provider.id,
+				createdBy: userId,
+			})),
 		);
-		log.info('album fan-out enqueued', { provider: provider.id, albumId, tracks: jobs.length });
+		log.info('album fan-out enqueued', {
+			provider: provider.id,
+			albumId,
+			tracks: trackIds.length,
+			enqueued,
+			skipped,
+		});
 		return json(
-			{ enqueued: jobs.length, albumId, provider: provider.id, jobIds: jobs },
+			{
+				enqueued,
+				skipped,
+				tracks: trackIds.length,
+				albumId,
+				provider: provider.id,
+			},
 			{ status: 202 },
 		);
 	} catch (err) {

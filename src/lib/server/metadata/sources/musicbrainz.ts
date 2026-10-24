@@ -1,3 +1,4 @@
+import { env } from '$lib/server/env';
 import { logger } from '$lib/server/logger';
 import { looksCanonical, pickStrict } from '../match';
 import type { MetadataPatch, MetadataQuery, MetadataSource } from '../types';
@@ -20,18 +21,65 @@ import type { MetadataPatch, MetadataQuery, MetadataSource } from '../types';
  */
 
 const log = logger;
-const MB = 'https://musicbrainz.org/ws/2';
+/**
+ * BrainzMash is a MusicBrainz `/ws/2` mirror that answers at 4 req/sec instead
+ * of the official 1 req/sec — a whole-library reindex is bounded by that rate,
+ * so the mirror is the primary host. It is not a fork and speaks the same
+ * dialect: the same paths, parameters and JSON shapes.
+ *
+ * It is also gated case-by-case by its operator, and this deployment is not on
+ * the allow-list yet: `https://api.brainzmash.cc/ws/2/...` answers 403 from both
+ * the dev host and the production host. So every request has a fallback to the
+ * official MusicBrainz host, and a 403 parks the mirror for a cooldown instead
+ * of paying the round-trip on every call. Metadata therefore keeps working
+ * before access is granted, and starts using the faster host automatically once
+ * it is.
+ *
+ * Set `MUSICBRAINZ_BASE_URL` to override the primary (an empty value means "use
+ * the official host only").
+ */
+const MB_OFFICIAL = 'https://musicbrainz.org/ws/2';
+const MB_BRAINZMASH = 'https://api.brainzmash.cc/ws/2';
+const configuredBase = env.MUSICBRAINZ_BASE_URL?.replace(/\/+$/, '');
+const MB_PRIMARY = configuredBase ?? MB_BRAINZMASH;
+const MB_HAS_FALLBACK = MB_PRIMARY !== MB_OFFICIAL;
+/** The official host asks for <=1 req/sec; BrainzMash allows 4 req/sec. */
+const INTERVAL_OFFICIAL_MS = 1100;
+const INTERVAL_PRIMARY_MS = MB_PRIMARY === MB_OFFICIAL ? INTERVAL_OFFICIAL_MS : 250;
+/** How long to stop asking a mirror that answered 401/403. */
+const BLOCKED_COOLDOWN_MS = 10 * 60_000;
+
 // Same organisation, different host, and it 307-redirects to archive.org.
 const CAA = 'https://coverartarchive.org';
 const UA = 'navi-sync/1.0 ( https://github.com/Waza80/navi-sync )';
 const TIMEOUT_MS = 15_000;
-/** MusicBrainz asks for <=1 req/sec from anonymous clients. */
-let lastCall = 0;
 
-async function politeFetch(url: string): Promise<Response | null> {
-	const wait = 1100 - (Date.now() - lastCall);
-	if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-	lastCall = Date.now();
+/**
+ * Serialized, per-origin rate limiting.
+ *
+ * The previous limiter was `lastCall` + a wait, which two concurrent jobs could
+ * both pass (check, then set) — so a reindex that ran sources in parallel could
+ * exceed the official 1 req/sec and get the IP throttled. Chaining every request
+ * through one promise makes the interval a real guarantee; the interval used is
+ * the strictest one currently in play, because the chain is shared.
+ */
+let chain: Promise<unknown> = Promise.resolve();
+const lastCall = new Map<string, number>();
+let mirrorBlockedUntil = 0;
+
+function throttle(origin: string, intervalMs: number): Promise<void> {
+	const run = chain.then(async () => {
+		const last = lastCall.get(origin) ?? 0;
+		const wait = intervalMs - (Date.now() - last);
+		if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+		lastCall.set(origin, Date.now());
+	});
+	chain = run.catch(() => undefined);
+	return run;
+}
+
+async function rawFetch(url: string, intervalMs: number): Promise<Response | null> {
+	await throttle(new URL(url).origin, intervalMs);
 	try {
 		return await fetch(url, {
 			headers: { 'User-Agent': UA, Accept: 'application/json' },
@@ -46,13 +94,56 @@ async function politeFetch(url: string): Promise<Response | null> {
 	}
 }
 
+/**
+ * One `/ws/2` request, mirror first with a transparent fallback.
+ *
+ * `pathAndQuery` starts with `/` and is identical on both hosts. A 404 is a
+ * real answer and is returned as-is; 401/403/429/5xx/network failure means "this
+ * host cannot answer", so the official host is asked instead.
+ */
+async function mbFetch(pathAndQuery: string): Promise<Response | null> {
+	if (Date.now() >= mirrorBlockedUntil) {
+		const primary = await rawFetch(`${MB_PRIMARY}${pathAndQuery}`, INTERVAL_PRIMARY_MS);
+		if (primary?.ok) return primary;
+		if (primary && (primary.status === 401 || primary.status === 403)) {
+			mirrorBlockedUntil = Date.now() + BLOCKED_COOLDOWN_MS;
+			log.warn('brainzmash refused the request; using official MusicBrainz', {
+				status: primary.status,
+				cooldownMinutes: BLOCKED_COOLDOWN_MS / 60_000,
+			});
+		} else if (primary && primary.status !== 404) {
+			log.debug('brainzmash unavailable; using official MusicBrainz', {
+				status: primary.status,
+			});
+		} else if (primary) {
+			// A 404 from the mirror is the same 404 the official host would give.
+			return primary;
+		} else {
+			log.debug('brainzmash unreachable; using official MusicBrainz');
+		}
+	}
+	if (!MB_HAS_FALLBACK) return null;
+	return rawFetch(`${MB_OFFICIAL}${pathAndQuery}`, INTERVAL_OFFICIAL_MS);
+}
+
+/** Cover Art Archive fetch, on the official polite cadence. */
+function politeFetch(url: string): Promise<Response | null> {
+	return rawFetch(url, INTERVAL_OFFICIAL_MS);
+}
+
+interface MbArtistCredit {
+	name?: string;
+	artist?: { id?: string; name?: string; disambiguation?: string };
+}
+
 interface MbRelease {
 	id?: string;
 	title?: string;
 	date?: string;
 	status?: string;
 	media?: Array<{ position?: number; format?: string }>;
-	'release-group'?: { 'primary-type'?: string; 'secondary-types'?: string[] };
+	'release-group'?: { id?: string; 'primary-type'?: string; 'secondary-types'?: string[] };
+	'artist-credit'?: MbArtistCredit[];
 }
 
 interface MbRecording {
@@ -61,10 +152,7 @@ interface MbRecording {
 	length?: number;
 	isrcs?: string[];
 	releases?: MbRelease[];
-	'artist-credit'?: Array<{
-		name?: string;
-		artist?: { id?: string; name?: string; disambiguation?: string };
-	}>;
+	'artist-credit'?: MbArtistCredit[];
 }
 
 /** Primary types that represent a real, canonical studio release. */
@@ -250,7 +338,22 @@ async function toPatch(chosen: Chosen, needed: MetadataQuery['needed']): Promise
 		...(needed.includes('artistMbid') && artistMbid(rec)
 			? { artistMbid: artistMbid(rec) }
 			: {}),
+		// Identities. These are the fields that cannot be recovered from a
+		// title+artist search later, so they are stored on the first resolution.
+		...(needed.includes('recordingMbid') && rec.id ? { recordingMbid: rec.id } : {}),
+		...(needed.includes('releaseMbid') && release.id ? { releaseMbid: release.id } : {}),
+		...(needed.includes('releaseGroupMbid') && release['release-group']?.id
+			? { releaseGroupMbid: release['release-group'].id }
+			: {}),
+		...(needed.includes('albumArtistMbid') && albumArtistMbid(release, rec)
+			? { albumArtistMbid: albumArtistMbid(release, rec) }
+			: {}),
 	};
+}
+
+/** Release-level artist credit wins over the recording's: it is the album identity. */
+function albumArtistMbid(release: MbRelease, rec: MbRecording): string | null {
+	return release['artist-credit']?.[0]?.artist?.id ?? artistMbid(rec);
 }
 
 /**
@@ -332,8 +435,8 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 }
 
 async function search(query: string): Promise<MbRecording[]> {
-	const res = await politeFetch(
-		`${MB}/recording?query=${encodeURIComponent(query)}&fmt=json&limit=25&inc=releases+release-groups+artist-credits+isrcs`,
+	const res = await mbFetch(
+		`/recording?query=${encodeURIComponent(query)}&fmt=json&limit=25&inc=releases+release-groups+artist-credits+isrcs`,
 	);
 	if (!res?.ok) return [];
 	const body = (await res.json()) as { recordings?: MbRecording[] };
@@ -354,10 +457,15 @@ async function fetchTrackNumbers(
 	releaseId: string | undefined,
 	recordingId: string | undefined,
 	recordingTitle?: string,
-): Promise<{ trackNumber: number | null; discNumber: number | null }> {
-	if (!releaseId || !recordingId) return { trackNumber: null, discNumber: null };
-	const res = await politeFetch(`${MB}/release/${releaseId}?inc=recordings&fmt=json`);
-	if (!res?.ok) return { trackNumber: null, discNumber: null };
+): Promise<{
+	trackNumber: number | null;
+	discNumber: number | null;
+	releaseTrackMbid: string | null;
+}> {
+	if (!releaseId || !recordingId)
+		return { trackNumber: null, discNumber: null, releaseTrackMbid: null };
+	const res = await mbFetch(`/release/${releaseId}?inc=recordings&fmt=json`);
+	if (!res?.ok) return { trackNumber: null, discNumber: null, releaseTrackMbid: null };
 	const body = (await res.json()) as {
 		media?: Array<{
 			position?: number;
@@ -387,7 +495,11 @@ async function fetchTrackNumbers(
 			// recording's, so matching on it silently found nothing and every
 			// album reported no track numbers at all.
 			if (track.recording?.id && track.recording.id === recordingId) {
-				return { trackNumber: position, discNumber: disc };
+				return {
+					trackNumber: position,
+					discNumber: disc,
+					releaseTrackMbid: track.id ?? null,
+				};
 			}
 		}
 	}
@@ -400,12 +512,16 @@ async function fetchTrackNumbers(
 				if (position == null) continue;
 				const name = norm(track.recording?.title ?? track.title);
 				if (name && name === wantedTitle) {
-					return { trackNumber: position, discNumber: medium.position ?? null };
+					return {
+						trackNumber: position,
+						discNumber: medium.position ?? null,
+						releaseTrackMbid: track.id ?? null,
+					};
 				}
 			}
 		}
 	}
-	return { trackNumber: null, discNumber: null };
+	return { trackNumber: null, discNumber: null, releaseTrackMbid: null };
 }
 
 export const musicbrainzSource: MetadataSource = {
@@ -458,13 +574,15 @@ async function withTrackNumbers(
 	const patch = await toPatch(chosen, query.needed);
 	const wantsTrack = query.needed.includes('trackNumber');
 	const wantsDisc = query.needed.includes('discNumber');
-	if (!wantsTrack && !wantsDisc) return patch;
-	const { trackNumber, discNumber } = await fetchTrackNumbers(
+	const wantsReleaseTrack = query.needed.includes('releaseTrackMbid');
+	if (!wantsTrack && !wantsDisc && !wantsReleaseTrack) return patch;
+	const { trackNumber, discNumber, releaseTrackMbid } = await fetchTrackNumbers(
 		chosen.release.id,
 		chosen.recording.id,
 		chosen.recording.title,
 	);
 	if (wantsTrack && trackNumber != null) patch.trackNumber = trackNumber;
 	if (wantsDisc && discNumber != null) patch.discNumber = discNumber;
+	if (wantsReleaseTrack && releaseTrackMbid) patch.releaseTrackMbid = releaseTrackMbid;
 	return patch;
 }

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
-import { enqueueJob } from '$lib/server/queue/jobs';
+import { enqueueDownloadJobs } from '$lib/server/queue/jobs';
 import { getProvider } from '$lib/server/providers/registry';
 import { enabledProviders } from '$lib/server/providers/enabled';
 import { trackPageUrl } from '$lib/server/providers/ids';
@@ -23,6 +23,7 @@ const idSchema = z.string().min(1).max(100);
  */
 export const POST: RequestHandler = async ({ locals, params, url }) => {
 	if (!locals.user) return unauthorizedResponse();
+	const userId = locals.user.id;
 	const artistId = params.id ?? '';
 	if (!idSchema.safeParse(artistId).success) {
 		return badRequest('Invalid artist id', 'INVALID_ID');
@@ -88,12 +89,14 @@ export const POST: RequestHandler = async ({ locals, params, url }) => {
 	}
 
 	// Album track lists need the gateway on Deezer; a single album failing must not
-	// abandon the rest of the fan-out.
-	const jobIds: string[] = [];
+	// abandon the rest of the fan-out. Track ids are collected into a Set first:
+	// the same recording can appear on the album, a single and a compilation, and
+	// downloading it three times is how one song becomes three files.
+	const wantedTrackIds = new Set<string>();
 	const failedAlbums: string[] = [];
 	let truncated = false;
 	for (const albumId of albumIds) {
-		if (jobIds.length >= maxTracks) {
+		if (wantedTrackIds.size >= maxTracks) {
 			truncated = true;
 			break;
 		}
@@ -110,39 +113,42 @@ export const POST: RequestHandler = async ({ locals, params, url }) => {
 			continue;
 		}
 		for (const trackId of trackIds) {
-			if (jobIds.length >= maxTracks) {
+			if (wantedTrackIds.size >= maxTracks) {
 				truncated = true;
 				break;
 			}
-			const job = await enqueueJob({
-				type: 'download',
-				payload: {
-					url: trackPageUrl(provider.id, trackId) ?? trackId,
-					provider: provider.id,
-				},
-				createdBy: locals.user.id,
-			});
-			jobIds.push(job.id);
+			wantedTrackIds.add(trackId);
 		}
 	}
+
+	const { enqueued, skipped } = await enqueueDownloadJobs(
+		[...wantedTrackIds].map((trackId) => ({
+			url: trackPageUrl(provider.id, trackId) ?? trackId,
+			provider: provider.id,
+			createdBy: userId,
+		})),
+	);
 
 	log.info('artist fan-out enqueued', {
 		provider: provider.id,
 		artistId,
 		albums: albumIds.length,
-		tracks: jobIds.length,
+		tracks: wantedTrackIds.size,
+		enqueued,
+		skipped,
 		failedAlbums: failedAlbums.length,
 		truncated,
 	});
 	return json(
 		{
-			enqueued: jobIds.length,
+			enqueued,
+			skipped,
+			tracks: wantedTrackIds.size,
 			artistId,
 			provider: provider.id,
 			albumsScanned: albumIds.length,
 			albumsFailed: failedAlbums.length,
 			truncated,
-			jobIds,
 		},
 		{ status: 202 },
 	);

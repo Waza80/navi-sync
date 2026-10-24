@@ -430,6 +430,7 @@ export function ensureWorkerStarted(): void {
 										bitDepth: full.bitDepth,
 										sampleRateHz: full.sampleRateHz,
 										isLossless: full.isLossless,
+										filePath: full.filePath,
 									},
 									{ skipRecentCheck: true },
 								).catch(() => null)

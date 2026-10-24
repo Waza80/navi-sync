@@ -90,7 +90,35 @@ After the backfill (v0.12.1, 815 embedded jobs, 0 dead):
 
 718 is the number the player can actually display. The remaining 97 are
 plain-only: Navidrome drops every unsynced entry, so they stay invisible until a
-synced source turns up (the sweep retries them weekly).
+synced source turns up.
+
+### Plain-track source verification (2026-10-22)
+
+All 97 plain tracks were re-checked against every source (sidecars written only to
+`/tmp/opencode/probe-library`, never the real library): **78 synced, 16 plain,
+3 instrumental**. Synced sources: lrc-red 60, deezer-pipe 5, deezer-search 13.
+`CHIMERA`, `KETER`, `YESOD` correctly prefer official Deezer over machine-transcribed
+lrc.red; one low-overlap flag is a CJK tokenization artifact. 97 of 468
+failed-with-file rows are genuine instrumentals per LRCLIB.
+
+### Source order (agreed)
+
+`lrc-red` (ISRC, ~60 ms) → `lrclib` → `deezer-pipe` (exact SNG_ID) →
+`deezer-search` (strict match for non-Deezer rows) → `apple-music`.
+
+- `downloadLyrics` returns immediately only on a synced result; plain is held as
+  fallback while every remaining source is asked for a synced copy.
+- Machine-generated synced (`lrc.red byModel`) ranks below official synced but
+  above plain.
+- Deezer JWT cached 10 minutes; `lyrics.text` is a string (also tolerate arrays) —
+  `.join()` on it threw and returned null for every track.
+- Apple uses ISRC catalog lookup first, then strict title+artist+duration search.
+- LRCLIB durations bounded: ±3 s, then ±8 s, otherwise reject — never ignore duration.
+- `instrumental` is a terminal lyrics status; those rows are excluded from retries.
+- Plain-retry cadence changed from weekly to daily; `lyrics_source` column added for
+  per-source hit-rate queries.
+- Existing synced sidecars never downgraded by a plain/generated fetch or a failed
+  fetch during an upgrade.
 
 The 5 tracks that finished last had `lyrics_embedded_at IS NULL` with a
 `succeeded` job: the embed had failed once (file mid-move), and the 24h jobs guard

@@ -990,3 +990,35 @@ build time. Bumping `package.json` alone ships code that reports the OLD version
 I polled for `0.12.1`, saw `0.12.0` with a reset uptime, and briefly believed the
 webhook had deployed the wrong commit. Bump both, and trust the container image
 tag (`docker ps` shows the commit SHA) over the reported version when in doubt.
+
+## Post-download scans are gated by `autoScan`
+
+`ensurePostDownloadScan` now checks the `autoScan` setting (default on), skips when
+a scan is queued/running or ran in the last 10 minutes, and non-repair scans
+trigger-and-return (they never occupy a worker slot while polling). If a deploy
+seems to "not scan after downloads", check `autoScan` is on in Settings. Repair
+scans still await completion.
+
+## BrainzMash is primary but currently 403-blocked
+
+`MUSICBRAINZ_BASE_URL` defaults to `https://api.brainzmash.cc/ws/2` (4 req/sec).
+It answers 403 from both dev and prod hosts until the operator allows this IP, so
+every request transparently falls back to official MusicBrainz (1 req/sec) on
+403/429/5xx/network failure. Metadata keeps working either way; the mirror is used
+automatically once access is granted.
+
+## `0013_single_file_owner` refuses if duplicates exist
+
+The partial unique index on `tracks.file_path` is created by a `DO` block that
+raises if any duplicate `file_path` groups remain. Run `scripts/reconcile-library.ts`
+(which adopts and verifies BEFORE deleting anything) first; the index is what makes
+"delete one duplicate" safe — the delete route keeps the file when another row still
+references the path.
+
+## WAV is filed but not retagged
+
+`.wav` is a filable, lossless container (stored as `format = 'flac'` fallback so it
+ranks correctly), but neither metaflac nor node-id3 writes tags to it, so a WAV is
+filed with whatever tags it arrived with. `ensureFileTags` skips writing for WAV
+rather than corrupting it with the wrong writer.
+

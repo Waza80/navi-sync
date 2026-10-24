@@ -226,7 +226,8 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 
 	// Lyrics: embedded ones were already tagged by the uploader — otherwise
 	// fetch ONLY when the song misses lyrics (no sidecar beside its final path).
-	let lyricsStatus: 'none' | 'synced' | 'plain' | 'failed' = 'none';
+	let lyricsStatus: 'none' | 'synced' | 'plain' | 'failed' | 'instrumental' = 'none';
+	let lyricsSource: string | undefined;
 	let pendingLyrics: { text: string; synced: boolean } | null = null;
 	if (input.embeddedLyrics) {
 		lyricsStatus = 'plain';
@@ -240,6 +241,9 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 					synced: result.synced === true,
 					path: result.path,
 				};
+				lyricsSource = result.source;
+			} else if (result.instrumental) {
+				lyricsStatus = 'instrumental';
 			}
 		}
 		if (current) {
@@ -291,10 +295,10 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 		// are only fallbacks for when the probe fails.
 		resolution: {
 			url: '',
-			format: container === 'flac' ? 'flac' : 'mp3',
-			ext: container === 'flac' ? 'flac' : 'mp3',
+			format: container === 'flac' || container === 'wav' ? 'flac' : 'mp3',
+			ext: container === 'flac' || container === 'wav' ? 'flac' : 'mp3',
 			claimedBitrateKbps: null,
-			claimedLossless: container === 'flac',
+			claimedLossless: container === 'flac' || container === 'wav',
 			cipher: 'NONE',
 			decryptTrackId: null,
 		},
@@ -304,6 +308,7 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 		sizeBytes: size,
 		checksumSha256: checksum,
 		lyricsStatus,
+		lyricsSource,
 		lyricsEmbeddedAt,
 	});
 

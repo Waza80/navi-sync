@@ -5,14 +5,14 @@
 - App: `https://navis.orbitsc.net` — health reports `db: true` and `uptimeSec`,
   which is how you detect a deploy.
 - Navidrome: `https://navi.orbitsc.net`.
-- **The music library lives at `/mnt/hdd/music` on `192.168.1.16`, NOT on this host.**
-  Reach it with `ssh wyzz@192.168.1.16`. Anything that touches library _files_ —
+- **The music library lives at `/mnt/hdd/music` on `192.168.1.24`, NOT on this host.**
+  Reach it with `ssh wyzz@192.168.1.24`. Anything that touches library _files_ —
   deleting duplicates, repairing tags, checking what is actually on disk — has to run
   over there; the app container sees it as `/music`. Do not conclude a file is
   missing from an empty local `/mnt/hdd/music`: the mount simply is not present here.
-  Verify with `ssh wyzz@192.168.1.16 'ls /mnt/hdd/music'` before concluding anything
+  Verify with `ssh wyzz@192.168.1.24 'ls /mnt/hdd/music'` before concluding anything
   about library contents.
-- Production DB: `postgres://…@192.168.1.16:3593/navisync`, read from
+- Production DB: `postgres://…@192.168.1.24:3593/navisync`, read from
   `docker/compose.prod.yaml` (gitignored). Dev DB is port `3945/navisync_dev`.
   **Direct connections from this host are flaky** — ECONNREFUSED or timeouts even
   though the app reaches the same DB fine. Retry in a loop, or query through the
@@ -39,6 +39,23 @@ select count(*) rows, count(file_path) audio,
        count(*) filter (where download_status='failed') failed,
        count(*) filter (where refetch_blocked) blocked
 from tracks;
+```
+
+**One file, one row**: `tracks_file_path_uq` partial unique index (added in
+`0013_single_file_owner`) prevents two rows pointing at the same audio. The delete
+route checks `countOtherTracksWithFilePath` and keeps the file when another row still
+references it. Deleting one duplicate never breaks the other.
+
+**Post-download scans**: gated by the `autoScan` setting (default on). A scan already
+queued/running or one that ran in the last 10 minutes is skipped. Non-repair scans
+trigger-and-return — they never occupy a worker slot while polling, and the cancel
+button works because `runNavidromeScan` observes `ctx.signal` between polls. Repair
+scans still await completion and stamp `navidrome_synced_at`.
+
+**MusicBrainz / BrainzMash**: `MUSICBRAINZ_BASE_URL` defaults to the BrainzMash
+mirror (4 req/sec) and falls back to official MusicBrainz (1 req/sec) on 403/429/5xx
+or network failure. BrainzMash currently 403s from both dev and prod hosts, so all
+metadata is served via the official fallback until access is granted.
 
 -- why jobs died
 select left(error,150) reason, count(*) n from jobs

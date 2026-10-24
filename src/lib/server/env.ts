@@ -69,6 +69,13 @@ export const env = {
 	DEEZER_EMAIL: unquote(optional('DEEZER_EMAIL')),
 	DEEZER_PASSWORD: unquote(optional('DEEZER_PASSWORD')),
 	DEEZER_RESOLVER_URL: unquote(optional('DEEZER_RESOLVER_URL')),
+	/**
+	 * MusicBrainz `/ws/2` base URL. Defaults to the BrainzMash mirror
+	 * (4 req/sec); set to `https://musicbrainz.org/ws/2` to use the official
+	 * host directly. Requests fall back to the official host automatically
+	 * whenever the configured one refuses or fails.
+	 */
+	MUSICBRAINZ_BASE_URL: unquote(optional('MUSICBRAINZ_BASE_URL')),
 	IS_PROD: process.env.NODE_ENV === 'production',
 } as const;
 

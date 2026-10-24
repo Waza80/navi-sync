@@ -4,8 +4,11 @@ import { env } from '$lib/server/env';
 import { logger } from '$lib/server/logger';
 import { getSettings } from '$lib/server/settings';
 import {
+	adoptDownloadedFile,
 	deleteTrackRow,
 	findExistingTrack,
+	findTrackByFilePath,
+	findTrackByProvider,
 	getTrackById,
 	listFiledTracks,
 	markDownloadStatus,
@@ -24,7 +27,7 @@ import {
 	type TrackMeta,
 	type TrackRef,
 } from '$lib/server/providers/types';
-import type { MetadataField } from '$lib/server/metadata/types';
+import type { MetadataField, MetadataPatch } from '$lib/server/metadata/types';
 import {
 	bestPossibleFetch,
 	mayReplaceFile,
@@ -86,7 +89,7 @@ export async function runJob(job: JobRow, ctx: JobContext): Promise<Record<strin
 		case 'lyrics':
 			return runLyrics(job, ctx);
 		case 'navidrome_scan':
-			return runNavidromeScan(job);
+			return runNavidromeScan(job, ctx);
 		case 'upgrade_check':
 			return runUpgradeCheck(job, ctx);
 		case 'metadata_repair':
@@ -333,7 +336,12 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		return { skipped: true, reason: hardStop.reason, trackId: existing?.id };
 	}
 
-	if (existing) {
+	// Only a real file can veto the fetch. A row can hold stale quality fields
+	// with nothing on disk (a failed upgrade, a moved library); the hard stop
+	// above already knows that, and this guardrail used to run anyway and skip a
+	// track that had no audio at all — the "Deezer track with no file can't take
+	// the Tidal fallback" report.
+	if (existing && hasFileOnDisk) {
 		const verdict = shouldSkipRefetch(
 			{
 				format: existing.format,
@@ -693,8 +701,79 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 	// 10. Move into the library (Artist/Album/NN - Title.ext).
 	await ctx.report(90, 'filing into library');
 	const checksum = await sha256File(finalTmp);
+	// Remembered BEFORE the move: `moveIntoLibrary` silently discards the
+	// incoming file when the destination already exists, so afterwards there is
+	// no way to tell whose bytes are on disk. That distinction decides whether a
+	// duplicate download may adopt the file or must leave it alone.
+	const pathExistedBeforeMove = await access(plannedPath).then(
+		() => true,
+		() => false,
+	);
 	const finalPath = await moveIntoLibrary(finalTmp, audioRel);
 	await cleanupTemp(finalTmp);
+
+	// 10a. ONE FILE, ONE ROW.
+	//
+	// The path is derived from artist/album/title/number, so two rows resolving
+	// to the same path are the same recording filed twice — usually one download
+	// that started from a Deezer album and one from a Tidal track. Letting both
+	// rows point at one file is what makes DELETE break the survivor, so the
+	// second download stops here instead of inserting a twin.
+	const ownRow =
+		meta.providerTrackId && meta.providerTrackId.length > 0
+			? await findTrackByProvider(meta.provider, meta.providerTrackId)
+			: null;
+	const pathOwner = await findTrackByFilePath(finalPath);
+	if (pathOwner && pathOwner.id !== upgradeForTrackId && pathOwner.id !== ownRow?.id) {
+		if (!pathExistedBeforeMove) {
+			// The owner row claimed a path whose file was gone. The bytes just
+			// filed ARE that file now, so hand them to the row that owns the path
+			// rather than creating a second row for the same audio.
+			await adoptDownloadedFile({
+				id: pathOwner.id,
+				resolution,
+				probed,
+				filePath: finalPath,
+				sizeBytes: await stat(finalPath)
+					.then((s) => s.size)
+					.catch(() => null),
+				checksumSha256: checksum,
+				// Only a successful fetch may rewrite the owner's lyrics state; a
+				// failed one must leave whatever it already had.
+				...(lyrics.success
+					? { lyricsStatus: lyrics.synced ? ('synced' as const) : ('plain' as const) }
+					: lyrics.instrumental
+						? { lyricsStatus: 'instrumental' as const }
+						: {}),
+				lyricsSource: lyrics.source,
+			}).catch((err) =>
+				log.warn('adopting duplicate download failed', {
+					jobId: job.id,
+					trackId: pathOwner.id,
+					error: String(err),
+				}),
+			);
+		}
+		// The shell row this job was retrying has no file and never will — the
+		// song is present under the owner. Remove it so it cannot sit in
+		// `pending` forever.
+		if (ownRow && ownRow.id !== pathOwner.id && !ownRow.filePath) {
+			await deleteTrackRow(ownRow.id).catch(() => false);
+		}
+		log.info('duplicate download skipped — the path already has an owner', {
+			jobId: job.id,
+			trackId: pathOwner.id,
+			path: finalPath,
+			existingFile: pathExistedBeforeMove,
+			provider: meta.provider,
+		});
+		return {
+			skipped: true,
+			reason: 'duplicate_of_filed_track',
+			trackId: pathOwner.id,
+			filePath: finalPath,
+		};
+	}
 
 	// 10b. Embed the lyrics we just fetched (or found) INTO the file.
 	//
@@ -771,9 +850,23 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 		coverPath,
 		sizeBytes: size,
 		checksumSha256: checksum,
-		lyricsStatus: lyrics.success ? (lyrics.synced ? 'synced' : 'plain') : 'failed',
+		lyricsStatus: lyrics.success
+			? lyrics.synced
+				? 'synced'
+				: 'plain'
+			: lyrics.instrumental
+				? 'instrumental'
+				: 'failed',
+		lyricsSource: lyrics.source,
 		lyricsEmbeddedAt,
 	});
+	// The upsert can land on a DIFFERENT row than the one this job was retrying:
+	// `upsertTrack` refuses to write a twin when the path already has an owner.
+	// That owner is the library entry; the shell row has no file and no future,
+	// so it is removed here rather than left pending forever.
+	if (ownRow && ownRow.id !== trackId && !ownRow.filePath) {
+		await deleteTrackRow(ownRow.id).catch(() => false);
+	}
 	if (supersededId && supersededId !== trackId) {
 		// The old row loses: remove orphaned sidecars that no longer belong
 		// to any track (cover.jpg is shared per album — never delete it).
@@ -884,6 +977,12 @@ function tagDataFor(t: {
 	discNumber: number | null;
 	releaseYear: number | null;
 	genre: string | null;
+	artistMbid?: string | null;
+	recordingMbid?: string | null;
+	releaseMbid?: string | null;
+	releaseGroupMbid?: string | null;
+	albumArtistMbid?: string | null;
+	releaseTrackMbid?: string | null;
 }): TagData {
 	return {
 		title: t.title,
@@ -897,6 +996,12 @@ function tagDataFor(t: {
 		cover: null,
 		lyricsPlain: null,
 		lyricsSynced: null,
+		artistMbid: t.artistMbid ?? null,
+		recordingMbid: t.recordingMbid ?? null,
+		releaseMbid: t.releaseMbid ?? null,
+		releaseGroupMbid: t.releaseGroupMbid ?? null,
+		albumArtistMbid: t.albumArtistMbid ?? null,
+		releaseTrackMbid: t.releaseTrackMbid ?? null,
 	};
 }
 
@@ -922,6 +1027,12 @@ async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, u
 		genre: string | null;
 		sourceUrl: string | null;
 		id: string;
+		artistMbid?: string | null;
+		recordingMbid?: string | null;
+		releaseMbid?: string | null;
+		releaseGroupMbid?: string | null;
+		albumArtistMbid?: string | null;
+		releaseTrackMbid?: string | null;
 	};
 
 	const meta: TrackMeta = {
@@ -950,6 +1061,8 @@ async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, u
 	const onDisk = typeof t.filePath === 'string' ? await readLyricsSidecar(t.filePath) : null;
 	let current = onDisk;
 	let fetchError: string | undefined;
+	let fetchedSource: string | undefined;
+	let instrumental = false;
 
 	if (!current || !current.synced) {
 		await ctx.report(55, 'querying lyrics sources');
@@ -960,6 +1073,10 @@ async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, u
 				synced: result.synced === true,
 				path: result.path,
 			};
+			fetchedSource = result.source;
+		} else if (result.instrumental) {
+			instrumental = true;
+			fetchError = result.error;
 		} else {
 			fetchError = result.error ?? 'all sources failed';
 		}
@@ -967,8 +1084,11 @@ async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, u
 
 	if (!current) {
 		// "If the lyrics API is down, keep the same": there was nothing to keep.
-		await updateLyricsStatus(t.id, 'failed');
-		return { success: false, error: fetchError };
+		// An instrumental is a definitive answer, not a failure to retry.
+		await updateLyricsStatus(t.id, instrumental ? 'instrumental' : 'failed');
+		return instrumental
+			? { success: false, instrumental: true, error: fetchError }
+			: { success: false, error: fetchError };
 	}
 
 	// Write them into the file. This is the step Navidrome actually reads: its
@@ -996,6 +1116,7 @@ async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, u
 		t.id,
 		current.synced ? 'synced' : 'plain',
 		embedded === 'ok' ? new Date() : undefined,
+		fetchedSource,
 	);
 	return {
 		success: true,
@@ -1008,7 +1129,7 @@ async function runLyrics(job: JobRow, ctx: JobContext): Promise<Record<string, u
 
 /* ── navidrome scan ───────────────────────────────────────────────────────── */
 
-async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
+async function runNavidromeScan(job: JobRow, ctx: JobContext): Promise<Record<string, unknown>> {
 	const { getSettings } = await import('$lib/server/settings');
 	const { getScanStatus } = await import('$lib/server/navidrome/subsonic');
 	const s = await getSettings();
@@ -1021,6 +1142,14 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		filesOnDisk?: number;
 		tracksInDb?: number;
 	};
+	// Only the repair flow waits for completion. It needs the outcome to report
+	// (and to stamp what it indexed), so holding a worker slot is the price of
+	// that report. Every other scan — the debounced post-download one, the manual
+	// button — triggers and returns: Navidrome scans on its own, and a five-minute
+	// poll used to occupy one of four download slots for five minutes doing
+	// nothing, while the cancel button had no effect at all because this handler
+	// never looked at the abort signal.
+	const awaitCompletion = payload.repair === true;
 	let retagged = 0;
 	let tagsSkipped = 0;
 	let tagsFailed = 0;
@@ -1196,29 +1325,63 @@ async function runNavidromeScan(job: JobRow): Promise<Record<string, unknown>> {
 		coversBackfilled = coverReport.backfilled;
 		log.info('navidrome repair cover pass finished', { ...coverReport });
 	}
+	if (ctx.signal.aborted) throw new Error('cancelled');
 	await updateProgress(job.id, job.type, job.trackId, 40, 'triggering scan');
 	// A repair exists because the index disagreed with the disk, so it always
 	// asks for a FULL scan: an incremental one leaves the disagreement in place.
 	const started = await startScan(s.navidromeUrl, s.navidromeUsername, s.navidromePassword, true);
 	if (!started.ok) throw new Error(`Scan failed: ${started.error ?? 'unknown error'}`);
-	log.info('navidrome scan triggered', { serverVersion: started.serverVersion });
+	log.info('navidrome scan triggered', {
+		serverVersion: started.serverVersion,
+		awaitCompletion,
+		repair: payload.repair ?? false,
+	});
+
+	if (!awaitCompletion) {
+		// Trigger-and-return. The scan is already running in Navidrome; there is
+		// nothing left to learn by holding this job open, and holding it open is
+		// what made the scan look like it blocked downloads.
+		return {
+			status: 'ok',
+			serverVersion: started.serverVersion,
+			scanCompleted: false,
+			triggered: true,
+			retagged,
+			coversBackfilled,
+			metadataRepairEnqueued,
+			filesOnDisk: payload.filesOnDisk ?? null,
+			tracksInDb: payload.tracksInDb ?? null,
+		};
+	}
 
 	// Wait for Navidrome to finish (poll every 5s, up to 5 min) so a repair
 	// reports the true outcome instead of "triggered and hoped".
+	//
+	// The abort signal is checked every iteration: the worker's cancellation
+	// watcher flips the job to `cancelled` and aborts the controller, and without
+	// this check the loop ignored it and kept polling for the full five minutes.
 	const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 	let scanCompleted = false;
 	let lastCount: number | null = null;
+	let consecutiveFailures = 0;
 	for (let i = 0; i < 60; i++) {
+		if (ctx.signal.aborted) throw new Error('cancelled');
 		await sleep(5000);
+		if (ctx.signal.aborted) throw new Error('cancelled');
 		const status = await getScanStatus(
 			s.navidromeUrl,
 			s.navidromeUsername,
 			s.navidromePassword,
 		);
 		if (!status.ok) {
+			consecutiveFailures++;
 			log.warn('navidrome scan-status poll failed', { error: status.error });
+			// Six failures in a row (30s) is a server that cannot answer, not a
+			// blip; polling for the remaining four minutes reports nothing new.
+			if (consecutiveFailures >= 6) break;
 			continue;
 		}
+		consecutiveFailures = 0;
 		lastCount = status.count ?? lastCount;
 		if (!status.scanning) {
 			scanCompleted = true;
@@ -1356,6 +1519,11 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 		discNumber: row.discNumber,
 		isrc: row.isrc,
 		artistMbid: row.artistMbid,
+		recordingMbid: row.recordingMbid,
+		releaseMbid: row.releaseMbid,
+		releaseGroupMbid: row.releaseGroupMbid,
+		albumArtistMbid: row.albumArtistMbid,
+		releaseTrackMbid: row.releaseTrackMbid,
 	});
 
 	// A FIELD-SCOPED forced pass: re-ask for these fields even when they are filled.
@@ -1400,6 +1568,24 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 				via: Object.values(filledBy).join(','),
 			});
 		}
+	}
+
+	const mbidsInPatch: MetadataPatch = {};
+	if (patch.recordingMbid) mbidsInPatch.recordingMbid = patch.recordingMbid;
+	if (patch.releaseMbid) mbidsInPatch.releaseMbid = patch.releaseMbid;
+	if (patch.releaseGroupMbid) mbidsInPatch.releaseGroupMbid = patch.releaseGroupMbid;
+	if (patch.albumArtistMbid) mbidsInPatch.albumArtistMbid = patch.albumArtistMbid;
+	if (patch.releaseTrackMbid) mbidsInPatch.releaseTrackMbid = patch.releaseTrackMbid;
+	await applyMetadataPatch(row.id, mbidsInPatch);
+
+	const restPatch: MetadataPatch = { ...patch };
+	if (restPatch.recordingMbid) delete (restPatch as Record<string, unknown>).recordingMbid;
+	if (restPatch.releaseMbid) delete (restPatch as Record<string, unknown>).releaseMbid;
+	if (restPatch.releaseGroupMbid) delete (restPatch as Record<string, unknown>).releaseGroupMbid;
+	if (restPatch.albumArtistMbid) delete (restPatch as Record<string, unknown>).albumArtistMbid;
+	if (restPatch.releaseTrackMbid) delete (restPatch as Record<string, unknown>).releaseTrackMbid;
+	if (Object.keys(restPatch).length > 0) {
+		await applyMetadataPatch(row.id, restPatch);
 	}
 
 	// Effective metadata = patch wins over the stored row.
@@ -1591,6 +1777,7 @@ async function runUpgradeCheck(job: JobRow, ctx: JobContext): Promise<Record<str
 			bitDepth: t.bitDepth,
 			sampleRateHz: t.sampleRateHz,
 			isLossless: t.isLossless,
+			filePath: t.filePath,
 		},
 		{ skipRecentCheck: true },
 	);

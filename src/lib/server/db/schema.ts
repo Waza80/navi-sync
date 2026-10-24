@@ -1,4 +1,4 @@
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import {
 	bigint,
 	boolean,
@@ -111,8 +111,14 @@ export const tracks = pgTable(
 		checksumSha256: text('checksum_sha256'),
 		filePath: text('file_path'),
 		coverPath: text('cover_path'),
-		/** 'none' | 'synced' | 'plain' | 'failed' */
+		/** 'none' | 'synced' | 'plain' | 'failed' | 'instrumental' */
 		lyricsStatus: text('lyrics_status').notNull().default('none'),
+		/**
+		 * Which source produced the sidecar currently on disk (`lrclib`,
+		 * `lrc-red`, `deezer-pipe`, …). Without it the only record of a source's
+		 * real-world hit rate is the log stream, which is gone after a deploy.
+		 */
+		lyricsSource: text('lyrics_source'),
 		/**
 		 * When these lyrics were last written INTO the audio file.
 		 *
@@ -137,6 +143,21 @@ export const tracks = pgTable(
 		// MusicBrainz artist id. Names are not identities — Deezer files a French
 		// rapper and a US electronic producer both as "Tanger" on one artist page.
 		artistMbid: text('artist_mbid'),
+		/**
+		 * MusicBrainz identities for the recording and the release it came from.
+		 *
+		 * Names, years and track numbers are descriptions that streaming services
+		 * disagree about; an MBID is the identity. Navidrome, MusicBrainz Picard,
+		 * ListenBrainz and every scrobbler key on these, and they cannot be
+		 * re-derived from a title+artist search after the fact — a merged or
+		 * redirected recording loses the link permanently. So they are stored the
+		 * first time MusicBrainz resolves the track and written into the file tags.
+		 */
+		recordingMbid: text('recording_mbid'),
+		releaseMbid: text('release_mbid'),
+		releaseGroupMbid: text('release_group_mbid'),
+		albumArtistMbid: text('album_artist_mbid'),
+		releaseTrackMbid: text('release_track_mbid'),
 		// When metadata was last re-fetched, and how that pass went, so a reindex
 		// can report clear per-track status instead of looking like a no-op.
 		metadataRefreshedAt: timestamp('metadata_refreshed_at'),
@@ -154,6 +175,17 @@ export const tracks = pgTable(
 	},
 	(t) => [
 		uniqueIndex('tracks_provider_track_uq').on(t.provider, t.providerTrackId),
+		// ONE file, ONE row. Two rows pointing at the same path is how a
+		// duplicate download becomes data loss: the delete button removes the
+		// file for the row being deleted, and the other row — which still claims
+		// to own that path — is left pointing at nothing, so the surviving copy
+		// goes grey until it is fetched again.
+		//
+		// Partial because file_path is NULL for every failed/pending row, and
+		// those must not collide with each other.
+		uniqueIndex('tracks_file_path_uq')
+			.on(t.filePath)
+			.where(sql`file_path IS NOT NULL`),
 		index('tracks_isrc_idx').on(t.isrc),
 		index('tracks_artist_idx').on(t.artist),
 		index('tracks_created_idx').on(t.createdAt),
@@ -235,6 +267,16 @@ export const settings = pgTable('settings', {
 	 * tagging bug is fixed.
 	 */
 	forceTagRepair: boolean('force_tag_repair').notNull().default(false),
+	/**
+	 * Trigger a Navidrome scan automatically after downloads.
+	 *
+	 * Downloads already debounce their scans, but a 400-track playlist means the
+	 * debounce fires again and again while it drains — each one occupying a
+	 * worker slot and issuing an HTTP scan to Navidrome. Turning this off leaves
+	 * only the manual "Trigger scan now" and the repair flow, which is what a
+	 * user with a large import wants.
+	 */
+	autoScan: boolean('auto_scan').notNull().default(true),
 	/**
 	 * Providers the engine may use (search, downloads, upgrades). Tidal first:
 	 * it reaches 24/192 where Deezer's catalogue tops out at 24/96.

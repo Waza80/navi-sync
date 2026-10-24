@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
-import { enqueueJob } from '$lib/server/queue/jobs';
+import { enqueueDownloadJobs } from '$lib/server/queue/jobs';
 import { providers } from '$lib/server/providers/registry';
 import { enabledProviders } from '$lib/server/providers/enabled';
 import { trackPageUrl } from '$lib/server/providers/ids';
@@ -20,6 +20,7 @@ const idSchema = z.string().min(1).max(100);
  */
 export const POST: RequestHandler = async ({ locals, params, url }) => {
 	if (!locals.user) return unauthorizedResponse();
+	const userId = locals.user.id;
 	const playlistId = params.id ?? '';
 	if (!idSchema.safeParse(playlistId).success) {
 		return badRequest('Invalid playlist id', 'INVALID_ID');
@@ -76,31 +77,32 @@ export const POST: RequestHandler = async ({ locals, params, url }) => {
 		);
 	}
 
-	const jobIds: string[] = [];
-	for (const trackId of trackIds.slice(0, maxTracks)) {
-		const job = await enqueueJob({
-			type: 'download',
-			payload: {
-				url: trackPageUrl(provider.id, trackId) ?? trackId,
-				provider: provider.id,
-			},
-			createdBy: locals.user.id,
-		});
-		jobIds.push(job.id);
-	}
+	// The provider pages through the playlist up to `maxTracks` and dedupes ids,
+	// so there is no second slice here — slicing again silently dropped the tail
+	// of a playlist the provider had already fetched.
+	const { enqueued, skipped } = await enqueueDownloadJobs(
+		trackIds.map((trackId) => ({
+			url: trackPageUrl(provider.id, trackId) ?? trackId,
+			provider: provider.id,
+			createdBy: userId,
+		})),
+	);
 
 	log.info('playlist fan-out enqueued', {
 		provider: provider.id,
 		playlistId,
-		tracks: jobIds.length,
+		tracks: trackIds.length,
+		enqueued,
+		skipped,
 	});
 	return json(
 		{
-			enqueued: jobIds.length,
+			enqueued,
+			skipped,
+			tracks: trackIds.length,
 			playlistId,
 			provider: provider.id,
-			truncated: trackIds.length > maxTracks,
-			jobIds,
+			truncated: trackIds.length >= maxTracks,
 		},
 		{ status: 202 },
 	);

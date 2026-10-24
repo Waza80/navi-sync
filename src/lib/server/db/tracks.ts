@@ -7,6 +7,7 @@ import { jobs } from './schema';
 import { db } from '$lib/server/db';
 import { tracks } from '$lib/server/db/schema';
 import type { TrackMeta, StreamResolution } from '$lib/server/providers/types';
+import type { LyricsStatus } from '$lib/shared/types';
 import type { ProbedQuality } from '$lib/server/library/tagging';
 import { HIRES_MIN_SAMPLE_RATE_HZ } from '$lib/shared/quality';
 import { logger } from '$lib/server/logger';
@@ -71,6 +72,61 @@ export async function findExistingTrack(meta: TrackMeta): Promise<ExistingTrack 
 	return rows[0] ?? null;
 }
 
+/**
+ * The row that owns a given on-disk file, if any.
+ *
+ * This is the lookup that makes "one file, one row" enforceable: a download
+ * about to file audio must know whether some other row already claims that
+ * exact path before it inserts a twin. Twin rows are how the delete button
+ * becomes destructive — it removes the file for the row being deleted and
+ * leaves the other pointing at nothing.
+ */
+export async function findTrackByFilePath(filePath: string): Promise<{
+	id: string;
+	provider: string;
+	providerTrackId: string | null;
+	filePath: string | null;
+	downloadStatus: string;
+} | null> {
+	const [row] = await db
+		.select({
+			id: tracks.id,
+			provider: tracks.provider,
+			providerTrackId: tracks.providerTrackId,
+			filePath: tracks.filePath,
+			downloadStatus: tracks.downloadStatus,
+		})
+		.from(tracks)
+		.where(eq(tracks.filePath, filePath))
+		.limit(1);
+	return row ?? null;
+}
+
+/** How many OTHER rows point at this path — the delete route's safety check. */
+export async function countOtherTracksWithFilePath(
+	filePath: string,
+	excludeId: string,
+): Promise<number> {
+	const [row] = await db
+		.select({ value: count() })
+		.from(tracks)
+		.where(and(eq(tracks.filePath, filePath), ne(tracks.id, excludeId)));
+	return row?.value ?? 0;
+}
+
+/** The row for a provider track id, whatever its status. */
+export async function findTrackByProvider(
+	provider: string,
+	providerTrackId: string,
+): Promise<{ id: string; filePath: string | null } | null> {
+	const [row] = await db
+		.select({ id: tracks.id, filePath: tracks.filePath })
+		.from(tracks)
+		.where(and(eq(tracks.provider, provider), eq(tracks.providerTrackId, providerTrackId)))
+		.limit(1);
+	return row ?? null;
+}
+
 export interface UpsertTrackInput {
 	meta: TrackMeta;
 	resolution: StreamResolution | null;
@@ -79,7 +135,9 @@ export interface UpsertTrackInput {
 	coverPath: string | null;
 	sizeBytes: number | null;
 	checksumSha256: string | null;
-	lyricsStatus: 'none' | 'synced' | 'plain' | 'failed';
+	lyricsStatus: LyricsStatus;
+	/** Source that produced the fetched copy (only when something was fetched). */
+	lyricsSource?: string | null;
 	/** Set only when the lyrics were written into the file in this same flow. */
 	lyricsEmbeddedAt?: Date | null;
 }
@@ -111,6 +169,9 @@ export async function upsertTrack(input: UpsertTrackInput): Promise<string> {
 		filePath: input.filePath,
 		coverPath: input.coverPath,
 		lyricsStatus: input.lyricsStatus,
+		// Absent means "this flow did not fetch anything", so keep the source
+		// already recorded instead of blanking it on an upgrade.
+		...(input.lyricsSource ? { lyricsSource: input.lyricsSource } : {}),
 		// Only overwrite the marker when this flow embedded lyrics. A download
 		// that fetched nothing must not clear an older embed.
 		...(input.lyricsEmbeddedAt ? { lyricsEmbeddedAt: input.lyricsEmbeddedAt } : {}),
@@ -138,6 +199,17 @@ export async function upsertTrack(input: UpsertTrackInput): Promise<string> {
 	const existing = meta.isrc
 		? await findExistingTrack(meta)
 		: await findTrackByTitleArtist(meta.title, meta.artist);
+
+	// One path, one row. If the file we just filed is already claimed by a
+	// DIFFERENT row, that row IS the library entry for this audio — inserting a
+	// twin would mean deleting either one removes a file the other still points
+	// at. This is the backstop for the concurrent case the handler's pre-move
+	// check cannot see: two jobs can both look before either writes.
+	if (input.filePath) {
+		const pathOwner = await findTrackByFilePath(input.filePath);
+		if (pathOwner && pathOwner.id !== existing?.id) return pathOwner.id;
+	}
+
 	if (existing && existing.filePath === null) {
 		const owner = await db
 			.select({ id: tracks.id })
@@ -156,15 +228,72 @@ export async function upsertTrack(input: UpsertTrackInput): Promise<string> {
 		}
 	}
 
-	const rows = await db
-		.insert(tracks)
-		.values(values)
-		.onConflictDoUpdate({
-			target: [tracks.provider, tracks.providerTrackId],
-			set: values,
-		})
-		.returning({ id: tracks.id });
-	return rows[0].id;
+	try {
+		const rows = await db
+			.insert(tracks)
+			.values(values)
+			.onConflictDoUpdate({
+				target: [tracks.provider, tracks.providerTrackId],
+				set: values,
+			})
+			.returning({ id: tracks.id });
+		return rows[0].id;
+	} catch (err) {
+		// A concurrent job won the race and inserted the path owner between our
+		// check and our insert. `tracks_file_path_uq` rejected the twin — return
+		// the row that won instead of failing the job, because the audio is filed
+		// and the recording IS in the library.
+		if (input.filePath && String(err).includes('tracks_file_path_uq')) {
+			const winner = await findTrackByFilePath(input.filePath);
+			if (winner) return winner.id;
+		}
+		throw err;
+	}
+}
+
+/**
+ * Point the row that already owns a path at the bytes a download just produced.
+ *
+ * Used when a row claims a path whose file had gone missing and a fresh download
+ * fills it back in. Only file-shaped fields are written — identity and text
+ * metadata belong to the owner row and a later metadata pass owns correcting
+ * them. The download's own metadata was applied to the temp file before the
+ * move, so the bytes are correctly tagged regardless.
+ */
+export async function adoptDownloadedFile(input: {
+	id: string;
+	resolution: StreamResolution | null;
+	probed: ProbedQuality | null;
+	filePath: string;
+	/** Only written when non-null: adoption must not blank an owner's cover. */
+	coverPath?: string | null;
+	sizeBytes: number | null;
+	checksumSha256: string | null;
+	/** Only written when provided: a failed fetch must not downgrade existing lyrics. */
+	lyricsStatus?: LyricsStatus;
+	lyricsSource?: string | null;
+	lyricsEmbeddedAt?: Date | null;
+}): Promise<void> {
+	const set: Partial<typeof tracks.$inferInsert> = {
+		filePath: input.filePath,
+		sizeBytes: input.sizeBytes,
+		checksumSha256: input.checksumSha256,
+		format: input.probed?.container ?? input.resolution?.format ?? 'mp3',
+		bitrateKbps: input.probed?.bitrateKbps ?? input.resolution?.claimedBitrateKbps ?? null,
+		bitDepth: input.probed?.bitDepth ?? null,
+		sampleRateHz: input.probed?.sampleRateHz ?? null,
+		isLossless: input.probed?.lossless ?? input.resolution?.claimedLossless ?? false,
+		downloadStatus: 'completed',
+		updatedAt: new Date(),
+	};
+	// Only overwrite the measured duration when the probe actually reported one;
+	// `undefined` here would have been written as NULL and blanked a known value.
+	if (input.probed?.durationSec != null) set.durationSec = input.probed.durationSec;
+	if (input.coverPath) set.coverPath = input.coverPath;
+	if (input.lyricsStatus) set.lyricsStatus = input.lyricsStatus;
+	if (input.lyricsSource) set.lyricsSource = input.lyricsSource;
+	if (input.lyricsEmbeddedAt) set.lyricsEmbeddedAt = input.lyricsEmbeddedAt;
+	await db.update(tracks).set(set).where(eq(tracks.id, input.id));
 }
 
 /** A row that never downloaded anything and can be safely re-used. */
@@ -378,13 +507,15 @@ export async function listFiledTracks(): Promise<
 
 export async function updateLyricsStatus(
 	id: string,
-	status: 'none' | 'synced' | 'plain' | 'failed',
+	status: LyricsStatus,
 	/**
 	 * Set when the lyrics have just been written into the audio file. Absent
 	 * means "the status changed but nothing was embedded" — a failed fetch must
 	 * not clear an older marker and enqueue the file again.
 	 */
 	embeddedAt?: Date,
+	/** Source that produced the copy. Absent means "keep whatever was recorded". */
+	source?: string,
 ): Promise<void> {
 	await db
 		.update(tracks)
@@ -392,6 +523,7 @@ export async function updateLyricsStatus(
 			lyricsStatus: status,
 			updatedAt: new Date(),
 			...(embeddedAt ? { lyricsEmbeddedAt: embeddedAt } : {}),
+			...(source ? { lyricsSource: source } : {}),
 		})
 		.where(eq(tracks.id, id));
 }
@@ -615,9 +747,12 @@ export async function listLyricsBackfillCandidates(limit = 5): Promise<
  * The jobs-table guard caps retries at one per track per day: a row whose file
  * has vanished would otherwise be re-queued every five minutes forever.
  *
- * Plain rows come back after a week. The Navidrome player renders only entries
+ * Plain rows come back after a day. The Navidrome player renders only entries
  * flagged `synced`, so a plain sidecar is still invisible there; the spec says to
  * keep asking until a synced version turns up, and the marker is what paces that.
+ * A day — not a week — because the ordered traversal now actually reaches the
+ * sources that carry synced copies (lrc.red, the fixed Deezer pipe), so the
+ * remaining plain rows are few and a new synced upload should be picked up fast.
  */
 export async function listLyricsEmbedCandidates(limit = 25): Promise<string[]> {
 	const rows = await db
@@ -630,7 +765,7 @@ export async function listLyricsEmbedCandidates(limit = 25): Promise<string[]> {
 				sql`(
 					${tracks.lyricsEmbeddedAt} IS NULL
 					OR (${tracks.lyricsStatus} = 'plain'
-					    AND ${tracks.lyricsEmbeddedAt} < now() - interval '7 days')
+					    AND ${tracks.lyricsEmbeddedAt} < now() - interval '1 day')
 				)`,
 				sql`NOT EXISTS (
 					SELECT 1 FROM jobs j
@@ -847,6 +982,12 @@ export async function listMetadataRepairCandidates(limit = 25) {
 			trackNumber: tracks.trackNumber,
 			discNumber: tracks.discNumber,
 			isrc: tracks.isrc,
+			artistMbid: tracks.artistMbid,
+			recordingMbid: tracks.recordingMbid,
+			releaseMbid: tracks.releaseMbid,
+			releaseGroupMbid: tracks.releaseGroupMbid,
+			albumArtistMbid: tracks.albumArtistMbid,
+			releaseTrackMbid: tracks.releaseTrackMbid,
 			durationSec: tracks.durationSec,
 			filePath: tracks.filePath,
 		})
@@ -860,6 +1001,15 @@ export async function listMetadataRepairCandidates(limit = 25) {
 					sql`${tracks.albumArtist} IS NULL`,
 					sql`${tracks.genre} IS NULL`,
 					sql`${tracks.releaseYear} IS NULL`,
+					// Identity gaps are first-class gaps: a row with a perfect album
+					// and cover but no recording MBID still cannot be linked to
+					// MusicBrainz by any player.
+					sql`${tracks.artistMbid} IS NULL`,
+					sql`${tracks.recordingMbid} IS NULL`,
+					sql`${tracks.releaseMbid} IS NULL`,
+					sql`${tracks.releaseGroupMbid} IS NULL`,
+					sql`${tracks.albumArtistMbid} IS NULL`,
+					sql`${tracks.releaseTrackMbid} IS NULL`,
 				),
 			),
 		)
@@ -889,6 +1039,11 @@ export async function applyMetadataPatch(
 		discNumber?: number | null;
 		isrc?: string | null;
 		artistMbid?: string | null;
+		recordingMbid?: string | null;
+		releaseMbid?: string | null;
+		releaseGroupMbid?: string | null;
+		albumArtistMbid?: string | null;
+		releaseTrackMbid?: string | null;
 	},
 ): Promise<boolean> {
 	const set: Partial<typeof tracks.$inferInsert> = { updatedAt: new Date() };
@@ -901,9 +1056,21 @@ export async function applyMetadataPatch(
 	if (patch.discNumber != null) set.discNumber = patch.discNumber;
 	if (patch.isrc != null && patch.isrc.trim() !== '') set.isrc = patch.isrc;
 	// Identity, not description: two artists can share a display name, so the
-	// MusicBrainz id is what keeps them apart.
+	// MusicBrainz id is what keeps them apart. The same applies to the recording,
+	// release and release-group ids — none of them can be re-derived from the
+	// names once MusicBrainz merges or redirects an entity.
 	if (patch.artistMbid != null && patch.artistMbid.trim() !== '')
 		set.artistMbid = patch.artistMbid;
+	if (patch.recordingMbid != null && patch.recordingMbid.trim() !== '')
+		set.recordingMbid = patch.recordingMbid;
+	if (patch.releaseMbid != null && patch.releaseMbid.trim() !== '')
+		set.releaseMbid = patch.releaseMbid;
+	if (patch.releaseGroupMbid != null && patch.releaseGroupMbid.trim() !== '')
+		set.releaseGroupMbid = patch.releaseGroupMbid;
+	if (patch.albumArtistMbid != null && patch.albumArtistMbid.trim() !== '')
+		set.albumArtistMbid = patch.albumArtistMbid;
+	if (patch.releaseTrackMbid != null && patch.releaseTrackMbid.trim() !== '')
+		set.releaseTrackMbid = patch.releaseTrackMbid;
 	// coverPath is written by the caller once the image is actually on disk.
 	const rows = await db
 		.update(tracks)

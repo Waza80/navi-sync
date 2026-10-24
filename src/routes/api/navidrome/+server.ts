@@ -29,6 +29,10 @@ const patchSchema = z.object({
 	// the settings type, sent by the client, and then dropped by a whitelist nobody
 	// checks against the type.
 	forceTagRepair: z.boolean().optional(),
+	// Same trap again if omitted: declared in AppSettings, sent by the settings
+	// form, and stripped here would make the toggle look saved while the server
+	// kept scanning.
+	autoScan: z.boolean().optional(),
 	enabledProviders: z
 		.array(z.enum(['deezer', 'tidal']))
 		.max(2)

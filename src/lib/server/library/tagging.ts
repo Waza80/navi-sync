@@ -34,6 +34,19 @@ export interface TagData {
 	 * The sidecar is still written for other players.
 	 */
 	lyricsSynced: string | null;
+	/**
+	 * MusicBrainz identities. Optional because uploads and files that predate the
+	 * columns have none — a missing identity is simply not written, never
+	 * invented. They map to the standard Picard field names
+	 * (`MUSICBRAINZ_TRACKID`, `MUSICBRAINZ_RELEASETRACKID`, …) so Navidrome and
+	 * every scrobbler that already understands those tags understands these.
+	 */
+	artistMbid?: string | null;
+	recordingMbid?: string | null;
+	releaseMbid?: string | null;
+	releaseGroupMbid?: string | null;
+	albumArtistMbid?: string | null;
+	releaseTrackMbid?: string | null;
 }
 
 export interface ProbedQuality {
@@ -79,6 +92,25 @@ export function tagMp3(path: string, tags: TagData): void {
 		year: tags.year != null ? String(tags.year) : undefined,
 		genre: nfc(tags.genre),
 	};
+	// MusicBrainz identities live in TXXX frames on ID3, under the exact
+	// descriptions Picard writes. Navidrome's ID3 mapping reads these; the Vorbis
+	// names above are for FLAC. `userDefinedText` is an array because TXXX is
+	// repeatable — building it as an object silently keeps only one frame.
+	const mbFrames = (
+		[
+			['MusicBrainz Artist Id', tags.artistMbid],
+			['MusicBrainz Album Artist Id', tags.albumArtistMbid],
+			['MusicBrainz Track Id', tags.recordingMbid],
+			['MusicBrainz Release Track Id', tags.releaseTrackMbid],
+			['MusicBrainz Album Id', tags.releaseMbid],
+			['MusicBrainz Release Group Id', tags.releaseGroupMbid],
+		] as Array<[string, string | null | undefined]>
+	)
+		.filter(
+			(entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '',
+		)
+		.map(([description, value]) => ({ description, value }));
+	if (mbFrames.length > 0) frames.userDefinedText = mbFrames;
 	// Prefer synced (timestamped) lyrics when present, else the plain text.
 	//
 	// This must be the DESCRIPTOR-LESS USLT frame (`unsynchronisedLyrics`).
@@ -163,6 +195,16 @@ export function buildVorbisFields(tags: TagData): Array<[string, string]> {
 	if (tags.year != null) fields.push(['DATE', String(tags.year)]);
 	const genre = nfc(tags.genre);
 	if (genre) fields.push(['GENRE', genre]);
+	// MusicBrainz identities, under the names Picard writes and Navidrome reads.
+	// Only present values are written: a blank MBID tag is worse than none,
+	// because a consumer cannot tell "unknown" from "the empty string".
+	if (tags.artistMbid) fields.push(['MUSICBRAINZ_ARTISTID', tags.artistMbid]);
+	if (tags.albumArtistMbid) fields.push(['MUSICBRAINZ_ALBUMARTISTID', tags.albumArtistMbid]);
+	// MUSICBRAINZ_TRACKID is the RECORDING id; the release track id is separate.
+	if (tags.recordingMbid) fields.push(['MUSICBRAINZ_TRACKID', tags.recordingMbid]);
+	if (tags.releaseTrackMbid) fields.push(['MUSICBRAINZ_RELEASETRACKID', tags.releaseTrackMbid]);
+	if (tags.releaseMbid) fields.push(['MUSICBRAINZ_ALBUMID', tags.releaseMbid]);
+	if (tags.releaseGroupMbid) fields.push(['MUSICBRAINZ_RELEASEGROUPID', tags.releaseGroupMbid]);
 	// ONE lyrics tag, and it must carry the timestamps when we have them.
 	//
 	// Navidrome reads exactly one tag here: `LYRICS` (mappings.yaml aliases are
@@ -409,6 +451,22 @@ export function tagsDisagree(
 	}
 	if (tags.year != null && Number(file.year ?? 0) !== tags.year) out.push('year');
 	if (!same(tags.genre, file.genre)) out.push('genre');
+	// Identities are compared too, so a file that predates the MBID columns gets
+	// them written on the next repair pass. Only compared when the ROW has one:
+	// "the database does not know" is not a reason to retag every file in the
+	// library on every pass.
+	if (tags.artistMbid && !same(tags.artistMbid, file.musicbrainz_artistid))
+		out.push('artistMbid');
+	if (tags.albumArtistMbid && !same(tags.albumArtistMbid, file.musicbrainz_albumartistid))
+		out.push('albumArtistMbid');
+	if (tags.recordingMbid && !same(tags.recordingMbid, file.musicbrainz_recordingid))
+		out.push('recordingMbid');
+	if (tags.releaseTrackMbid && !same(tags.releaseTrackMbid, file.musicbrainz_trackid))
+		out.push('releaseTrackMbid');
+	if (tags.releaseMbid && !same(tags.releaseMbid, file.musicbrainz_albumid))
+		out.push('releaseMbid');
+	if (tags.releaseGroupMbid && !same(tags.releaseGroupMbid, file.musicbrainz_releasegroupid))
+		out.push('releaseGroupMbid');
 	return out;
 }
 
@@ -418,7 +476,11 @@ export async function ensureFileTags(
 	opts: { force?: boolean } = {},
 ): Promise<'ok' | 'skipped' | 'failed'> {
 	try {
-		const ext = filePath.toLowerCase().endsWith('.flac') ? 'flac' : 'mp3';
+		const ext: 'flac' | 'wav' | 'mp3' = filePath.toLowerCase().endsWith('.flac')
+			? 'flac'
+			: filePath.toLowerCase().endsWith('.wav')
+				? 'wav'
+				: 'mp3';
 		const info = await parseFile(filePath, { duration: false, skipCovers: false }).catch(
 			() => null,
 		);
@@ -478,6 +540,15 @@ export async function ensureFileTags(
 			lyricsSynced: tags.lyricsSynced ?? (sidecar?.synced ? sidecar.text : null),
 			lyricsPlain:
 				tags.lyricsPlain ?? (sidecar ? (sidecar.synced ? null : sidecar.text) : fileLyrics),
+			// MBIDs are carried from the file for the same reason as every other
+			// field here: both writers rebuild the tag block from scratch, so a
+			// null in TagData ERASES the identity rather than leaving it alone.
+			artistMbid: tags.artistMbid ?? text(common?.musicbrainz_artistid),
+			albumArtistMbid: tags.albumArtistMbid ?? text(common?.musicbrainz_albumartistid),
+			recordingMbid: tags.recordingMbid ?? text(common?.musicbrainz_recordingid),
+			releaseTrackMbid: tags.releaseTrackMbid ?? text(common?.musicbrainz_trackid),
+			releaseMbid: tags.releaseMbid ?? text(common?.musicbrainz_albumid),
+			releaseGroupMbid: tags.releaseGroupMbid ?? text(common?.musicbrainz_releasegroupid),
 		};
 
 		let disagreeing: string[] = [];
@@ -488,7 +559,10 @@ export async function ensureFileTags(
 			if (disagreeing.length === 0) return 'skipped';
 		}
 		if (ext === 'flac') await tagFlac(filePath, carried);
-		else tagMp3(filePath, carried);
+		else if (ext === 'mp3') tagMp3(filePath, carried);
+		// WAV has no standard tag block these writers understand (metaflac is
+		// FLAC-only, node-id3 is ID3/MP3), so a WAV is filed with whatever tags
+		// it arrived with rather than being corrupted by the wrong writer.
 		log.info('repaired embedded tags', {
 			filePath,
 			force: opts.force ?? false,

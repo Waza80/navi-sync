@@ -35,6 +35,10 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 			bitDepth: track.bitDepth,
 			sampleRateHz: track.sampleRateHz,
 			isLossless: track.isLossless,
+			// A failed row can still carry quality fields from a previous life;
+			// without the path the ranker treats those claims as a file on disk
+			// and can refuse a perfectly good replacement.
+			filePath: track.filePath,
 		},
 		{ skipRecentCheck: true },
 	).catch(() => null);

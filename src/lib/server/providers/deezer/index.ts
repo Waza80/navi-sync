@@ -139,38 +139,73 @@ export const deezerProvider: Provider = {
 
 	async resolveLink(
 		input: string,
-	): Promise<{ kind: 'track' | 'album' | 'playlist'; id: string } | null> {
+	): Promise<{ kind: 'track' | 'album' | 'artist' | 'playlist'; id: string } | null> {
 		// Canonicalizes any deezer link (incl. link.deezer.com short links)
-		// into {kind, id}: track, album or playlist.
+		// into {kind, id}: track, album, artist or playlist.
+		//
+		// This used to answer `{ kind: 'track' }` for EVERY direct link, so an
+		// album or artist URL took the single-track path: the worker fetched
+		// song.getData with an album id and the request failed with a confusing
+		// "No song data" instead of fanning the collection out. The kind is the
+		// whole point of this call — discarding it made paste behaviour depend on
+		// which route happened to parse the link first.
 		const direct = parseDeezerUrl(input);
-		if (direct) return { kind: 'track', id: direct.id };
+		if (direct) return { kind: direct.kind, id: direct.id };
 
 		const target = isDeezerShortLink(input) ? await resolveShortLink(input) : input;
 		if (!target) return null;
 		try {
 			const url = new URL(target);
 			if (!/(^|\.)deezer\.com$/.test(url.hostname)) return null;
-			const m = /\/(track|album|playlist)\/(\d+)/.exec(url.pathname);
+			const m = /\/(track|album|artist|playlist)\/(\d+)/.exec(url.pathname);
 			if (!m) return null;
-			return { kind: m[1] as 'track' | 'album' | 'playlist', id: m[2] };
+			return { kind: m[1] as 'track' | 'album' | 'artist' | 'playlist', id: m[2] };
 		} catch {
 			return null;
 		}
 	},
 
-	async playlistTrackIds(playlistId: string, max = 300): Promise<string[]> {
+	async playlistTrackIds(playlistId: string, max = 2000): Promise<string[]> {
 		// Track list lives at results.SONGS.data of deezer.pagePlaylist
 		// (reference: DeezerPlaylist.loadTracks; verified live 2026-10).
-		const body = await callGateway('deezer.pagePlaylist', {
-			playlist_id: playlistId,
-			lang: 'en',
-			nb: max,
-			tags: false,
-			start: 0,
-		});
-		const results = body.results as { SONGS?: { data?: Array<{ SNG_ID?: string | number }> } };
-		const rows = results?.SONGS?.data ?? [];
-		return rows.map((r) => String(r.SNG_ID ?? '')).filter((id) => /^\d+$/.test(id));
+		//
+		// `nb` is capped at 300 server-side, so a single call silently truncated
+		// every playlist to its first 300 tracks — a 490-track playlist was
+		// downloaded as 300 and the rest were never seen. The gateway accepts
+		// `start`, so page until the playlist is exhausted or the caller's cap is
+		// reached. IDs are deduped: a playlist may contain the same track twice,
+		// and two jobs for one SNG_ID would race to file the same audio.
+		const wanted = Math.max(1, Math.min(5000, max));
+		const PAGE = 300;
+		const out: string[] = [];
+		const seen = new Set<string>();
+		let start = 0;
+		while (out.length < wanted) {
+			const nb = Math.min(PAGE, wanted - out.length);
+			const body = await callGateway('deezer.pagePlaylist', {
+				playlist_id: playlistId,
+				lang: 'en',
+				nb,
+				tags: false,
+				start,
+			});
+			const results = body.results as {
+				SONGS?: { data?: Array<{ SNG_ID?: string | number }> };
+			};
+			const rows = results?.SONGS?.data ?? [];
+			if (rows.length === 0) break;
+			for (const r of rows) {
+				const id = String(r.SNG_ID ?? '');
+				if (/^\d+$/.test(id) && !seen.has(id)) {
+					seen.add(id);
+					out.push(id);
+				}
+			}
+			// A short page means the playlist ended; a full page means ask again.
+			if (rows.length < nb) break;
+			start += rows.length;
+		}
+		return out.slice(0, wanted);
 	},
 
 	async metadata(ref) {
@@ -242,7 +277,15 @@ export const deezerProvider: Provider = {
 		});
 		const results = body.results as { SONGS?: { data?: Array<{ SNG_ID?: string | number }> } };
 		const rows = results?.SONGS?.data ?? [];
-		return rows.map((r) => String(r.SNG_ID ?? '')).filter((id) => /^\d+$/.test(id));
+		// Dedupe: a duplicated id in the payload used to enqueue two jobs for one
+		// track, and whichever job lost the file race became a second row pointing
+		// at the winner's file — the "one-track album downloads twice" report.
+		const seen = new Set<string>();
+		for (const r of rows) {
+			const id = String(r.SNG_ID ?? '');
+			if (/^\d+$/.test(id)) seen.add(id);
+		}
+		return [...seen];
 	},
 
 	/**
@@ -274,16 +317,36 @@ export const deezerProvider: Provider = {
 	 * without auth and is enough here, so fan-out does not depend on the
 	 * gateway session being alive. Ordered by the API's own ranking.
 	 */
-	async artistAlbumIds(artistId: string, max = 50): Promise<string[]> {
-		const res = await fetch(
-			`https://api.deezer.com/artist/${encodeURIComponent(artistId)}/albums?limit=${max}`,
-			{ signal: AbortSignal.timeout(15_000) },
-		).catch(() => null);
-		if (!res?.ok) return [];
-		const body = (await res.json()) as { data?: Array<{ id?: number }> };
-		return (body.data ?? [])
-			.map((a) => (typeof a.id === 'number' ? String(a.id) : ''))
-			.filter((id) => /^[0-9]+$/.test(id));
+	async artistAlbumIds(artistId: string, max = 100): Promise<string[]> {
+		// Paginated with `index`. A single `limit=100` call silently dropped every
+		// release after the first hundred — and for an artist whose catalogue is
+		// ranked across many pages, which albums appeared depended on nothing the
+		// user could see. IDs are deduped so an album listed twice (re-release
+		// grouped under the same id) is only fetched once.
+		const wanted = Math.max(1, Math.min(500, max));
+		const PAGE = 100;
+		const out: string[] = [];
+		const seen = new Set<string>();
+		let index = 0;
+		while (out.length < wanted) {
+			const limit = Math.min(PAGE, wanted - out.length);
+			const res = await fetch(
+				`https://api.deezer.com/artist/${encodeURIComponent(artistId)}/albums?limit=${limit}&index=${index}`,
+				{ signal: AbortSignal.timeout(15_000) },
+			).catch(() => null);
+			// First page failing means "no albums"; a later page failing keeps what
+			// we have rather than discarding a partial catalogue.
+			if (!res?.ok) break;
+			const body = (await res.json()) as { data?: Array<{ id?: number }> };
+			const rows = body.data ?? [];
+			if (rows.length === 0) break;
+			for (const a of rows) {
+				if (typeof a.id === 'number') seen.add(String(a.id));
+			}
+			if (rows.length < limit) break;
+			index += rows.length;
+		}
+		return [...seen].slice(0, wanted);
 	},
 
 	async findByIsrc(isrc) {

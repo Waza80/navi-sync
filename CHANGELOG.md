@@ -52,6 +52,36 @@ All notable changes to NaviSync. Format: Keep a Changelog; semver.
   sides) — old file, orphaned sidecars and stale row are removed, so each
   song appears exactly once. Title/artist-only matches are never replaced.
 
+### Added
+
+- **BrainzMash + MusicBrainz fallback**: `MUSICBRAINZ_BASE_URL` defaults to the
+  BrainzMash `/ws/2` mirror (4 req/sec) with automatic fallback to official
+  MusicBrainz (1 req/sec) on 403/429/5xx or network failure. BrainzMash currently
+  403s from both dev and prod hosts, so metadata is served via the official
+  fallback until access is granted.
+- **MusicBrainz identities stored**: `recordingMbid`, `releaseMbid`,
+  `releaseGroupMbid`, `albumArtistMbid` and `releaseTrackMbid` are now columns on
+  `tracks`, written into FLAC/MP3 tags (Picard field names), read back from
+  embedded tags, included in `MetadataField`/`MetadataPatch`, and exposed on
+  `TrackDTO` for UI display.
+- **`autoScan` setting**: post-download Navidrome scans are gated by a new
+  `autoScan` toggle (default on), skipped when a scan is pending or ran in the
+  last 10 minutes, and trigger-and-return (never occupy a worker slot while
+  polling; cancel works).
+- **One file, one row**: partial unique index on `tracks.file_path`; a download
+  that would twin an already-filed path adopts the owner row instead; the delete
+  route keeps the file when another row still references it.
+- **Playlist/album/artist fan-out**: `resolveLink` returns the parsed kind
+  (track/album/artist/playlist) instead of always `track`; `playlistTrackIds`
+  paginates with `start` up to the requested max and dedupes IDs; `albumTrackIds`
+  and `artistAlbumIds` dedupe; `/api/tracks` no longer hard-caps collections at 300.
+- **Tidal fallback for fileless failed rows**: `findBestUpgrade` ranks a row with
+  no file as `-1` (any fetched copy is an upgrade) and skips the ceiling and
+  quality guards, so a Deezer track with no file can accept a Tidal offer.
+- **WAV support**: `.wav` is filed as lossless (ranked as `flac` fallback) and
+  skipped by tag writers that cannot write it, rather than being mis-counted or
+  corrupted.
+
 ## [0.3.0] — Phase 3: UI polish, link fan-out, covers, logging, security pass — 2026-10-04
 
 ### Added

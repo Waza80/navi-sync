@@ -1,16 +1,31 @@
 import type { LyricsQuery, LyricsResult, LyricsSource } from './types';
+import { artistsMatch, durationClose, titlesMatch } from './match';
+import { fetchWithRetry } from './http';
 
 /**
- * LRCLIB source (priority 1). API: https://lrclib.net
+ * LRCLIB source. API: https://lrclib.net
  *   GET /api/get?artist_name&track_name&album_name&duration → best exact match
  *   GET /api/search?track_name&artist_name                  → ranked list
  * Synced lyrics (.lrc) are strongly preferred over plain text.
+ *
+ * Two measured defects in the original port:
+ *
+ *  - `/api/search` returned 503 on 54 of 138 calls. `!res.ok → null` turned
+ *    that transient load into a permanent "this track has no lyrics", which is
+ *    why failed rows were retried for weeks. It now retries with backoff.
+ *  - `pick()` fell back to `usable.find(synced)` when no record was within
+ *    ±3 s, *ignoring duration entirely*. That is how a live version or a
+ *    different edit gets stamped onto a studio track. Distance is now bounded.
  */
 
 const BASE = 'https://lrclib.net';
 const UA = 'NaviSync/0.1.0 (self-hosted Navidrome companion)';
+/** First pass: a different master is usually within a second or two. */
+const STRICT_DURATION_SEC = 3;
+/** Second pass: tolerate a longer intro/outro, but not a different recording. */
+const RELAXED_DURATION_SEC = 8;
 
-interface LrcLibRecord {
+export interface LrcLibRecord {
 	id: number;
 	trackName: string;
 	artistName: string;
@@ -21,36 +36,48 @@ interface LrcLibRecord {
 	syncedLyrics: string | null;
 }
 
-async function getJson(url: string, signal: AbortSignal): Promise<unknown> {
-	try {
-		const res = await fetch(url, {
-			headers: { 'User-Agent': UA, Accept: 'application/json' },
-			signal,
-		});
-		if (res.status === 404) return null;
-		if (!res.ok) return null;
-		return await res.json();
-	} catch {
-		return null;
-	}
+async function getJson(url: string): Promise<unknown> {
+	const res = await fetchWithRetry(
+		url,
+		{ headers: { 'User-Agent': UA, Accept: 'application/json' } },
+		{ timeoutMs: 10_000, retries: 2 },
+	);
+	if (!res?.ok) return null;
+	return res.json().catch(() => null);
 }
 
-function pick(records: LrcLibRecord[], q: LyricsQuery): LyricsResult | null {
-	const usable = records.filter((r) => !r.instrumental && (r.syncedLyrics || r.plainLyrics));
+/**
+ * Exported for tests. Requires the record to describe the same song, and when
+ * the duration is known requires it to be close — there is no path that
+ * accepts an arbitrarily distant record.
+ */
+export function pickLrclibRecord(records: LrcLibRecord[], q: LyricsQuery): LyricsResult | null {
+	const usable = records.filter(
+		(r) =>
+			!r.instrumental &&
+			(r.syncedLyrics || r.plainLyrics) &&
+			titlesMatch(r.trackName, q.title) &&
+			artistsMatch(r.artistName, q.artist),
+	);
 	if (usable.length === 0) return null;
+
+	const rank = (r: LrcLibRecord) => (r.syncedLyrics ? 0 : 1);
 	const dur = q.durationSec;
 	if (dur) {
-		const near = usable.filter((r) => Math.abs(r.duration - dur) <= 3);
-		if (near.length > 0) {
-			const best = near.find((r) => r.syncedLyrics) ?? near[0];
-			return best
-				? { synced: best.syncedLyrics ?? null, plain: best.plainLyrics ?? null }
-				: null;
+		const strict = usable.filter((r) => durationClose(r.duration, dur, STRICT_DURATION_SEC));
+		if (strict.length > 0) {
+			const best = [...strict].sort((a, b) => rank(a) - rank(b))[0];
+			return { synced: best.syncedLyrics ?? null, plain: best.plainLyrics ?? null };
 		}
+		const relaxed = usable.filter((r) => durationClose(r.duration, dur, RELAXED_DURATION_SEC));
+		if (relaxed.length > 0) {
+			const best = [...relaxed].sort((a, b) => rank(a) - rank(b))[0];
+			return { synced: best.syncedLyrics ?? null, plain: best.plainLyrics ?? null };
+		}
+		return null;
 	}
-	// Prefer synced; within same sync-ness, keep LRCLIB ranking (input order).
-	const best = usable.find((r) => r.syncedLyrics) ?? usable[0];
-	if (!best) return null;
+
+	const best = [...usable].sort((a, b) => rank(a) - rank(b))[0];
 	return { synced: best.syncedLyrics ?? null, plain: best.plainLyrics ?? null };
 }
 
@@ -67,26 +94,24 @@ export const lrclibSource: LyricsSource = {
 		if (q.durationSec) params.set('duration', String(Math.round(q.durationSec)));
 
 		// 1) exact match endpoint
-		const exact = await getJson(
-			`${BASE}/api/get?${params.toString()}`,
-			AbortSignal.timeout(10_000),
-		);
+		const exact = await getJson(`${BASE}/api/get?${params.toString()}`);
 		if (exact && typeof exact === 'object') {
 			const rec = exact as LrcLibRecord;
-			if (!rec.instrumental && (rec.syncedLyrics || rec.plainLyrics)) {
+			if (rec.instrumental) {
+				// Only the exact endpoint can say this with confidence. It is not a
+				// failure to retry; there will never be lyrics for an instrumental.
+				return { synced: null, plain: null, instrumental: true };
+			}
+			if (rec.syncedLyrics || rec.plainLyrics) {
 				return { synced: rec.syncedLyrics ?? null, plain: rec.plainLyrics ?? null };
 			}
 		}
 
-		// 2) search endpoint (fallback)
+		// 2) search endpoint (fallback). Transient 503s are retried by getJson;
+		// when it still fails, null means "unknown", not "no lyrics".
 		const searchParams = new URLSearchParams({ track_name: q.title, artist_name: q.artist });
-		const list = await getJson(
-			`${BASE}/api/search?${searchParams.toString()}`,
-			AbortSignal.timeout(10_000),
-		);
-		if (Array.isArray(list)) {
-			return pick(list as LrcLibRecord[], q);
-		}
+		const list = await getJson(`${BASE}/api/search?${searchParams.toString()}`);
+		if (Array.isArray(list)) return pickLrclibRecord(list as LrcLibRecord[], q);
 		return null;
 	},
 };

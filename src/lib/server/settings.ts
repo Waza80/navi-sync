@@ -30,6 +30,11 @@ export interface AppSettings {
 	 * bug, because the corrupt files look tagged.
 	 */
 	forceTagRepair: boolean;
+	/**
+	 * Scan Navidrome automatically after downloads. Off means only the manual
+	 * scan button and the repair flow talk to Navidrome.
+	 */
+	autoScan: boolean;
 	/** Providers the engine may use. */
 	enabledProviders: string[];
 	concurrentDownloads: number;
@@ -43,6 +48,7 @@ const DEFAULTS = {
 	preferHiRes: true,
 	autoUpgradeQuality: true,
 	forceTagRepair: false,
+	autoScan: true,
 	// Order matters: the registry keeps this order, so Tidal is asked before
 	// Deezer — it reaches 24/192 and Deezer tops out at 24/96.
 	enabledProviders: ['tidal', 'deezer'] as string[],
@@ -82,6 +88,7 @@ export async function getSettings(): Promise<AppSettings> {
 		preferHiRes: row.preferHiRes,
 		autoUpgradeQuality: row.autoUpgradeQuality,
 		forceTagRepair: row.forceTagRepair,
+		autoScan: row.autoScan,
 		enabledProviders: Array.isArray(row.enabledProviders)
 			? row.enabledProviders
 			: [...DEFAULTS.enabledProviders],
@@ -100,6 +107,7 @@ export interface SettingsPatch {
 	preferHiRes?: boolean;
 	autoUpgradeQuality?: boolean;
 	forceTagRepair?: boolean;
+	autoScan?: boolean;
 	enabledProviders?: string[];
 	concurrentDownloads?: number;
 }
@@ -121,6 +129,7 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
 	if (patch.autoUpgradeQuality !== undefined)
 		values.autoUpgradeQuality = patch.autoUpgradeQuality;
 	if (patch.forceTagRepair !== undefined) values.forceTagRepair = patch.forceTagRepair;
+	if (patch.autoScan !== undefined) values.autoScan = patch.autoScan;
 	if (patch.enabledProviders !== undefined) values.enabledProviders = patch.enabledProviders;
 	if (patch.concurrentDownloads !== undefined)
 		values.concurrentDownloads = patch.concurrentDownloads;
@@ -145,6 +154,8 @@ export async function getPublicSettings(): Promise<{
 	 */
 	autoUpgradeQuality: boolean;
 	forceTagRepair: boolean;
+	/** Scan Navidrome automatically after downloads. */
+	autoScan: boolean;
 	/** Providers the engine may use. */
 	enabledProviders: string[];
 	concurrentDownloads: number;
@@ -161,6 +172,7 @@ export async function getPublicSettings(): Promise<{
 		preferHiRes: s.preferHiRes,
 		autoUpgradeQuality: s.autoUpgradeQuality,
 		forceTagRepair: s.forceTagRepair,
+		autoScan: s.autoScan,
 		concurrentDownloads: s.concurrentDownloads,
 		enabledProviders: s.enabledProviders,
 	};

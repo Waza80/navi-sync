@@ -1,0 +1,11 @@
+-- Record which source produced the lyrics currently on disk.
+--
+-- `lyrics_status` says a copy exists and whether it is synced, but not where it
+-- came from. When a source quietly stops working (the Deezer pipe returned null
+-- for EVERY track for weeks because `lyrics.text` is a string, not an array), the
+-- only trace was a log line long since rotated away. This column makes the hit
+-- rate per source queryable and lets a wrong match be traced back to its origin.
+--
+-- NULL means "unknown" for rows written before this migration, and for sidecars
+-- that already existed on disk before the app fetched anything.
+ALTER TABLE "tracks" ADD COLUMN IF NOT EXISTS "lyrics_source" text;

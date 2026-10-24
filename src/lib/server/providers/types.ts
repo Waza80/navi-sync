@@ -136,12 +136,17 @@ export interface Provider {
 	searchArtists?(
 		query: string,
 	): Promise<Array<{ artistId: string; name: string; trackCount: number | null }>>;
-	/** Canonicalize any provider link (track/album/playlist) to {kind, id}. */
+	/**
+	 * Canonicalize any provider link to {kind, id}.
+	 *
+	 * `artist` is part of the union because providers can recognise an artist
+	 * link (and must say so) even when the caller cannot fan it out here — the
+	 * artist route owns that. Returning a wrong kind makes the caller fetch an
+	 * artist id as a track.
+	 */
 	resolveLink?(
 		input: string,
-	): Promise<{ kind: 'track' | 'album' | 'playlist'; id: string } | null>;
-	/** Playlist track-id listing for playlist fan-out. */
-	playlistTrackIds?(playlistId: string, max?: number): Promise<string[]>;
+	): Promise<{ kind: 'track' | 'album' | 'artist' | 'playlist'; id: string } | null>;
 	/** Exact catalog lookup by ISRC — enables cross-provider best-quality. */
 	findByIsrc?(isrc: string): Promise<TrackMeta | null>;
 	/**
