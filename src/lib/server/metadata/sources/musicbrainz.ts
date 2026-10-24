@@ -328,6 +328,7 @@ async function toPatch(chosen: Chosen, needed: MetadataQuery['needed']): Promise
 		...(needed.includes('albumArtist') && chosen.albumArtist
 			? { albumArtist: chosen.albumArtist }
 			: {}),
+		...(needed.includes('artist') && artistName(rec) ? { artist: artistName(rec) } : {}),
 		...(needed.includes('coverUrl') ? { coverUrl: await coverUrlFor(release.id) } : {}),
 		...(needed.includes('year') ? { year: yearOf(release.date) } : {}),
 		// Track and disc numbers are merged in by the caller, which must fetch the
@@ -397,6 +398,47 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 			releaseScore(r) > releaseScore(best) ? r : best,
 		);
 		return { recording: rec, release, albumArtist: artistName(rec) };
+	}
+
+	// Title + album fallback: when the artist string is corrupted (merged credits,
+	// reordered names, etc.) strict title+artist matching never hits. Match by
+	// recording title AND release (album) title instead — MusicBrainz already
+	// knows the release, so this is unambiguous for one-track-per-release cases.
+	if (!wanted && query.album) {
+		const byTitleAlbum = recs.filter((r) => {
+			const releases = canonicalReleases(r);
+			return (
+				releases.some(
+					(rel) => rel.title && rel.title.toLowerCase() === query.album!.toLowerCase(),
+				) &&
+				r.title &&
+				r.title.toLowerCase() === query.title.toLowerCase()
+			);
+		});
+		if (byTitleAlbum.length === 1) {
+			const rec = byTitleAlbum[0];
+			const releases = canonicalReleases(rec);
+			const release = releases.reduce((best, r) =>
+				releaseScore(r) > releaseScore(best) ? r : best,
+			);
+			return { recording: rec, release, albumArtist: artistName(rec) };
+		}
+		if (byTitleAlbum.length > 1) {
+			// Multiple recordings with same title+album: disambiguate by duration.
+			const withDuration = byTitleAlbum.filter((r) =>
+				typeof r.length === 'number' && query.durationSec
+					? Math.abs(r.length / 1000 - query.durationSec) <= 1.5
+					: true,
+			);
+			if (withDuration.length === 1) {
+				const rec = withDuration[0];
+				const releases = canonicalReleases(rec);
+				const release = releases.reduce((best, r) =>
+					releaseScore(r) > releaseScore(best) ? r : best,
+				);
+				return { recording: rec, release, albumArtist: artistName(rec) };
+			}
+		}
 	}
 	// No canonical release, so the strict path above returns nothing. Before giving
 	// up, look for a recording whose only release is Expunged — enough to lend us

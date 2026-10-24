@@ -29,6 +29,7 @@ export interface MetadataQuery {
 export type MetadataField =
 	| 'album'
 	| 'albumArtist'
+	| 'artist'
 	| 'coverUrl'
 	| 'genre'
 	| 'year'
@@ -46,6 +47,7 @@ export type MetadataField =
 export type MetadataPatch = Partial<{
 	album: string | null;
 	albumArtist: string | null;
+	artist: string | null;
 	coverUrl: string | null;
 	genre: string | null;
 	year: number | null;
@@ -84,6 +86,7 @@ export type MetadataPatch = Partial<{
 export const AUTHORITATIVE_FIELDS: ReadonlySet<MetadataField> = new Set<MetadataField>([
 	'album',
 	'albumArtist',
+	'artist',
 	'isrc',
 	'artistMbid',
 	'recordingMbid',
@@ -99,6 +102,7 @@ export const AUTHORITATIVE_FIELDS: ReadonlySet<MetadataField> = new Set<Metadata
 export const ALL_FIELDS: MetadataField[] = [
 	'album',
 	'albumArtist',
+	'artist',
 	'coverUrl',
 	'genre',
 	'year',
@@ -126,6 +130,7 @@ export function neededFieldsFor(
 	row: {
 		album: string | null;
 		albumArtist: string | null;
+		artist: string | null;
 		coverPath: string | null;
 		genre: string | null;
 		releaseYear: number | null;
@@ -156,13 +161,14 @@ export function neededFieldsFor(
 	const out: MetadataField[] = [];
 	if (missing(row.album)) out.push('album');
 	if (missing(row.albumArtist)) out.push('albumArtist');
+	if (missing(row.artistMbid)) out.push('artistMbid');
+	if (missing(row.artistMbid)) out.push('artist');
 	if (missing(row.coverPath)) out.push('coverUrl');
 	if (missing(row.genre)) out.push('genre');
 	if (row.releaseYear === null) out.push('year');
 	if (row.trackNumber === null) out.push('trackNumber');
 	if (row.discNumber === null) out.push('discNumber');
 	if (missing(row.isrc)) out.push('isrc');
-	if (missing(row.artistMbid)) out.push('artistMbid');
 	// Identities are asked for whenever they are absent, independent of the
 	// descriptive fields: a row can have a perfect album/year/cover and still
 	// lack the MBIDs that Navidrome and every scrobbler key on.

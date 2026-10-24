@@ -1040,6 +1040,7 @@ export async function applyMetadataPatch(
 	patch: {
 		album?: string | null;
 		albumArtist?: string | null;
+		artist?: string | null;
 		coverUrl?: string | null;
 		genre?: string | null;
 		year?: number | null;
@@ -1058,6 +1059,7 @@ export async function applyMetadataPatch(
 	if (patch.album != null && patch.album.trim() !== '') set.album = patch.album;
 	if (patch.albumArtist != null && patch.albumArtist.trim() !== '')
 		set.albumArtist = patch.albumArtist;
+	if (patch.artist != null && patch.artist.trim() !== '') set.artist = patch.artist;
 	if (patch.genre != null && patch.genre.trim() !== '') set.genre = patch.genre;
 	if (patch.year != null && Number.isFinite(patch.year)) set.releaseYear = patch.year;
 	if (patch.trackNumber != null) set.trackNumber = patch.trackNumber;

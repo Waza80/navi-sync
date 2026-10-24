@@ -209,6 +209,7 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 			needed: neededFieldsFor({
 				album: input.album,
 				albumArtist: input.albumArtist ?? input.artist,
+				artist: input.artist,
 				coverPath: coverBytes ? 'present' : null,
 				genre: input.genre ?? null,
 				releaseYear: input.year ?? null,
@@ -228,7 +229,8 @@ async function finalizeUpload(input: z.infer<typeof finalizeSchema>): Promise<Re
 		mbEnrichment = { patch: {}, filledBy: {}, tried: [] };
 	}
 	// Apply MusicBrainz corrections to meta before tagging/filing.
-	// MusicBrainz is authoritative for release facts (album, year, track/disc numbers, ISRC, MBIDs).
+	// MusicBrainz is authoritative for artist and release facts.
+	if (mbEnrichment.patch.artist) meta.artist = mbEnrichment.patch.artist;
 	if (mbEnrichment.patch.album) meta.album = mbEnrichment.patch.album;
 	if (mbEnrichment.patch.albumArtist) meta.albumArtist = mbEnrichment.patch.albumArtist;
 	if (mbEnrichment.patch.year) meta.year = mbEnrichment.patch.year;

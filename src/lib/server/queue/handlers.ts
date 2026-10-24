@@ -1449,6 +1449,7 @@ async function enrichInline(meta: TrackMeta): Promise<TrackMeta> {
 			releaseGroupMbid: meta.releaseGroupMbid,
 			albumArtistMbid: meta.albumArtistMbid,
 			releaseTrackMbid: meta.releaseTrackMbid,
+			artist: meta.artist,
 		});
 		if (needed.length === 0) return meta;
 		const { patch } = await enrichTrackMetadata({
@@ -1478,6 +1479,7 @@ async function enrichInline(meta: TrackMeta): Promise<TrackMeta> {
 			albumArtistMbid: patch.albumArtistMbid ?? meta.albumArtistMbid,
 			releaseTrackMbid: patch.releaseTrackMbid ?? meta.releaseTrackMbid,
 			artistMbid: patch.artistMbid ?? meta.artistMbid,
+			artist: patch.artist ?? meta.artist,
 		};
 	} catch (err) {
 		log.debug('inline metadata enrichment skipped', { error: String(err) });
@@ -1524,6 +1526,7 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 	const gapFields = neededFieldsFor({
 		album: row.album,
 		albumArtist: row.albumArtist,
+		artist: row.artist,
 		coverPath: row.coverPath,
 		genre: row.genre,
 		releaseYear: row.releaseYear,

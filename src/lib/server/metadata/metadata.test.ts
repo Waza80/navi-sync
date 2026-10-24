@@ -8,6 +8,7 @@ describe('neededFieldsFor', () => {
 			neededFieldsFor({
 				album: null,
 				albumArtist: null,
+				artist: null,
 				coverPath: null,
 				genre: null,
 				releaseYear: null,
@@ -18,13 +19,14 @@ describe('neededFieldsFor', () => {
 		).toEqual([
 			'album',
 			'albumArtist',
+			'artistMbid',
+			'artist',
 			'coverUrl',
 			'genre',
 			'year',
 			'trackNumber',
 			'discNumber',
 			'isrc',
-			'artistMbid',
 			'recordingMbid',
 			'releaseMbid',
 			'releaseGroupMbid',
@@ -38,6 +40,7 @@ describe('neededFieldsFor', () => {
 			neededFieldsFor({
 				album: 'Discovery',
 				albumArtist: 'Daft Punk',
+				artist: 'Daft Punk',
 				coverPath: 'Daft Punk/Discovery/cover.jpg',
 				genre: 'Electronic',
 				releaseYear: 2001,
@@ -61,6 +64,7 @@ describe('neededFieldsFor', () => {
 		const complete = {
 			album: 'La Memoire Insoluble',
 			albumArtist: 'Tanger',
+			artist: 'Tanger',
 			coverPath: 'Tanger/La Memoire Insoluble/cover.jpg',
 			genre: 'Rap',
 			releaseYear: 2013,
@@ -82,6 +86,7 @@ describe('neededFieldsFor', () => {
 		const legacy = {
 			album: 'Discovery',
 			albumArtist: 'Daft Punk',
+			artist: 'Daft Punk',
 			coverPath: 'x.jpg',
 			genre: 'Electronic',
 			releaseYear: 2001,
@@ -91,6 +96,7 @@ describe('neededFieldsFor', () => {
 		};
 		expect(neededFieldsFor(legacy)).toEqual([
 			'artistMbid',
+			'artist',
 			'recordingMbid',
 			'releaseMbid',
 			'releaseGroupMbid',
@@ -119,6 +125,7 @@ describe('neededFieldsFor', () => {
 		const fields = neededFieldsFor({
 			album: '   ',
 			albumArtist: 'Daft Punk',
+			artist: 'Daft Punk',
 			coverPath: 'x.jpg',
 			genre: 'Electronic',
 			releaseYear: 2001,
@@ -133,6 +140,7 @@ describe('neededFieldsFor', () => {
 		const fields = neededFieldsFor({
 			album: 'Discovery',
 			albumArtist: 'Daft Punk',
+			artist: 'Daft Punk',
 			coverPath: null,
 			genre: 'Electronic',
 			releaseYear: 2001,
