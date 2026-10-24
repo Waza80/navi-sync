@@ -649,6 +649,16 @@ export const musicbrainzSource: MetadataSource = {
 			// requires an unambiguous exact title, and yields a cover and nothing else.
 			chosen = choose(await search(`recording:"${query.title}"`), query);
 		}
+		if (!chosen && query.album) {
+			// Retry with the album constraint: when the artist name is corrupted,
+			// searching by title+album can find the recording even when it's not in
+			// the top 25 title-only results. MusicBrainz knows the release, so
+			// matching by release title is unambiguous for one-track-per-release cases.
+			chosen = choose(
+				await search(`recording:"${query.title}" AND release:"${query.album}"`),
+				query,
+			);
+		}
 		if (!chosen) {
 			log.debug('musicbrainz: no canonical release matched', {
 				title: query.title,
