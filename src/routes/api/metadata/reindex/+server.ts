@@ -27,7 +27,7 @@ const METADATA_FIELDS = [
 
 const bodySchema = z.object({
 	/** Rows to enqueue this call. The sweep loops until nothing is left. */
-	batch: z.number().int().min(1).max(500).default(100),
+	batch: z.number().int().min(1).max(1000).default(500),
 	/**
 	 * Stop re-touching rows refreshed within this window. Without it a re-run
 	 * would immediately re-enqueue everything it just did.
