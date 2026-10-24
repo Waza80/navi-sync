@@ -10,6 +10,7 @@ const log = logger;
 const METADATA_FIELDS = [
 	'album',
 	'albumArtist',
+	'artist',
 	'coverUrl',
 	'genre',
 	'year',
@@ -17,6 +18,11 @@ const METADATA_FIELDS = [
 	'discNumber',
 	'isrc',
 	'artistMbid',
+	'recordingMbid',
+	'releaseMbid',
+	'releaseGroupMbid',
+	'albumArtistMbid',
+	'releaseTrackMbid',
 ] as const;
 
 const bodySchema = z.object({
