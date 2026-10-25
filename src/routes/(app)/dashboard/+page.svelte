@@ -611,6 +611,8 @@
 			searchArtists = body.artists ?? [];
 			pastedLink = body.link ?? null;
 			if (searchResults.length === 0) searchMsg = 'No results from the enabled providers.';
+		} catch (err) {
+			searchMsg = `Search failed: ${err instanceof Error ? err.message : 'network error'}`;
 		} finally {
 			searchBusy = false;
 		}
@@ -661,6 +663,8 @@
 				`Queued ${body.enqueued} tracks from ${body.albumsScanned} albums of “${a.name}”${capped}`,
 			);
 			await invalidateAll();
+		} catch (err) {
+			toast('error', `Download failed: ${err instanceof Error ? err.message : 'network error'}`);
 		} finally {
 			artistBusy.delete(key);
 		}
@@ -683,6 +687,8 @@
 			} else {
 				toast('error', body.error?.message ?? `HTTP ${res.status}`);
 			}
+		} catch (err) {
+			toast('error', `Download failed: ${err instanceof Error ? err.message : 'network error'}`);
 		} finally {
 			albumBusy.delete(key);
 		}
@@ -750,25 +756,27 @@
 	}
 
 	async function inspectOne(file: File, entryPath: string | null): Promise<UploadDraft | null> {
-		const fd = new FormData();
-		fd.append('file', file);
-		if (entryPath) fd.append('entryPath', entryPath);
-		const res = await fetch('/api/upload/inspect', { method: 'POST', body: fd });
-		const body = (await res.json()) as {
-			uploadId?: string;
-			ext?: string;
-			embeddedLyrics?: boolean;
-			entryPath?: string | null;
-			filledBy?: Record<string, string>;
-			detected?: Record<string, unknown>;
-			error?: { message: string };
-		};
-		if (!res.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
-		return draftFrom(body);
+		try {
+			const fd = new FormData();
+			fd.append('file', file);
+			if (entryPath) fd.append('entryPath', entryPath);
+			const res = await fetch('/api/upload/inspect', { method: 'POST', body: fd });
+			const body = (await res.json()) as {
+				uploadId?: string;
+				ext?: string;
+				embeddedLyrics?: boolean;
+				entryPath?: string | null;
+				filledBy?: Record<string, string>;
+				detected?: Record<string, unknown>;
+				error?: { message: string };
+			};
+			if (!res.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+			return draftFrom(body);
 		} catch (err) {
 			uploadMsg = { tone: 'error', text: `Inspect failed: ${err instanceof Error ? err.message : 'network error'}` };
 			return null;
 		}
+	}
 
 	/**
 	 * Inspect a picked file. A `.zip` is expanded **in the browser** so the

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ALL_FIELDS, cleanPatch, neededFieldsFor, patchKeys } from './types';
 import { enrichTrackMetadata, metadataSources } from './index';
+import { cooldownMsForStatus, musicbrainzSource } from './sources/musicbrainz';
 
 describe('neededFieldsFor', () => {
 	it('reports every gap on a bare row', () => {
@@ -261,4 +262,156 @@ describe('enrichTrackMetadata', () => {
 		expect(result.patch).toEqual({});
 		expect(result.tried).toEqual([]);
 	});
+});
+
+describe('musicbrainz source (stubbed transport)', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	// The old constant parked the mirror for TEN MINUTES, so one 429 during a
+	// reindex pinned every following request to the official host's 1 req/sec
+	// throttle for the rest of the sweep. Operator policy: seconds, never minutes.
+	it('parks a failing mirror for seconds, never minutes', () => {
+		expect(cooldownMsForStatus(429)).toBe(2_000);
+		expect(cooldownMsForStatus(401)).toBe(10_000);
+		expect(cooldownMsForStatus(403)).toBe(10_000);
+		expect(cooldownMsForStatus(500)).toBe(5_000);
+		expect(cooldownMsForStatus(null)).toBe(5_000);
+		expect(cooldownMsForStatus(429)).toBeLessThanOrEqual(10_000);
+	});
+
+	const json = (body: unknown): Response =>
+		new Response(JSON.stringify(body), {
+			status: 200,
+			headers: { 'content-type': 'application/json' },
+		});
+	const missing = (): Response => new Response('not found', { status: 404 });
+
+	it('resolves a stored recording MBID with no search at all', { timeout: 15_000 }, async () => {
+		const calls: string[] = [];
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (input: unknown) => {
+				const url = String(input);
+				calls.push(url);
+				await Promise.resolve();
+				if (url.includes('/recording/') && !url.includes('query=')) {
+					return json({
+						id: '11111111-1111-1111-1111-111111111111',
+						title: 'Zzqx Song',
+						'artist-credit': [
+							{
+								name: 'Zzqx Artist',
+								artist: { id: '33333333-3333-3333-3333-333333333333' },
+							},
+						],
+						isrcs: ['QZDA0001'],
+						releases: [
+							{
+								id: '22222222-2222-2222-2222-222222222222',
+								title: 'Zzqx Album',
+								status: 'Official',
+								date: '2019-05-04',
+								'release-group': {
+									id: '44444444-4444-4444-4444-444444444444',
+									'primary-type': 'Album',
+								},
+							},
+						],
+					});
+				}
+				return missing();
+			}),
+		);
+		const patch = await musicbrainzSource.lookup({
+			trackId: 't1',
+			title: 'Zzqx Song',
+			artist: 'Zzqx Artist',
+			album: 'Zzqx Album',
+			isrc: null,
+			durationSec: 180,
+			year: null,
+			needed: ['artist', 'artistMbid', 'recordingMbid', 'releaseMbid', 'album', 'year'],
+			recordingMbid: '11111111-1111-1111-1111-111111111111',
+			releaseMbid: '22222222-2222-2222-2222-222222222222',
+		});
+		// A stored MBID is stronger evidence than any query: the search chain
+		// (which cannot even run for rows with garbage artist strings) is skipped.
+		expect(calls.filter((u) => u.includes('query='))).toHaveLength(0);
+		expect(calls.length).toBeGreaterThan(0);
+		expect(patch).toMatchObject({
+			artist: 'Zzqx Artist',
+			artistMbid: '33333333-3333-3333-3333-333333333333',
+			recordingMbid: '11111111-1111-1111-1111-111111111111',
+			releaseMbid: '22222222-2222-2222-2222-222222222222',
+			album: 'Zzqx Album',
+			year: 2019,
+		});
+	});
+
+	it(
+		'takes identity from an unofficial release but withholds album and year',
+		{ timeout: 15_000 },
+		async () => {
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (input: unknown) => {
+					const url = String(input);
+					await Promise.resolve();
+					if (url.includes('query=')) {
+						return json({
+							recordings: [
+								{
+									id: '55555555-5555-5555-5555-555555555555',
+									title: 'Zzqx Bootleg Song',
+									length: 180_000,
+									'artist-credit': [
+										{
+											name: 'Zzqx Artist',
+											artist: { id: '66666666-6666-6666-6666-666666666666' },
+										},
+									],
+									releases: [
+										{
+											id: '77777777-7777-7777-7777-777777777777',
+											title: 'Zzqx Live Album',
+											status: 'Bootleg',
+											date: '2003',
+											'release-group': {
+												id: '88888888-8888-8888-8888-888888888888',
+												'primary-type': 'Album',
+												'secondary-types': ['Live'],
+											},
+										},
+									],
+								},
+							],
+						});
+					}
+					return missing();
+				}),
+			);
+			const patch = await musicbrainzSource.lookup({
+				trackId: 't2',
+				title: 'Zzqx Bootleg Song',
+				artist: 'Zzqx Artist',
+				album: 'Zzqx Live Album',
+				isrc: null,
+				durationSec: 180,
+				year: null,
+				needed: ['artist', 'artistMbid', 'recordingMbid', 'album', 'year'],
+			});
+			// Identity (artist credit + MBIDs) is proven by the strict match and
+			// flows even though the only release is a Bootleg...
+			expect(patch).toMatchObject({
+				artist: 'Zzqx Artist',
+				artistMbid: '66666666-6666-6666-6666-666666666666',
+				recordingMbid: '55555555-5555-5555-5555-555555555555',
+			});
+			// ...but an unofficial release must never rename the album or give a year.
+			expect(patch?.album).toBeUndefined();
+			expect(patch?.year).toBeUndefined();
+		},
+	);
 });

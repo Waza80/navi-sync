@@ -1474,6 +1474,9 @@ async function enrichInline(meta: TrackMeta): Promise<TrackMeta> {
 			isrc: meta.isrc,
 			durationSec: meta.durationSec,
 			year: meta.year,
+			artistMbid: meta.artistMbid,
+			recordingMbid: meta.recordingMbid,
+			releaseMbid: meta.releaseMbid,
 			needed,
 		});
 		if (Object.keys(patch).length === 0) return meta;
@@ -1537,23 +1540,30 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 	const { coverRelativePath, trackBaseRelativePath } = await import('$lib/server/library/paths');
 
 	const force = payload.force === true;
-	const gapFields = neededFieldsFor({
-		album: row.album,
-		albumArtist: row.albumArtist,
-		artist: row.artist,
-		coverPath: row.coverPath,
-		genre: row.genre,
-		releaseYear: row.releaseYear,
-		trackNumber: row.trackNumber,
-		discNumber: row.discNumber,
-		isrc: row.isrc,
-		artistMbid: row.artistMbid,
-		recordingMbid: row.recordingMbid,
-		releaseMbid: row.releaseMbid,
-		releaseGroupMbid: row.releaseGroupMbid,
-		albumArtistMbid: row.albumArtistMbid,
-		releaseTrackMbid: row.releaseTrackMbid,
-	});
+	// `{ force }` is what makes a reindex a re-ask: without it this row would
+	// only be asked about the fields it is missing, so a filled-but-wrong album
+	// or a misplaced file could never be corrected — which is exactly how the
+	// 'force pass' shipped gap-only, reporting `forced: true` all the while.
+	const gapFields = neededFieldsFor(
+		{
+			album: row.album,
+			albumArtist: row.albumArtist,
+			artist: row.artist,
+			coverPath: row.coverPath,
+			genre: row.genre,
+			releaseYear: row.releaseYear,
+			trackNumber: row.trackNumber,
+			discNumber: row.discNumber,
+			isrc: row.isrc,
+			artistMbid: row.artistMbid,
+			recordingMbid: row.recordingMbid,
+			releaseMbid: row.releaseMbid,
+			releaseGroupMbid: row.releaseGroupMbid,
+			albumArtistMbid: row.albumArtistMbid,
+			releaseTrackMbid: row.releaseTrackMbid,
+		},
+		{ force },
+	);
 
 	// A FIELD-SCOPED forced pass: re-ask for these fields even when they are filled.
 	//
@@ -1583,6 +1593,12 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 			isrc: row.isrc,
 			durationSec: row.durationSec,
 			year: row.releaseYear,
+			// Stored MusicBrainz ids turn the whole search chain into ONE direct
+			// lookup — and for rows whose artist string is garbage the chain could
+			// not run at all, so without this the MB correction never arrived.
+			artistMbid: row.artistMbid,
+			recordingMbid: row.recordingMbid,
+			releaseMbid: row.releaseMbid,
 			needed,
 		});
 		patch = result.patch;
@@ -1619,12 +1635,12 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 
 	// Effective metadata = patch wins over the stored row.
 	const album = patch.album ?? row.album;
+	const artist = patch.artist ?? row.artist;
 	const albumArtist = patch.albumArtist ?? row.albumArtist;
 	const genre = patch.genre ?? row.genre;
 	const year = patch.year ?? row.releaseYear;
 	const trackNumber = patch.trackNumber ?? row.trackNumber;
 	const discNumber = patch.discNumber ?? row.discNumber;
-	const albumChanged = patch.album != null && patch.album !== row.album;
 
 	// ── 2. Cover pass ───────────────────────────────────────────────────────
 	await ctx.report(45, 'repairing cover art');
@@ -1636,14 +1652,14 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 		coverBytes = await fetchFirstImage([patch.coverUrl]);
 		if (!coverBytes && album) {
 			const { fetchAlbumArt } = await import('$lib/server/library/coverart');
-			coverBytes = await fetchAlbumArt(row.artist, album);
+			coverBytes = await fetchAlbumArt(artist, album);
 		}
 		if (coverBytes) {
 			try {
 				const { mkdir, writeFile } = await import('node:fs/promises');
 				const relPath = coverRelativePath({
 					title: row.title,
-					artist: row.artist,
+					artist,
 					album,
 					trackNumber,
 				});
@@ -1688,28 +1704,50 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 		const { ensureFileTags } = await import('$lib/server/library/tagging');
 		let filePath = row.filePath;
 
-		// An album discovered after the fact means the file sits in the wrong
-		// folder (or "Unknown Album") — move it before tagging.
-		if (albumChanged && album) {
+		// ANY path component changing — artist, album, or track number — means
+		// the file sits in the wrong place (or "Unknown Album"). The target is
+		// computed from the EFFECTIVE metadata (patch wins over the row): the
+		// old code used the stale `row.artist`, so a corrected artist never
+		// reached the tags or the folder, and only an album change could ever
+		// move a file.
+		if (artist && album) {
 			try {
-				const { rename } = await import('node:fs/promises');
+				const { rename, mkdir, copyFile } = await import('node:fs/promises');
 				const { existsSync } = await import('node:fs');
 				const destRel = `${trackBaseRelativePath({
 					title: row.title,
-					artist: row.artist,
+					artist,
 					album,
 					trackNumber,
 				})}.${filePath.split('.').pop()}`;
 				const dest = join(env.MUSIC_LIBRARY_DIR, destRel);
 				if (dest !== filePath && !existsSync(dest)) {
-					const { mkdir } = await import('node:fs/promises');
 					await mkdir(join(dest, '..'), { recursive: true });
 					await rename(filePath, dest);
+					// Lyrics live beside the file as `<name>.lrc`; leaving it
+					// behind would orphan the sidecar the tag reader looks for.
+					const srcLrc = `${filePath.slice(0, filePath.lastIndexOf('.'))}.lrc`;
+					const destLrc = `${dest.slice(0, dest.lastIndexOf('.'))}.lrc`;
+					if (existsSync(srcLrc) && !existsSync(destLrc)) {
+						await rename(srcLrc, destLrc);
+					}
+					// The album cover, too — but copy, not move: the old folder
+					// may still hold other tracks of the same album.
+					const srcCover = join(filePath, '..', 'cover.jpg');
+					const destCover = join(dest, '..', 'cover.jpg');
+					if (existsSync(srcCover) && !existsSync(destCover)) {
+						await copyFile(srcCover, destCover);
+					}
 					const { updateTrackFilePath } = await import('$lib/server/db/tracks');
 					await updateTrackFilePath(row.id, dest);
 					filePath = dest;
 					movedTo = destRel;
-					log.info('track moved to corrected album folder', {
+					log.info('track moved to its corrected folder', {
+						trackId: row.id,
+						dest: destRel,
+					});
+				} else if (dest !== filePath) {
+					log.warn('track relocate skipped: destination already exists', {
 						trackId: row.id,
 						dest: destRel,
 					});
@@ -1723,7 +1761,7 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 			filePath,
 			{
 				title: row.title,
-				artist: row.artist,
+				artist,
 				album,
 				albumArtist,
 				trackNumber,

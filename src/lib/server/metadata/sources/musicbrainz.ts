@@ -30,10 +30,11 @@ const log = logger;
  * It is also gated case-by-case by its operator, and this deployment is not on
  * the allow-list yet: `https://api.brainzmash.cc/ws/2/...` answers 403 from both
  * the dev host and the production host. So every request has a fallback to the
- * official MusicBrainz host, and a 403 parks the mirror for a cooldown instead
- * of paying the round-trip on every call. Metadata therefore keeps working
- * before access is granted, and starts using the faster host automatically once
- * it is.
+ * official MusicBrainz host, and a failure parks the mirror for a SHORT,
+ * status-shaped cooldown — seconds, never minutes, see `cooldownMsForStatus` —
+ * instead of paying the round-trip on every call. Metadata therefore keeps
+ * working before access is granted, and starts using the faster host
+ * automatically once it is.
  *
  * Set `MUSICBRAINZ_BASE_URL` to override the primary (an empty value means "use
  * the official host only").
@@ -46,8 +47,21 @@ const MB_HAS_FALLBACK = MB_PRIMARY !== MB_OFFICIAL;
 /** The official host asks for <=1 req/sec; BrainzMash allows 4 req/sec. */
 const INTERVAL_OFFICIAL_MS = 1100;
 const INTERVAL_PRIMARY_MS = MB_PRIMARY === MB_OFFICIAL ? INTERVAL_OFFICIAL_MS : 250;
-/** How long to stop asking a mirror that answered 401/403. */
-const BLOCKED_COOLDOWN_MS = 10 * 60_000;
+/**
+ * Cooldown after a mirror failure, by status. The operator policy is SECONDS,
+ * never minutes: the previous 10-minute park meant one 429 during a reindex
+ * silently pinned every following request to the 1 req/sec official host for
+ * the rest of the sweep.
+ *
+ *   429      -> 2s   rate limited; retry almost immediately
+ *   401/403  -> 10s  gated access; the longest cooldown allowed
+ *   5xx/net  -> 5s   host unwell; brief pause before re-asking it
+ */
+export function cooldownMsForStatus(status: number | null): number {
+	if (status === 429) return 2_000;
+	if (status === 401 || status === 403) return 10_000;
+	return 5_000;
+}
 
 // Same organisation, different host, and it 307-redirects to archive.org.
 const CAA = 'https://coverartarchive.org';
@@ -105,21 +119,30 @@ async function mbFetch(pathAndQuery: string): Promise<Response | null> {
 	if (Date.now() >= mirrorBlockedUntil) {
 		const primary = await rawFetch(`${MB_PRIMARY}${pathAndQuery}`, INTERVAL_PRIMARY_MS);
 		if (primary?.ok) return primary;
-		if (primary && (primary.status === 401 || primary.status === 403)) {
-			mirrorBlockedUntil = Date.now() + BLOCKED_COOLDOWN_MS;
-			log.warn('brainzmash refused the request; using official MusicBrainz', {
-				status: primary.status,
-				cooldownMinutes: BLOCKED_COOLDOWN_MS / 60_000,
-			});
-		} else if (primary && primary.status !== 404) {
-			log.debug('brainzmash unavailable; using official MusicBrainz', {
-				status: primary.status,
-			});
-		} else if (primary) {
+		if (primary && primary.status === 404) {
 			// A 404 from the mirror is the same 404 the official host would give.
 			return primary;
-		} else {
-			log.debug('brainzmash unreachable; using official MusicBrainz');
+		}
+		// Any other failure parks the PRIMARY for a short, status-shaped cooldown
+		// (see cooldownMsForStatus). Only parked when a separate official host
+		// exists to serve the fallback: parking the official host itself would
+		// turn one 429 into dropped lookups while the throttle already spaces it.
+		if (MB_HAS_FALLBACK) {
+			const status = primary?.status ?? null;
+			const cooldownMs = cooldownMsForStatus(status);
+			mirrorBlockedUntil = Date.now() + cooldownMs;
+			const cooldownSeconds = cooldownMs / 1000;
+			if (status === 401 || status === 403) {
+				log.warn('brainzmash refused the request; using official MusicBrainz', {
+					status,
+					cooldownSeconds,
+				});
+			} else {
+				log.debug('brainzmash unavailable; using official MusicBrainz', {
+					status,
+					cooldownSeconds,
+				});
+			}
 		}
 	}
 	if (!MB_HAS_FALLBACK) return null;
@@ -163,25 +186,15 @@ interface Chosen {
 	release: MbRelease;
 	albumArtist: string | null;
 	/**
-	 * True when the release is Expunged and was accepted for its artwork ONLY.
-	 * Every identity field is then withheld: the Cover Art Archive has the picture,
-	 * but an expunged release must not decide this album's name, year or numbering.
+	 * True when identity is proven — an ISRC hit, a stored MBID, or a strict
+	 * title+artist(+duration) match — but the chosen release is NOT one
+	 * MusicBrainz considers real (Bootleg, Promotion, Pseudo-Release,
+	 * Expunged). The recording's artist identity and the release/release-group
+	 * IDs are then safe to store, while descriptive facts (album name, year,
+	 * track numbers) are withheld: an unofficial release must not rename the
+	 * album.
 	 */
-	artworkOnly?: boolean;
-	/**
-	 * True when the release is Expunged but the recording's artist identity and
-	 * the release/release-group IDs are still safe to store. Descriptive facts
-	 * (album name, year, track numbers) are withheld.
-	 */
-	identityFromExpunged?: boolean;
-}
-
-/** A Chosen for artwork only: identity fields are withheld by `toPatch`. */
-function artworkOnly(rec: MbRecording): Chosen | null {
-	const art = artworkReleases(rec).reduce((best, r) =>
-		releaseScore(r) > releaseScore(best) ? r : best,
-	);
-	return { recording: rec, release: art, albumArtist: artistName(rec), artworkOnly: true };
+	descriptiveWithheld?: boolean;
 }
 
 function yearOf(date: string | undefined): number | null {
@@ -285,10 +298,6 @@ function isCanonicalRelease(r: MbRelease): boolean {
 	return looksCanonical(r.title);
 }
 
-function canonicalReleases(rec: MbRecording): MbRelease[] {
-	return (rec.releases ?? []).filter(isCanonicalRelease);
-}
-
 /**
  * Releases allowed to supply ARTWORK only.
  *
@@ -323,16 +332,73 @@ function releaseScore(r: MbRelease): number {
 	return score;
 }
 
+/**
+ * May this release supply DESCRIPTIVE facts — album name, year, track numbers?
+ * Only one MusicBrainz considers real: Official status (or no status at all on
+ * a canonical group), never Bootleg/Promotion/Pseudo-Release/Expunged.
+ */
+function descriptiveSafe(r: MbRelease | null | undefined): boolean {
+	if (!r || (!r.status && !r.title)) return false;
+	if (r.status && r.status !== 'Official') return false;
+	return r.status === 'Official' || isCanonicalRelease(r);
+}
+
+/**
+ * The single best release for a recording: canonical studio edition first,
+ * any Official release next, an Expunged one after that (artwork and identity
+ * only — the caller gates descriptive fields), anything at all last. Null
+ * only when the recording lists no releases whatsoever.
+ */
+function pickRelease(releases: MbRelease[]): MbRelease | null {
+	if (releases.length === 0) return null;
+	const best = (list: MbRelease[]): MbRelease | null =>
+		list.length ? list.reduce((a, b) => (releaseScore(b) > releaseScore(a) ? b : a)) : null;
+	return (
+		best(releases.filter(isCanonicalRelease)) ??
+		best(releases.filter((r) => r.status === 'Official')) ??
+		best(releases.filter((r) => r.status === 'Expunged')) ??
+		best(releases)
+	);
+}
+
+/**
+ * Build the Chosen for a recording whose IDENTITY is already proven (ISRC,
+ * stored MBID, or a strict title+artist match). `preferred` is the release the
+ * row already points at or the album the query matched — used verbatim when it
+ * is safe, so a proven row keeps the album it already has. Descriptive fields
+ * flow only from a `descriptiveSafe` release; a recording with no releases at
+ * all still yields its identity (release left empty, everything gated).
+ */
+function chosenForProven(
+	rec: MbRecording | undefined,
+	preferred?: MbRelease | null,
+): Chosen | null {
+	if (!rec) return null;
+	const release =
+		preferred && descriptiveSafe(preferred)
+			? preferred
+			: (pickRelease(rec.releases ?? []) ?? {});
+	return {
+		recording: rec,
+		release,
+		albumArtist: artistName(rec),
+		descriptiveWithheld: !descriptiveSafe(release),
+	};
+}
+
+/** The recording's release titled like this album — the match the query proved. */
+function albumRelease(rec: MbRecording, album: string): MbRelease | null {
+	const wanted = album.toLowerCase();
+	return (rec.releases ?? []).find((r) => (r.title ?? '').toLowerCase() === wanted) ?? null;
+}
+
 async function toPatch(chosen: Chosen, needed: MetadataQuery['needed']): Promise<MetadataPatch> {
 	const { recording: rec, release } = chosen;
-	if (chosen.artworkOnly) {
-		// Cover and nothing else — see `artworkOnly`.
-		return needed.includes('coverUrl') ? { coverUrl: await coverUrlFor(release.id) } : {};
-	}
-	if (chosen.identityFromExpunged) {
-		// Expunged release: artwork is safe, artist identity is safe (the
-		// recording's artist-credit is canonical), but descriptive facts
-		// (album name, year, track numbers, ISRC) are withheld.
+	if (chosen.descriptiveWithheld) {
+		// Identity proven, release unofficial: artwork and artist identity are
+		// safe (the recording's artist-credit is canonical MusicBrainz data),
+		// but descriptive facts (album name, year, track numbers, ISRC) are
+		// withheld — an unofficial release must not rename the album.
 		return {
 			...(needed.includes('coverUrl') ? { coverUrl: await coverUrlFor(release.id) } : {}),
 			...(needed.includes('artist') && artistName(rec) ? { artist: artistName(rec) } : {}),
@@ -384,9 +450,16 @@ function albumArtistMbid(release: MbRelease, rec: MbRecording): string | null {
 }
 
 /**
- * Strict selection. An ISRC hit is authoritative (it identifies the exact
- * recording); otherwise the recording must pass title+artist matching AND
- * expose at least one canonical release.
+ * Selection, strongest evidence first:
+ *
+ *   1. ISRC hit — identifies the exact recording, authoritative.
+ *   2. Strict title+artist+duration match (pickStrict never guesses).
+ *   3. Title+album, for rows whose artist string is corrupted.
+ *   4. Unambiguous exact title — identity and artwork only.
+ *
+ * Steps 1–3 have PROVEN identity, so any release may lend the recording's
+ * artist credit and MBIDs; descriptive facts (album, year, track numbers)
+ * flow only from a `descriptiveSafe` release — see `chosenForProven`.
  */
 function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 	if (recs.length === 0) return null;
@@ -394,36 +467,34 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 	const byIsrc = wanted
 		? recs.find((r) => r.isrcs?.some((i) => i.toUpperCase() === wanted))
 		: undefined;
-	const pool = byIsrc ? [byIsrc] : recs;
+	// 1. An ISRC hit identifies the exact recording: identity proven.
+	if (byIsrc) return chosenForProven(byIsrc);
 
-	const strict = byIsrc
-		? pool
-		: (() => {
-				const hit = pickStrict(
-					{
-						title: query.title,
-						artist: query.artist,
-						durationSec: query.durationSec,
-					},
-					pool
-						.filter((r) => r.title && canonicalReleases(r).length > 0)
-						.map((r) => ({
-							title: r.title ?? '',
-							artist: artistName(r) ?? '',
-							durationSec:
-								typeof r.length === 'number' ? Math.round(r.length / 1000) : null,
-						})),
-				);
-				return hit ? pool.filter((r) => r.title === hit.title) : [];
-			})();
-
-	for (const rec of strict) {
-		const releases = canonicalReleases(rec);
-		if (releases.length === 0) continue;
-		const release = releases.reduce((best, r) =>
-			releaseScore(r) > releaseScore(best) ? r : best,
+	// 2. Strict title+artist+duration match (pickStrict never guesses): the
+	// match itself proves identity, so the candidate set is every recording
+	// with a title and at least one release — NOT only canonical ones. A
+	// Bootleg/Promo-only recording can now lend its artist and MBIDs, while
+	// `chosenForProven` keeps album/year gated on release safety.
+	const hit = pickStrict(
+		{
+			title: query.title,
+			artist: query.artist,
+			durationSec: query.durationSec,
+		},
+		recs
+			.filter((r) => r.title && (r.releases?.length ?? 0) > 0)
+			.map((r) => ({
+				title: r.title ?? '',
+				artist: artistName(r) ?? '',
+				durationSec: typeof r.length === 'number' ? Math.round(r.length / 1000) : null,
+			})),
+	);
+	if (hit) {
+		const matches = recs.filter((r) => r.title === hit.title && (r.releases?.length ?? 0) > 0);
+		const chosen = chosenForProven(
+			matches.find((r) => (artistName(r) ?? '') === hit.artist) ?? matches[0],
 		);
-		return { recording: rec, release, albumArtist: artistName(rec) };
+		if (chosen) return chosen;
 	}
 
 	// Title + album fallback: when the artist string is corrupted (merged credits,
@@ -444,17 +515,13 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 			);
 		});
 		if (byTitleAlbum.length === 1) {
-			const rec = byTitleAlbum[0];
-			const releases = artworkReleases(rec);
-			const release = releases.reduce((best, r) =>
-				releaseScore(r) > releaseScore(best) ? r : best,
+			// Identity proven by title+album: keep the album the query matched
+			// when that release is safe, gate descriptive fields otherwise.
+			const chosen = chosenForProven(
+				byTitleAlbum[0],
+				albumRelease(byTitleAlbum[0], query.album),
 			);
-			return {
-				recording: rec,
-				release,
-				albumArtist: artistName(rec),
-				identityFromExpunged: true,
-			};
+			if (chosen) return chosen;
 		}
 		if (byTitleAlbum.length > 1) {
 			// Multiple recordings with same title+album: disambiguate by duration.
@@ -464,68 +531,39 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 					: true,
 			);
 			if (withDuration.length === 1) {
-				const rec = withDuration[0];
-				const releases = artworkReleases(rec);
-				const release = releases.reduce((best, r) =>
-					releaseScore(r) > releaseScore(best) ? r : best,
+				const chosen = chosenForProven(
+					withDuration[0],
+					albumRelease(withDuration[0], query.album),
 				);
-				return {
-					recording: rec,
-					release,
-					albumArtist: artistName(rec),
-					identityFromExpunged: true,
-				};
+				if (chosen) return chosen;
 			}
 		}
 	}
-	// No canonical release, so the strict path above returns nothing. Before giving
-	// up, look for a recording whose only release is Expunged — enough to lend us
-	// its cover art, never its identity.
-	//
-	// Two passes, because the artist often cannot match. Our album artist for a
-	// collaboration is the merged credit list ('Ptite Soeur, neophron, FEMTOGO,
-	// reivilose, prxpvne, rosaliedu38') while the recording credits three of those
-	// names, so `pickStrict` on artist never matches and PRETTY DOLLCORPSE stayed
-	// uncoverable — and with cover_path NULL there were no bytes to embed either.
+	// The strict path above requires the artist to match, and it often cannot:
+	// our album artist for a collaboration is the merged credit list ('Ptite
+	// Soeur, neophron, FEMTOGO, reivilose, prxpvne, rosaliedu38') while the
+	// recording credits three of those names, so `pickStrict` on artist never
+	// matches and PRETTY DOLLCORPSE stayed uncoverable — and with cover_path
+	// NULL there were no bytes to embed either.
 	if (!wanted) {
 		const withArt = recs.filter((r) => r.title && artworkReleases(r).length > 0);
-		const shape = (r: MbRecording) => ({
-			title: r.title ?? '',
-			artist: artistName(r) ?? '',
-			durationSec: typeof r.length === 'number' ? Math.round(r.length / 1000) : null,
-		});
 		const exactTitle = withArt.filter((r) => r.title === query.title);
 
-		// Pass 1: title + artist + duration.
-		const byArtist = pickStrict(
-			{ title: query.title, artist: query.artist, durationSec: query.durationSec },
-			withArt.map(shape),
-		);
-		if (byArtist) {
-			const hit = withArt.filter((r) => r.title === byArtist.title);
-			if (hit.length === 1) return artworkOnly(hit[0]);
-		}
-
-		// Pass 2: exact title alone, and ONLY when unambiguous. Two recordings sharing
-		// an exact title would make the cover a coin flip, so a unique match is the
-		// condition, not a preference.
+		// Exact title alone, and ONLY when unambiguous. Two recordings sharing
+		// an exact title would make the cover a coin flip, so a unique match is
+		// the condition, not a preference.
 		if (exactTitle.length === 1) {
 			const rec = exactTitle[0];
-			const releases = artworkReleases(rec);
-			const release = releases.reduce((best, r) =>
-				releaseScore(r) > releaseScore(best) ? r : best,
-			);
-			// Even an Expunged release can supply the recording's artist identity
-			// (artist name + MBID) and the release/release-group IDs. Descriptive
-			// fields (album, year, track numbers) are withheld for Expunged releases.
+			const release = pickRelease(artworkReleases(rec)) ?? pickRelease(rec.releases ?? []);
+			// Identity from a title-only guess is this source's standing contract:
+			// the recording's artist-credit is canonical MusicBrainz data, and an
+			// Expunged release still lends its stable ids. Descriptive facts NEVER
+			// flow from an unproven artist — a title alone must not name the album.
 			return {
 				recording: rec,
-				release,
+				release: release ?? {},
 				albumArtist: artistName(rec),
-				// Identity from Expunged release is safe to store: the recording
-				// and release IDs are stable, and the artist credit is the
-				// canonical one. Only descriptive facts are withheld.
-				identityFromExpunged: true,
+				descriptiveWithheld: true,
 			};
 		}
 		return null;
@@ -540,6 +578,16 @@ async function search(query: string): Promise<MbRecording[]> {
 	if (!res?.ok) return [];
 	const body = (await res.json()) as { recordings?: MbRecording[] };
 	return body.recordings ?? [];
+}
+
+/** Loose text equality for MusicBrainz strings: case, punctuation and accents aside. */
+function norm(v: string | undefined): string {
+	return String(v ?? '')
+		.normalize('NFD')
+		.replace(/\p{Diacritic}/gu, '')
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '')
+		.trim();
 }
 
 /**
@@ -577,13 +625,6 @@ async function fetchTrackNumbers(
 			}>;
 		}>;
 	};
-	const norm = (v: string | undefined): string =>
-		String(v ?? '')
-			.normalize('NFD')
-			.replace(/\p{Diacritic}/gu, '')
-			.toLowerCase()
-			.replace(/[^a-z0-9]+/g, '')
-			.trim();
 	const wantedTitle = norm(recordingTitle);
 	for (const medium of body.media ?? []) {
 		for (const track of medium.tracks ?? []) {
@@ -623,11 +664,117 @@ async function fetchTrackNumbers(
 	return { trackNumber: null, discNumber: null, releaseTrackMbid: null };
 }
 
+interface MbReleaseWithTracks extends MbRelease {
+	media?: Array<{
+		position?: number;
+		format?: string;
+		tracks?: Array<{
+			id?: string;
+			position?: number;
+			title?: string;
+			recording?: { id?: string; title?: string };
+		}>;
+	}>;
+}
+
+/** A recording fetched directly by MBID — one request, no search. */
+async function fetchRecordingByMbid(mbid: string): Promise<MbRecording | null> {
+	const res = await mbFetch(
+		`/recording/${encodeURIComponent(mbid)}?inc=releases+release-groups+artist-credits+isrcs&fmt=json`,
+	);
+	if (!res?.ok) return null;
+	const body = (await res.json().catch(() => null)) as MbRecording | null;
+	return body?.id ? body : null;
+}
+
+/** A release WITH its track list — the search payload never carries tracks. */
+async function fetchReleaseByMbid(mbid: string): Promise<MbReleaseWithTracks | null> {
+	const res = await mbFetch(
+		`/release/${encodeURIComponent(mbid)}?inc=artist-credits+release-groups+recordings&fmt=json`,
+	);
+	if (!res?.ok) return null;
+	const body = (await res.json().catch(() => null)) as MbReleaseWithTracks | null;
+	return body?.id ? body : null;
+}
+
+/** The track on a release whose (recording) title is `title`, compared loosely. */
+function trackOf(
+	release: MbReleaseWithTracks,
+	title: string,
+): {
+	recordingId: string;
+	recordingTitle: string;
+	position: number | null;
+	disc: number | null;
+	trackId: string | null;
+} | null {
+	const wanted = norm(title);
+	if (!wanted) return null;
+	for (const medium of release.media ?? []) {
+		for (const track of medium.tracks ?? []) {
+			if (!track.recording?.id) continue;
+			const name = norm(track.recording.title ?? track.title);
+			if (name && name === wanted) {
+				return {
+					recordingId: track.recording.id,
+					recordingTitle: track.recording.title ?? track.title ?? title,
+					position: typeof track.position === 'number' ? track.position : null,
+					disc: medium.position ?? null,
+					trackId: track.id ?? null,
+				};
+			}
+		}
+	}
+	return null;
+}
+
 export const musicbrainzSource: MetadataSource = {
 	id: 'musicbrainz',
 	displayName: 'MusicBrainz',
 	requiresAuth: false,
 	async lookup(query: MetadataQuery): Promise<MetadataPatch | null> {
+		// A stored MBID beats every search: the row already knows which
+		// MusicBrainz recording this is. One request resolves the recording, its
+		// artist credit, ISRCs and releases — the search chain below exists only
+		// for rows that have no id yet (or whose id lookup failed).
+		if (query.recordingMbid) {
+			const rec = await fetchRecordingByMbid(query.recordingMbid);
+			if (rec) {
+				const preferred = query.releaseMbid
+					? (rec.releases ?? []).find((r) => r.id === query.releaseMbid)
+					: undefined;
+				const chosen = chosenForProven(rec, preferred);
+				if (chosen) return withTrackNumbers(chosen, query);
+			}
+		}
+		// A stored release id: its own track list already names this recording's
+		// position — no second request for track numbers — and the artist credit
+		// comes from the recording itself (one extra request, only on success).
+		if (query.releaseMbid) {
+			const release = await fetchReleaseByMbid(query.releaseMbid);
+			const track = release ? trackOf(release, query.title) : null;
+			if (release && track) {
+				const rec =
+					(await fetchRecordingByMbid(track.recordingId)) ??
+					({
+						id: track.recordingId,
+						title: track.recordingTitle,
+						'artist-credit': release['artist-credit'],
+						releases: [release],
+					} satisfies MbRecording);
+				const chosen = chosenForProven(rec, release);
+				if (chosen) {
+					const patch = await toPatch(chosen, query.needed);
+					if (query.needed.includes('trackNumber') && track.position != null)
+						patch.trackNumber = track.position;
+					if (query.needed.includes('discNumber') && track.disc != null)
+						patch.discNumber = track.disc;
+					if (query.needed.includes('releaseTrackMbid') && track.trackId)
+						patch.releaseTrackMbid = track.trackId;
+					return patch;
+				}
+			}
+		}
 		// ISRC first — authoritative, no fuzzy matching required.
 		if (query.isrc) {
 			const chosen = choose(await search(`isrc:${query.isrc}`), query);

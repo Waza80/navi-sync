@@ -23,6 +23,15 @@ export interface MetadataQuery {
 	needed: MetadataField[];
 	/** When present, the file's own embedded tags are consulted first. */
 	filePath?: string | null;
+	/**
+	 * Stored MusicBrainz ids for this row. When present the source resolves the
+	 * recording directly instead of searching — an id is stronger evidence than
+	 * any query, and one request replaces a whole search chain (which could not
+	 * even run for rows whose artist string is garbage).
+	 */
+	artistMbid?: string | null;
+	recordingMbid?: string | null;
+	releaseMbid?: string | null;
 }
 
 /** Fields an enrichment source may fill. */
