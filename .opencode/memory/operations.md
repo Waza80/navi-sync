@@ -54,10 +54,14 @@ scans still await completion and stamp `navidrome_synced_at`.
 
 **MusicBrainz / BrainzMash**: `MUSICBRAINZ_BASE_URL` defaults to the BrainzMash
 mirror (4 req/sec) and falls back to official MusicBrainz (1 req/sec) on 403/429/5xx
-or network failure. BrainzMash currently 403s from both dev and prod hosts, so all
-metadata is served via the official fallback until access is granted.
+or network failure. BrainzMash answers with the app's `Lidarr/2.0.0.5284` UA and
+403s any other UA — a probe with a custom UA looks "blocked" when it is not
+(verified 2026-10-25: 200s with the Lidarr UA from the dev host). Official
+MusicBrainz sheds bursts with HTTP 503 `busy` even at the polite rate: space
+probe requests ≥3s apart or the first one fabricates a `no-source` result.
 
 -- why jobs died
+```sql
 select left(error,150) reason, count(*) n from jobs
 where type='download' and status='dead' group by 1 order by 2 desc;
 
@@ -72,7 +76,26 @@ There is no `psql` on this host — use a throwaway `bun` script with `pg` from
 Live provider probes: import `providers` from
 `src/lib/server/providers/registry` and run with `.env` sourced. Load order
 matters — source `.env` _before_ `bun`, or `env.ts` throws on a missing
-`APP_SECRET`.
+`APP_SECRET`. Then export the REAL `DATABASE_URL` (prod `/navisync`) and run the
+script from `/tmp/opencode`: `env.ts` uses `config({ override: true })`, so a
+`.env` present in cwd silently beats any exported value, while `/tmp` has none.
+
+Authenticated API probes (reindex, upgrade, scan, cancel): register
+`ops-sweep@navisync.local` (first user ever registered is admin; this one is a
+normal user — every route only needs `locals.user`). Sign in with
+`POST /api/auth/sign-in/email` saving cookies to `/tmp/opencode/ops_cookies.txt`;
+requests need an `Origin` header (sameOrigin check). The `session_data` cookie
+expires in ~5 minutes → 401 `UNAUTHENTICATED` — just sign in again (the
+7-day token alone is not enough).
+
+**Navidrome ghost purge is standing config**: `navidrome.toml` beside the DB
+(`/data/coolify/services/f0dgcamrsobomncvavlw85lo/data/`) sets
+`Scanner.PurgeMissing = "always"` — every scan removes rows whose files were
+deleted or moved, so the UI-delete step of the bulk-move recipe is no longer
+manual. The Navidrome DB itself sits next to it (`navidrome.db`, sqlite; the
+host has `python3`, not `sqlite3` CLI). Verification invariant after any bulk
+operation: `select count(*), sum(missing) from media_file` must equal the
+production `tracks` filed count with `missing = 0`.
 
 ## Known unreconciled items
 

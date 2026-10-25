@@ -19,6 +19,19 @@ with an artist id and reports a gateway fault instead of the real problem.
 `runDownload` refuses any ref whose kind is not `'track'`; `matches()` still
 accepts those URLs so `/api/search` can classify a pasted link and offer fan-out.
 
+Metadata resolution (`src/lib/server/metadata/sources/musicbrainz.ts`) asks in
+strict evidence order: stored `recordingMbid` → stored `releaseMbid` (its track
+list names the position) → ISRC → strict title+artist(+duration) → **widened
+fuzzy tokens with artist** → title-only → title+album → fuzzy tokens alone.
+Two transport rules: every mirror/official hop goes through
+`fetchWithBurstRetry` (one pause on 429/5xx — MB sheds bursts even at 1 req/s),
+and mirror parking is status-shaped seconds (`cooldownMsForStatus`, never the
+old 10-minute block). A proven identity on a non-Official release stores ids but
+withholds album/year (`descriptiveWithheld`); title-only hits never yield
+descriptive facts. `upgrade_check` reuses this path via stored ids first, and
+quality ceiling/cooldown guards make a no-op `upgrade: false` the normal answer
+for an already-lossless library.
+
 ## Queue
 
 `src/lib/server/queue/` — `jobs.ts` (store), `worker.ts` (drain), `handlers.ts`
@@ -58,6 +71,23 @@ title). Tidal silently returns unrelated results for a combined query — measur
 `"Neverlose"` → 297 correct, `"Neverlose help_urself"` → 98 unrelated — so
 relaxing the _query_ must never relax the _match_.
 
+`runMetadataRepair` (the sweep body): pass 1 enriches with `{ force }` wired into
+`neededFieldsFor` and passes stored MBIDs into the lookup; effective metadata is
+`patch ?? row` everywhere downstream (cover path, relocate target, `ensureFileTags`)
+— the old code used stale `row.artist`, so a corrected artist never reached the
+folder. Retag+relocate opens on patch, embedded cover, **or misplacement itself**;
+relocate carries `.lrc`, copies `cover.jpg`, updates `file_path`, and refuses an
+existing destination. Outcomes stamp `metadata_status`
+(`corrected|verified|no-source`) and `movedTo`.
+
+Job control: `DELETE /api/jobs` batches (group `type`+`status`, default
+`queued,running`, or explicit `ids`) through `cancelJobsByIds` → `cancelJob`, so
+per-row SSE events stay identical to the UI's own buttons. `clearCompletedJobs`
+deletes `succeeded|cancelled|failed|dead`. The reindex route enqueues with
+`trackId` set (dedupe key — omitting it once produced 8000 jobs for 171 tracks),
+priority −5, `force: true`, and `freshnessHours: 0` means a forced full pass
+ordered nulls-first — bounded batches only.
+
 ## DB
 
 Postgres via Drizzle. `tracks`, `jobs`, settings. Migrations in `drizzle/` as
@@ -93,3 +123,12 @@ Material 3, Svelte 5 runes, HugeIcons via `@hugeicons/svelte` +
 `@hugeicons/core-free-icons`. Component classes live in `@layer components` in
 `src/app.css` so Tailwind utilities win — unlayered CSS beats `@layer utilities`
 unconditionally.
+
+Jobs panel: rows bucket `type × status` into `<details>` groups (chevron when
+multiplied, all summary children `shrink-0` so nothing crushes), ordered by a
+deterministic `STATUS_RANK` (finished newest-first on top, running/queued FIFO,
+failures last). The store (`events.svelte.ts`) owns status/progress truth —
+filtered tabs map rows through `live.jobs` by id and re-fetch silently inside
+the shared ~1/s reload throttle; error toasts fire only for non-retry terminal
+failures (`onActivity`), which requires callbacks to register even when the SSE
+stream was already opened by the layout.

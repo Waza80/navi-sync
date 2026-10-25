@@ -1022,3 +1022,68 @@ ranks correctly), but neither metaflac nor node-id3 writes tags to it, so a WAV 
 filed with whatever tags it arrived with. `ensureFileTags` skips writing for WAV
 rather than corrupting it with the wrong writer.
 
+
+## Force only counts where the flag actually lands
+
+The reindex route has always sent `force: true`, and `runMetadataRepair` even
+reported `forced: true` — but `neededFieldsFor(row)` was called WITHOUT its
+`{ force }` opts, so every "forced" pass was gap-only: filled-but-wrong
+albums/years and missing MBIDs were never re-asked, while the job claimed
+otherwise. Symptom: hundreds of repairs succeeding with `filled: []` and
+metadata_status never moving. When reading a report field, follow the flag to
+the consumer — a report key is not an execution key.
+
+## The wrong database looks like a healthy idle worker
+
+`DATABASE_URL` pointing at the default `/postgres` schema produced: worker logs
+`worker started`, then ZERO claim activity forever, jobs table empty while
+1080 sat queued in `/navisync`, settings read as `concurrent: 4` (wrong DB's
+value vs the real 8), and even `users` missing. The claim SQL itself was fine —
+it was querying a different database. Prod `DATABASE_URL` must end in
+`/navisync`; the local `.env` still carries the dead dev host
+(`192.168.1.16:3945`), and `env.ts` loads it with `config({ override: true })`,
+so **exported overrides lose to `.env` whenever cwd has one** — pre-export the
+real URL and run throwaway scripts from `/tmp/opencode` (no `.env` there).
+
+## MusicBrainz quoted phrases cannot see a typo
+
+A stored title that differs from MusicBrainz's copy by a space or typo
+(`Il ya un Ange` vs `Il y a un ange`) returns count 0 for a quoted Lucene
+phrase — norm()-equality downstream never gets a chance, and the row reports
+`no-source` while the recording plainly exists. The lookup chain now widens the
+CANDIDATE set with unquoted `recording:<longest-tokens>` rungs (with artist,
+then alone) while `choose()` keeps the same norm-exact title/artist/duration
+bar: search wide, accept strict. Also: MusicBrainz sheds bursts with HTTP 503
+`busy` even at 1 req/s — a single-shot request silently became `search() → []`;
+`fetchWithBurstRetry` now pauses once (429 → 2s, 5xx → 5s) and retries.
+
+## Moving files behind Navidrome's back now purges itself
+
+Bulk moves/upgrades leave `media_file` rows pointing at old paths; scans only
+set `missing = 1` and the player keeps showing grey ghosts. This is now
+automated: `/data/.../data/navidrome.toml` sets
+`Scanner.PurgeMissing = "always"` (no toml existed — config was env-only;
+restart the container to apply). Invariant for verification:
+`media_file` total must equal the production `tracks` filed count exactly
+(both 1687 after today's sweep) and `missing` must be 0.
+
+## A verified row can still be in the wrong folder
+
+Retag/relocate lived inside `if (patch changed || embedBytes)`, so rows whose
+metadata VERIFIED without edits kept living in folders an older naming scheme
+created (case variants, `$-Crew` → `S-Crew`, deluxe vs standard, wrong track
+numbers). The gate now also opens on misplacement itself — compare the
+effective metadata's expected path against `file_path`, independent of whether
+anything was rewritten. Destinations that already exist are conflicts: report,
+never overwrite (7 remain, all Lomepal FLIP/Amina duplicates).
+
+## Filtered job tabs are snapshots unless you wire the live store in
+
+A tab's rows were fetched once at click time, so running jobs kept rendering
+as `queued` (no bar, stale chip) and finished rows never appeared. Fix is two
+parts: map each row through `live.jobs` by id (SSE updates flow into the open
+tab) and silently re-fetch the tab inside the same ~1/s throttle as the page
+snapshot. Ordering is deterministic (`STATUS_RANK`: finished newest-first on
+top, running/queued FIFO, failures last, id tie-break) so nothing jumps, and
+`queueCounts.active` must be queued + running — counting only queued made the
+Active badge contradict its own list.
