@@ -407,7 +407,7 @@ function chosenForProven(
 	return {
 		recording: rec,
 		release,
-		albumArtist: artistName(rec),
+		albumArtist: albumArtistName(release, rec),
 		descriptiveWithheld: !descriptiveSafe(release),
 	};
 }
@@ -476,6 +476,30 @@ function albumArtistMbid(release: MbRelease, rec: MbRecording): string | null {
 }
 
 /**
+ * The NAME half of the same rule: album_artist comes from the release's
+ * credit, never the recording's. Feat credits vary track to track
+ * ('Tanger, Frizk'), and Navidrome's album key includes album_artist — a
+ * varying value splits one album into several entries.
+ */
+function albumArtistName(release: MbRelease, rec: MbRecording): string | null {
+	return (
+		release['artist-credit']?.[0]?.name ??
+		release['artist-credit']?.[0]?.artist?.name ??
+		artistName(rec)
+	);
+}
+
+/**
+ * The release this row already stores: locks one edition per album so forced
+ * re-asks stop re-picking a different same-titled release on every run.
+ */
+function storedRelease(rec: MbRecording, query: MetadataQuery): MbRelease | undefined {
+	return query.releaseMbid
+		? (rec.releases ?? []).find((r) => r.id === query.releaseMbid)
+		: undefined;
+}
+
+/**
  * Selection, strongest evidence first:
  *
  *   1. ISRC hit — identifies the exact recording, authoritative.
@@ -494,7 +518,7 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 		? recs.find((r) => r.isrcs?.some((i) => i.toUpperCase() === wanted))
 		: undefined;
 	// 1. An ISRC hit identifies the exact recording: identity proven.
-	if (byIsrc) return chosenForProven(byIsrc);
+	if (byIsrc) return chosenForProven(byIsrc, storedRelease(byIsrc, query));
 
 	// 2. Strict title+artist+duration match (pickStrict never guesses): the
 	// match itself proves identity, so the candidate set is every recording
@@ -517,9 +541,8 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 	);
 	if (hit) {
 		const matches = recs.filter((r) => r.title === hit.title && (r.releases?.length ?? 0) > 0);
-		const chosen = chosenForProven(
-			matches.find((r) => (artistName(r) ?? '') === hit.artist) ?? matches[0],
-		);
+		const match = matches.find((r) => (artistName(r) ?? '') === hit.artist) ?? matches[0];
+		const chosen = chosenForProven(match, storedRelease(match, query));
 		if (chosen) return chosen;
 	}
 
@@ -545,7 +568,7 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 			// when that release is safe, gate descriptive fields otherwise.
 			const chosen = chosenForProven(
 				byTitleAlbum[0],
-				albumRelease(byTitleAlbum[0], query.album),
+				storedRelease(byTitleAlbum[0], query) ?? albumRelease(byTitleAlbum[0], query.album),
 			);
 			if (chosen) return chosen;
 		}
@@ -559,7 +582,8 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 			if (withDuration.length === 1) {
 				const chosen = chosenForProven(
 					withDuration[0],
-					albumRelease(withDuration[0], query.album),
+					storedRelease(withDuration[0], query) ??
+						albumRelease(withDuration[0], query.album),
 				);
 				if (chosen) return chosen;
 			}
@@ -588,7 +612,7 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 			return {
 				recording: rec,
 				release: release ?? {},
-				albumArtist: artistName(rec),
+				albumArtist: albumArtistName(release ?? {}, rec),
 				descriptiveWithheld: true,
 			};
 		}

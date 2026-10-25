@@ -288,6 +288,144 @@ describe('musicbrainz source (stubbed transport)', () => {
 		});
 	const missing = (): Response => new Response('not found', { status: 404 });
 
+	it(
+		'takes album_artist from the release credit, not the recording credit',
+		{ timeout: 15_000 },
+		async () => {
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (input: unknown) => {
+					const url = String(input);
+					await Promise.resolve();
+					if (url.includes('query=')) {
+						return json({
+							recordings: [
+								{
+									id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+									title: 'Frizk Song',
+									'artist-credit': [
+										{
+											name: 'Tanger, Frizk',
+											artist: { id: '33333333-3333-3333-3333-333333333333' },
+										},
+									],
+									length: 180_000,
+									releases: [
+										{
+											id: '22222222-2222-2222-2222-222222222222',
+											title: 'Zzqx Album',
+											status: 'Official',
+											date: '2024-10-27',
+											'release-group': {
+												id: '44444444-4444-4444-4444-444444444444',
+												'primary-type': 'Album',
+											},
+											'artist-credit': [
+												{
+													name: 'Tanger',
+													artist: {
+														id: '33333333-3333-3333-3333-333333333333',
+													},
+												},
+											],
+										},
+									],
+								},
+							],
+						});
+					}
+					return missing();
+				}),
+			);
+			const patch = await musicbrainzSource.lookup({
+				trackId: 't2',
+				title: 'Frizk Song',
+				artist: 'Tanger',
+				album: 'Zzqx Album',
+				isrc: null,
+				durationSec: 180,
+				year: null,
+				needed: ['album', 'albumArtist', 'releaseMbid'],
+			});
+			expect(patch?.albumArtist).toBe('Tanger');
+			expect(patch?.album).toBe('Zzqx Album');
+		},
+	);
+
+	it(
+		'prefers the stored release edition over a higher-scoring same-title one',
+		{ timeout: 15_000 },
+		async () => {
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (input: unknown) => {
+					const url = String(input);
+					await Promise.resolve();
+					if (url.includes('query=')) {
+						return json({
+							recordings: [
+								{
+									id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+									title: 'Womp Womp',
+									'artist-credit': [
+										{
+											name: 'Tanger',
+											artist: { id: '33333333-3333-3333-3333-333333333333' },
+										},
+									],
+									isrcs: ['QZXDA0001'],
+									releases: [
+										{
+											id: '99999999-9999-9999-9999-999999999999',
+											title: 'Zzqx Album Live',
+											status: 'Official',
+											date: '2024-10-27',
+											'release-group-placeholder': undefined,
+										},
+										{
+											id: '22222222-2222-2222-2222-222222222222',
+											title: 'Zzqx Album',
+											status: 'Official',
+											date: '2024-10-27',
+											'artist-credit': [
+												{
+													name: 'Tanger',
+													artist: {
+														id: '33333333-3333-3333-3333-333333333333',
+													},
+												},
+											],
+											'release-group': {
+												id: '44444444-4444-4444-4444-444444444444',
+												'primary-type': 'Album',
+											},
+											media: [{ position: 1 }],
+										},
+									],
+								},
+							],
+						});
+					}
+					return missing();
+				}),
+			);
+			const patch = await musicbrainzSource.lookup({
+				trackId: 't3',
+				title: 'Womp Womp',
+				artist: 'Tanger',
+				album: 'Zzqx Album Live',
+				isrc: 'QZXDA0001',
+				durationSec: 180,
+				year: null,
+				needed: ['album', 'releaseMbid', 'albumArtist'],
+				releaseMbid: '99999999-9999-9999-9999-999999999999',
+			});
+			// The stored edition wins even though the same-title alternative outscores it.
+			expect(patch?.releaseMbid).toBe('99999999-9999-9999-9999-999999999999');
+			expect(patch?.album).toBe('Zzqx Album Live');
+		},
+	);
+
 	it('resolves a stored recording MBID with no search at all', { timeout: 15_000 }, async () => {
 		const calls: string[] = [];
 		vi.stubGlobal(
