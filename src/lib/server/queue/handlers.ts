@@ -1745,15 +1745,23 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 	// alike, so each pass stamps a status the sweep can count. `corrected` is the
 	// one that matters: it means a field the row already had was found to be wrong
 	// and overwritten.
-	const filledKeys = Object.keys(patch);
-	const corrected = filledKeys.filter((k) => {
-		const before = row[k as keyof typeof row];
-		const after = patch[k as keyof typeof patch];
-		return after != null && before != null && String(before) !== String(after);
-	});
-	const status =
-		tried.length === 0 ? 'no-source' : corrected.length > 0 ? 'corrected' : 'verified';
-	await markMetadataStatus(row.id, status);
+	//
+	// Only stamp metadata_refreshed_at when something was actually found.
+	// If MusicBrainz (and all other sources) returned nothing, don't stamp — the
+	// track should be retried later when more data is available in MusicBrainz.
+	let filledKeys: string[] = [];
+	let corrected: string[] = [];
+	if (Object.keys(patch).length > 0) {
+		filledKeys = Object.keys(patch);
+		corrected = filledKeys.filter((k) => {
+			const before = row[k as keyof typeof row];
+			const after = patch[k as keyof typeof patch];
+			return after != null && before != null && String(before) !== String(after);
+		});
+		const status =
+			tried.length === 0 ? 'no-source' : corrected.length > 0 ? 'corrected' : 'verified';
+		await markMetadataStatus(row.id, status);
+	}
 
 	return {
 		trackId: row.id,
