@@ -3,6 +3,9 @@ import { access, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { env } from '$lib/server/env';
 import { logger } from '$lib/server/logger';
 import { getSettings } from '$lib/server/settings';
+import { db } from '$lib/server/db';
+import { tracks } from '$lib/server/db/schema';
+import { eq } from 'drizzle-orm';
 import {
 	adoptDownloadedFile,
 	deleteTrackRow,
@@ -773,6 +776,17 @@ async function runDownload(job: JobRow, ctx: JobContext): Promise<Record<string,
 			trackId: pathOwner.id,
 			filePath: finalPath,
 		};
+	}
+
+	// If this is an upgrade of the same row that owns the path, update the
+	// provider/track_id first so upsertTrack's ON CONFLICT on (provider,
+	// provider_track_id) matches and updates the same row instead of inserting
+	// a twin that collides on tracks_file_path_uq.
+	if (upgradeForTrackId && pathOwner && pathOwner.id === upgradeForTrackId) {
+		await db
+			.update(tracks)
+			.set({ provider: meta.provider, providerTrackId: meta.providerTrackId })
+			.where(eq(tracks.id, upgradeForTrackId));
 	}
 
 	// 10b. Embed the lyrics we just fetched (or found) INTO the file.
