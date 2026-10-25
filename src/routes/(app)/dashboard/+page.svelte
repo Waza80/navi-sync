@@ -765,7 +765,10 @@
 		};
 		if (!res.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
 		return draftFrom(body);
-	}
+		} catch (err) {
+			uploadMsg = { tone: 'error', text: `Inspect failed: ${err instanceof Error ? err.message : 'network error'}` };
+			return null;
+		}
 
 	/**
 	 * Inspect a picked file. A `.zip` is expanded **in the browser** so the
