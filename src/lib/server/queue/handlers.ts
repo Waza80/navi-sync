@@ -1718,7 +1718,11 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 	// ── 3. Retag + relocate ─────────────────────────────────────────────────
 	let retagged = false;
 	let movedTo: string | null = null;
-	if (Object.keys(patch).length > 0 || embedBytes || misplaced) {
+	// A forced pass rewrites tags even when nothing in the row CHANGED: the
+	// file's own tags can still be missing the MusicBrainz ids the row holds,
+	// and Navidrome keys albums on what the FILE carries — patch-only gating
+	// left album links empty across the whole library.
+	if (force || Object.keys(patch).length > 0 || embedBytes || misplaced) {
 		await ctx.report(70, 'rewriting embedded tags');
 		const { ensureFileTags } = await import('$lib/server/library/tagging');
 		let filePath = row.filePath;
