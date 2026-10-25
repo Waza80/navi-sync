@@ -59,6 +59,8 @@ export interface JobDTO {
 	maxAttempts: number;
 	trackId: string | null;
 	createdAt: string;
+	/** When the worker claimed it — for running rows; absent on snapshots built from SSE events (fall back to createdAt). */
+	startedAt?: string | null;
 	finishedAt: string | null;
 }
 

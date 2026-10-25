@@ -82,15 +82,28 @@
 		const wait = 1000 - (Date.now() - lastReloadAt);
 		if (wait <= 0) {
 			lastReloadAt = Date.now();
-			void invalidateAll();
+			runReload();
 			return;
 		}
 		if (reloadTimer) return;
 		reloadTimer = setTimeout(() => {
 			reloadTimer = null;
 			lastReloadAt = Date.now();
-			void invalidateAll();
+			runReload();
 		}, wait);
+	}
+	/**
+	 * One throttled refresh step: the page's server snapshot, plus the open
+	 * filtered tab. Those tabs hold their OWN server-fetched copy, so without
+	 * the second fetch they froze at click time — a running job kept rendering
+	 * as "queued" and rows finished later never appeared until the tab was
+	 * re-clicked. Silent by design (no loading flash): SSE already told us that
+	 * something moved.
+	 */
+	function runReload(): void {
+		void invalidateAll();
+		if (queueFilter !== 'all' && !filteredLoading)
+			void loadQueueFilter(queueFilter, { silent: true });
 	}
 	$effect(() => {
 		live.start(
@@ -297,7 +310,10 @@
 
 	const queueCounts = $derived({
 		all: effectiveCounts.total,
-		active: byStatus['queued'] ?? 0,
+		// queued + running. Counting only `queued` left live running rows off the
+		// Active badge while the list under it DID show them — the badge
+		// disagreed with its own tab, which read as "running is not active".
+		active: (byStatus['queued'] ?? 0) + (byStatus['running'] ?? 0),
 		done: (byStatus['succeeded'] ?? 0) + (byStatus['cancelled'] ?? 0),
 		failed: (byStatus['failed'] ?? 0) + (byStatus['dead'] ?? 0),
 	});
@@ -326,13 +342,16 @@
 	let filteredJobs = $state<JobDTO[] | null>(null);
 	let filteredLoading = $state(false);
 
-	async function loadQueueFilter(filter: typeof queueFilter): Promise<void> {
+	async function loadQueueFilter(
+		filter: typeof queueFilter,
+		opts: { silent?: boolean } = {},
+	): Promise<void> {
 		const status = FILTER_STATUS[filter];
 		if (!status) {
 			filteredJobs = null;
 			return;
 		}
-		filteredLoading = true;
+		if (!opts.silent) filteredLoading = true;
 		try {
 			// 100 rather than 30: these sets are small, and the point of the tab is
 			// to show what there is.
@@ -341,36 +360,83 @@
 			if (!res.ok || !body?.jobs) throw new Error('queue filter read failed');
 			filteredJobs = body.jobs;
 		} catch {
+			// A failed BACKGROUND refresh must not blank a tab that is already
+			// showing rows — keep what we have and let the next event retry.
+			if (opts.silent) return;
 			// Say so rather than showing an empty tab, which reads as "no failures".
 			queueUnavailable = true;
 			filteredJobs = [];
 		} finally {
-			filteredLoading = false;
+			if (!opts.silent) filteredLoading = false;
 		}
 	}
 
+	/**
+	 * Filtered tabs keep their snapshot rows but read status/progress THROUGH
+	 * the live store, so SSE updates are visible in the open tab instead of the
+	 * rows staying frozen at click time (a running job kept rendering as
+	 * "queued", with no bar and a stale chip).
+	 */
 	const visibleJobs = $derived(
 		queueFilter === 'all'
 			? live.recentJobs
-			: (filteredJobs ?? []).filter((j) =>
-					queueFilter === 'active'
-						? j.status === 'queued' || j.status === 'running'
-						: queueFilter === 'done'
-							? j.status === 'succeeded' || j.status === 'cancelled'
-							: j.status === 'failed' || j.status === 'dead',
-				),
+			: (filteredJobs ?? [])
+					.map((j) => live.jobs.get(j.id) ?? j)
+					.filter((j) =>
+							queueFilter === 'active'
+								? j.status === 'queued' || j.status === 'running'
+								: queueFilter === 'done'
+									? j.status === 'succeeded' || j.status === 'cancelled'
+									: j.status === 'failed' || j.status === 'dead',
+					),
 	);
+	/** Rank every status for display: finished, live work, backlog, failures. */
+	const STATUS_RANK: Record<string, number> = {
+		succeeded: 0,
+		cancelled: 0,
+		running: 1,
+		queued: 2,
+		failed: 3,
+		dead: 3,
+	};
+	const timeOf = (v?: string | null): number => {
+		const t = v ? Date.parse(v) : Number.NaN;
+		return Number.isNaN(t) ? 0 : t;
+	};
+	/**
+	 * Deterministic queue order — the fix for "no indexation, it may jump and
+	 * mess up the layout" and "completing jobs show at a random location
+	 * instead of on top". Finished rows lead (newest finish first), running and
+	 * queued stay FIFO (exactly the order the worker drains them), failures
+	 * fall to the bottom; an id tie-break stops two same-second rows from
+	 * flapping between refreshes.
+	 */
+	function compareQueueJobs(a: JobDTO, b: JobDTO): number {
+		const ra = STATUS_RANK[a.status] ?? 9;
+		const rb = STATUS_RANK[b.status] ?? 9;
+		if (ra !== rb) return ra - rb;
+		if (ra === 1 || ra === 2) {
+			const dt = timeOf(a.createdAt) - timeOf(b.createdAt);
+			return dt !== 0 ? dt : a.id.localeCompare(b.id);
+		}
+		const fa = timeOf(a.finishedAt) || timeOf(a.createdAt);
+		const fb = timeOf(b.finishedAt) || timeOf(b.createdAt);
+		if (fb !== fa) return fb - fa;
+		return timeOf(b.createdAt) - timeOf(a.createdAt) || a.id.localeCompare(b.id);
+	}
 	/**
 	 * Unified view: rows bucket by `type × status`, so a 40-song download burst
 	 * renders as one expandable group instead of 40 near-identical rows (the
-	 * per-song spam). Order follows the underlying list — newest first.
+	 * per-song spam). Groups take the position of their FIRST member in the
+	 * sorted order — a completed bucket lands on top and can never teleport to
+	 * a random spot when its members change status.
 	 */
 	type JobGroup = { key: string; type: string; status: string; jobs: JobDTO[] };
 	const jobGroups = $derived.by(() => {
 		// A plain object, not a Map: svelte/prefer-svelte-reactivity — and a
 		// SvelteMap written inside the derivation would be a reactive mutation.
 		const groups: Record<string, JobGroup> = {};
-		for (const job of visibleJobs) {
+		for (const job of [...visibleJobs].sort(compareQueueJobs)) {
 			const key = `${job.type}|${job.status}`;
 			const existing = groups[key];
 			if (existing) existing.jobs.push(job);
@@ -1695,17 +1761,44 @@
 					<summary
 						class="flex cursor-pointer list-none items-center gap-3 px-4 py-3 select-none [&::-webkit-details-marker]:hidden"
 					>
-						<span class="m3-chip {jobStatusTone[group.status] ?? ''} w-fit uppercase"
+						{#if group.jobs.length > 1}
+							<!--
+								Multiplied rows must LOOK expandable: the bare ×N count read as
+								static text, so nothing signalled that the header was a toggle.
+								Chevron only where there is actually something to reveal.
+							-->
+							<svg
+								class="h-4 w-4 shrink-0 text-on-surface-variant transition-transform {isGroupOpen(
+									group,
+								)
+									? 'rotate-90'
+									: ''}"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								aria-hidden="true"
+							>
+								<path d="M9 5l7 7-7 7" />
+							</svg>
+						{/if}
+						<span class="m3-chip {jobStatusTone[group.status] ?? ''} w-fit shrink-0 uppercase"
 							>{group.status}</span
 						>
-						<span class="text-sm font-medium"
+						<span class="min-w-0 flex-1 truncate text-sm font-medium"
 							>{jobTypeLabel[group.type] ?? group.type}</span
 						>
-						<span class="text-xs text-on-surface-variant">×{group.jobs.length}</span>
+						<span class="shrink-0 text-xs text-on-surface-variant">×{group.jobs.length}</span>
 						{#if group.status === 'queued' || group.status === 'running'}
+							<!--
+								Every summary child is shrink-0 except the truncating label:
+								the chip, count and button used to be squeezable, so at narrow
+								widths they crushed into each other instead of overflowing
+								gracefully.
+							-->
 							<button
 								type="button"
-								class="m3-btn m3-btn-text ml-auto text-sm"
+								class="m3-btn m3-btn-text ml-auto shrink-0 text-sm"
 								onclick={(e) => {
 									// Keep the click from also toggling the group closed.
 									e.preventDefault();

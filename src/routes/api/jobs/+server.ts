@@ -76,6 +76,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 			trackId: j.trackId,
 			result: j.result,
 			createdAt: j.createdAt,
+			startedAt: j.startedAt ?? null,
 			finishedAt: j.finishedAt,
 		})),
 	});

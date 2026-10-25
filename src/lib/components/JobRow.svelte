@@ -37,21 +37,28 @@
 			{/if}
 			{#if job.finishedAt}
 				· finished {formatRelativeTime(job.finishedAt)}
+			{:else if job.status === 'running'}
+				· started {formatRelativeTime(job.startedAt ?? job.createdAt)}
 			{:else}
-				· {job.status === 'queued' ? 'queued' : 'started'}
+				· {job.status === 'queued' ? 'queued' : 'seen'}
 				{formatRelativeTime(job.createdAt)}
 			{/if}
 		</p>
 		{#if job.status === 'running' || (job.status === 'queued' && job.progress > 0)}
-			<div
-				class="m3-progress mt-2"
-				role="progressbar"
-				aria-valuenow={job.progress}
-				aria-valuemin="0"
-				aria-valuemax="100"
-				aria-label="Job progress"
-			>
-				<div class="bar" style:width="{job.progress}%"></div>
+			<div class="mt-2 flex items-center gap-2">
+				<div
+					class="m3-progress min-w-0 flex-1"
+					role="progressbar"
+					aria-valuenow={job.progress}
+					aria-valuemin="0"
+					aria-valuemax="100"
+					aria-label={`Job progress: ${job.progress} of 100`}
+				>
+					<div class="bar" style:width="{job.progress}%"></div>
+				</div>
+				<span class="shrink-0 text-xs tabular-nums text-on-surface-variant"
+					>{job.progress} / 100</span
+				>
 			</div>
 		{/if}
 	</div>
