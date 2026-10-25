@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ALL_FIELDS, cleanPatch, neededFieldsFor, patchKeys } from './types';
 import { enrichTrackMetadata, metadataSources } from './index';
-import { cooldownMsForStatus, musicbrainzSource } from './sources/musicbrainz';
+import {
+	cooldownMsForStatus,
+	musicbrainzSource,
+	primeMusicBrainzLookup,
+} from './sources/musicbrainz';
 
 describe('neededFieldsFor', () => {
 	it('reports every gap on a bare row', () => {
@@ -197,6 +201,16 @@ describe('patchKeys', () => {
 });
 
 describe('enrichTrackMetadata', () => {
+	// The two live tests below keep their real providers off the network: the
+	// file path stays real, MusicBrainz answers from the primed in-memory entry,
+	// and every other transport is taken out of the list (restored right after)
+	// so a flaky self-hosted Tidal's DNS timeouts cannot stall the run.
+	const allSources = [...metadataSources];
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		metadataSources.splice(0, metadataSources.length, ...allSources);
+	});
+
 	it('queries sources in a stable order: strict catalog first, artwork last', () => {
 		// Order is only the tie-break — every source is asked, and a value two of
 		// them agree on wins outright. MusicBrainz leads because it is the only
@@ -215,6 +229,16 @@ describe('enrichTrackMetadata', () => {
 	it('consults the file own tags before any external source', { timeout: 30_000 }, async () => {
 		// A real FLAC carries its own album — readFileTags wins and MusicBrainz
 		// is never asked for it.
+		//
+		// The answer is primed from memory so this test waits on the local file
+		// path only — the live transport itself is covered by the stubbed tests
+		// below, and operator policy wants no multi-second waits on repeat runs.
+		primeMusicBrainzLookup({ album: 'Random Access Memories' });
+		metadataSources.splice(1); // MusicBrainz only — no network waits here
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(() => Promise.reject(new Error('network disabled in this test'))),
+		);
 		const result = await enrichTrackMetadata({
 			trackId: 't0',
 			title: 'One More Time',
@@ -233,6 +257,15 @@ describe('enrichTrackMetadata', () => {
 	});
 
 	it('never throws and reports what it tried', { timeout: 30_000 }, async () => {
+		primeMusicBrainzLookup({
+			album: 'Zzqx Album',
+			coverUrl: 'https://cover.example/z.jpg',
+		});
+		metadataSources.splice(1); // MusicBrainz only — no network waits here
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(() => Promise.reject(new Error('network disabled in this test'))),
+		);
 		const result = await enrichTrackMetadata({
 			trackId: 't1',
 			title: 'Zzqx Nonexistent Title 12345',

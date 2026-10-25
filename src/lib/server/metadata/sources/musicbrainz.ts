@@ -803,108 +803,172 @@ function trackOf(
 	return null;
 }
 
+/**
+ * In-memory lookup cache.
+ *
+ * A forced repair re-asks several fields for the same row, and a retry re-runs
+ * the whole chain for an identical query — the answer must not be paid for
+ * twice within a short window. The cache also lets tests prime a known answer
+ * instead of waiting on the live transport (see primeMusicBrainzLookup).
+ */
+const LOOKUP_TTL_MS = 15 * 60_000;
+const LOOKUP_CACHE_MAX = 500;
+const lookupCache = new Map<string, { at: number; patch: MetadataPatch | null }>();
+const primedPatches: Array<MetadataPatch | null> = [];
+
+function lookupCacheKey(query: MetadataQuery): string {
+	return JSON.stringify([
+		query.title,
+		query.artist,
+		query.album ?? null,
+		query.isrc ?? null,
+		query.durationSec ?? null,
+		query.year ?? null,
+		query.recordingMbid ?? null,
+		query.releaseMbid ?? null,
+		query.artistMbid ?? null,
+		query.needed,
+	]);
+}
+
+function clonePatch(patch: MetadataPatch | null): MetadataPatch | null {
+	return patch === null ? null : { ...patch };
+}
+
+/**
+ * Make the next lookup answer from memory instead of the network.
+ *
+ * Replaces any previous prime so tests cannot leak into each other; the queue
+ * holds at most one entry and is consumed by the next lookup call.
+ */
+export function primeMusicBrainzLookup(patch: MetadataPatch | null): void {
+	primedPatches.length = 0;
+	primedPatches.push(patch);
+}
+
+/** Drop every cached answer (tests; after re-indexing related rows). */
+export function clearMusicBrainzLookupCache(): void {
+	lookupCache.clear();
+	primedPatches.length = 0;
+}
+
 export const musicbrainzSource: MetadataSource = {
 	id: 'musicbrainz',
 	displayName: 'MusicBrainz',
 	requiresAuth: false,
 	async lookup(query: MetadataQuery): Promise<MetadataPatch | null> {
-		// A stored MBID beats every search: the row already knows which
-		// MusicBrainz recording this is. One request resolves the recording, its
-		// artist credit, ISRCs and releases — the search chain below exists only
-		// for rows that have no id yet (or whose id lookup failed).
-		if (query.recordingMbid) {
-			const rec = await fetchRecordingByMbid(query.recordingMbid);
-			if (rec) {
-				const preferred = query.releaseMbid
-					? (rec.releases ?? []).find((r) => r.id === query.releaseMbid)
-					: undefined;
-				const chosen = chosenForProven(rec, preferred);
-				if (chosen) return withTrackNumbers(chosen, query);
-			}
+		const primed = primedPatches.shift();
+		if (primed !== undefined) return clonePatch(primed);
+		const key = lookupCacheKey(query);
+		const hit = lookupCache.get(key);
+		if (hit && Date.now() - hit.at < LOOKUP_TTL_MS) return clonePatch(hit.patch);
+		const patch = await resolveLookup(query);
+		lookupCache.set(key, { at: Date.now(), patch });
+		if (lookupCache.size > LOOKUP_CACHE_MAX) {
+			const oldest = lookupCache.keys().next().value;
+			if (oldest !== undefined) lookupCache.delete(oldest);
 		}
-		// A stored release id: its own track list already names this recording's
-		// position — no second request for track numbers — and the artist credit
-		// comes from the recording itself (one extra request, only on success).
-		if (query.releaseMbid) {
-			const release = await fetchReleaseByMbid(query.releaseMbid);
-			const track = release ? trackOf(release, query.title) : null;
-			if (release && track) {
-				const rec =
-					(await fetchRecordingByMbid(track.recordingId)) ??
-					({
-						id: track.recordingId,
-						title: track.recordingTitle,
-						'artist-credit': release['artist-credit'],
-						releases: [release],
-					} satisfies MbRecording);
-				const chosen = chosenForProven(rec, release);
-				if (chosen) {
-					const patch = await toPatch(chosen, query.needed);
-					if (query.needed.includes('trackNumber') && track.position != null)
-						patch.trackNumber = track.position;
-					if (query.needed.includes('discNumber') && track.disc != null)
-						patch.discNumber = track.disc;
-					if (query.needed.includes('releaseTrackMbid') && track.trackId)
-						patch.releaseTrackMbid = track.trackId;
-					return patch;
-				}
-			}
-		}
-		// ISRC first — authoritative, no fuzzy matching required.
-		if (query.isrc) {
-			const chosen = choose(await search(`isrc:${query.isrc}`), query);
-			if (chosen) return withTrackNumbers(chosen, query);
-		}
-		let chosen = choose(
-			await search(`recording:"${query.title}" AND artist:"${query.artist}"`),
-			query,
-		);
-		if (!chosen) {
-			// Widened candidates for a mistyped title, artist still constraining:
-			// norm()-exact acceptance below keeps the extra hits harmless.
-			const fuzzy = fuzzyTitleQuery(query.title);
-			if (fuzzy)
-				chosen = choose(await search(`${fuzzy} AND artist:"${query.artist}"`), query);
-		}
-		if (!chosen) {
-			// Retry on title alone.
-			//
-			// A collaboration's artist field is the merged credit list — 'Ptite
-			// Soeur, neophron, FEMTOGO, reivilose, prxpvne, rosaliedu38' — and
-			// MusicBrainz will not match an artist query against a comma-separated
-			// list of six names, so the FIRST search returns nothing and every
-			// fallback behind it is unreachable. `choose` still applies every guard:
-			// a strict match needs title+artist+duration, and the artwork-only path
-			// requires an unambiguous exact title, and yields a cover and nothing else.
-			chosen = choose(await search(`recording:"${query.title}"`), query);
-		}
-		if (!chosen && query.album) {
-			// Retry with the album constraint: when the artist name is corrupted,
-			// searching by title+album can find the recording even when it's not in
-			// the top 25 title-only results. MusicBrainz knows the release, so
-			// matching by release title is unambiguous for one-track-per-release cases.
-			chosen = choose(
-				await search(`recording:"${query.title}" AND release:"${query.album}"`),
-				query,
-			);
-		}
-		if (!chosen) {
-			// Last widened rung, no artist constraint — for rows whose artist string
-			// is ALSO wrong. Same guard class as the title-only rung above: one
-			// norm()-exact unambiguous title, or nothing.
-			const fuzzy = fuzzyTitleQuery(query.title);
-			if (fuzzy) chosen = choose(await search(fuzzy), query);
-		}
-		if (!chosen) {
-			log.debug('musicbrainz: no canonical release matched', {
-				title: query.title,
-				artist: query.artist,
-			});
-			return null;
-		}
-		return withTrackNumbers(chosen, query);
+		return patch;
 	},
 };
+
+/** The network-backed resolution the wrapper above caches. */
+async function resolveLookup(query: MetadataQuery): Promise<MetadataPatch | null> {
+	// A stored MBID beats every search: the row already knows which
+	// MusicBrainz recording this is. One request resolves the recording, its
+	// artist credit, ISRCs and releases — the search chain below exists only
+	// for rows that have no id yet (or whose id lookup failed).
+	if (query.recordingMbid) {
+		const rec = await fetchRecordingByMbid(query.recordingMbid);
+		if (rec) {
+			const preferred = query.releaseMbid
+				? (rec.releases ?? []).find((r) => r.id === query.releaseMbid)
+				: undefined;
+			const chosen = chosenForProven(rec, preferred);
+			if (chosen) return withTrackNumbers(chosen, query);
+		}
+	}
+	// A stored release id: its own track list already names this recording's
+	// position — no second request for track numbers — and the artist credit
+	// comes from the recording itself (one extra request, only on success).
+	if (query.releaseMbid) {
+		const release = await fetchReleaseByMbid(query.releaseMbid);
+		const track = release ? trackOf(release, query.title) : null;
+		if (release && track) {
+			const rec =
+				(await fetchRecordingByMbid(track.recordingId)) ??
+				({
+					id: track.recordingId,
+					title: track.recordingTitle,
+					'artist-credit': release['artist-credit'],
+					releases: [release],
+				} satisfies MbRecording);
+			const chosen = chosenForProven(rec, release);
+			if (chosen) {
+				const patch = await toPatch(chosen, query.needed);
+				if (query.needed.includes('trackNumber') && track.position != null)
+					patch.trackNumber = track.position;
+				if (query.needed.includes('discNumber') && track.disc != null)
+					patch.discNumber = track.disc;
+				if (query.needed.includes('releaseTrackMbid') && track.trackId)
+					patch.releaseTrackMbid = track.trackId;
+				return patch;
+			}
+		}
+	}
+	// ISRC first — authoritative, no fuzzy matching required.
+	if (query.isrc) {
+		const chosen = choose(await search(`isrc:${query.isrc}`), query);
+		if (chosen) return withTrackNumbers(chosen, query);
+	}
+	let chosen = choose(
+		await search(`recording:"${query.title}" AND artist:"${query.artist}"`),
+		query,
+	);
+	if (!chosen) {
+		// Widened candidates for a mistyped title, artist still constraining:
+		// norm()-exact acceptance below keeps the extra hits harmless.
+		const fuzzy = fuzzyTitleQuery(query.title);
+		if (fuzzy) chosen = choose(await search(`${fuzzy} AND artist:"${query.artist}"`), query);
+	}
+	if (!chosen) {
+		// Retry on title alone.
+		//
+		// A collaboration's artist field is the merged credit list — 'Ptite
+		// Soeur, neophron, FEMTOGO, reivilose, prxpvne, rosaliedu38' — and
+		// MusicBrainz will not match an artist query against a comma-separated
+		// list of six names, so the FIRST search returns nothing and every
+		// fallback behind it is unreachable. `choose` still applies every guard:
+		// a strict match needs title+artist+duration, and the artwork-only path
+		// requires an unambiguous exact title, and yields a cover and nothing else.
+		chosen = choose(await search(`recording:"${query.title}"`), query);
+	}
+	if (!chosen && query.album) {
+		// Retry with the album constraint: when the artist name is corrupted,
+		// searching by title+album can find the recording even when it's not in
+		// the top 25 title-only results. MusicBrainz knows the release, so
+		// matching by release title is unambiguous for one-track-per-release cases.
+		chosen = choose(
+			await search(`recording:"${query.title}" AND release:"${query.album}"`),
+			query,
+		);
+	}
+	if (!chosen) {
+		// Last widened rung, no artist constraint — for rows whose artist string
+		// is ALSO wrong. Same guard class as the title-only rung above: one
+		// norm()-exact unambiguous title, or nothing.
+		const fuzzy = fuzzyTitleQuery(query.title);
+		if (fuzzy) chosen = choose(await search(fuzzy), query);
+	}
+	if (!chosen) {
+		log.debug('musicbrainz: no canonical release matched', {
+			title: query.title,
+			artist: query.artist,
+		});
+		return null;
+	}
+	return withTrackNumbers(chosen, query);
+}
 
 /**
  * toPatch plus the release's real track/disc positions.
