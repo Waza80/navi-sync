@@ -414,4 +414,131 @@ describe('musicbrainz source (stubbed transport)', () => {
 			expect(patch?.year).toBeUndefined();
 		},
 	);
+
+	it(
+		'pauses once on a burst-shaped 429 and still resolves the search',
+		{ timeout: 15_000 },
+		async () => {
+			let searchCalls = 0;
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (input: unknown) => {
+					const url = String(input);
+					await Promise.resolve();
+					if (url.includes('query=')) {
+						searchCalls++;
+						// First attempt is shed by the server, second succeeds — the
+						// burst pattern MusicBrainz produces even at 1 req/sec.
+						if (searchCalls === 1) return new Response('busy', { status: 429 });
+						return json({
+							recordings: [
+								{
+									id: '99999999-9999-9999-9999-999999999999',
+									title: 'Zzqx Throttled Song',
+									length: 180_000,
+									'artist-credit': [
+										{
+											name: 'Zzqx Artist',
+											artist: { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' },
+										},
+									],
+									releases: [
+										{
+											id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+											title: 'Zzqx Album',
+											status: 'Official',
+										},
+									],
+								},
+							],
+						});
+					}
+					return missing();
+				}),
+			);
+			const patch = await musicbrainzSource.lookup({
+				trackId: 't3',
+				title: 'Zzqx Throttled Song',
+				artist: 'Zzqx Artist',
+				album: null,
+				isrc: null,
+				durationSec: 180,
+				year: null,
+				needed: ['artist', 'artistMbid', 'recordingMbid'],
+			});
+			// Exactly two attempts: one shed, one after the status-shaped pause.
+			expect(searchCalls).toBe(2);
+			expect(patch).toMatchObject({
+				artist: 'Zzqx Artist',
+				artistMbid: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+				recordingMbid: '99999999-9999-9999-9999-999999999999',
+			});
+		},
+	);
+
+	it(
+		'finds a mistyped title through the widened candidate rungs',
+		{ timeout: 15_000 },
+		async () => {
+			const queries: string[] = [];
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (input: unknown) => {
+					const url = decodeURIComponent(String(input));
+					await Promise.resolve();
+					const m = url.match(/query=([^&]+)/);
+					const q = m?.[1] ?? '';
+					queries.push(q);
+					// Exact quoted phrases match neither the stored typo nor MB's copy —
+					// return nothing, exactly like the live server does for them.
+					if (q.includes('recording:"')) return missing();
+					if (q.startsWith('recording:')) {
+						// The widened rung finds the recording whose title MB spells
+						// correctly; norm-equality downstream accepts it.
+						return json({
+							recordings: [
+								{
+									id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+									title: 'Il y a un ange',
+									length: 244_000,
+									'artist-credit': [
+										{
+											name: 'Tanger',
+											artist: { id: 'dddddddd-dddd-dddd-dddd-dddddddddddd' },
+										},
+									],
+									releases: [
+										{
+											id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+											title: 'Le Detroit',
+											status: 'Official',
+										},
+									],
+								},
+							],
+						});
+					}
+					return missing();
+				}),
+			);
+			const patch = await musicbrainzSource.lookup({
+				trackId: 't4',
+				title: 'Il ya un Ange', // stored typo — MB has "Il y a un ange"
+				artist: 'Tanger',
+				album: null,
+				isrc: null,
+				durationSec: 244,
+				year: null,
+				needed: ['artist', 'artistMbid', 'recordingMbid'],
+			});
+			// Exact rungs asked and got nothing; the widened rung found it.
+			expect(queries.some((q) => q.includes('recording:"Il ya un Ange"'))).toBe(true);
+			expect(queries).toContain('recording:ange AND artist:"Tanger"');
+			expect(patch).toMatchObject({
+				artist: 'Tanger',
+				artistMbid: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+				recordingMbid: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+			});
+		},
+	);
 });

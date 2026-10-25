@@ -1696,10 +1696,29 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 		embedBytes = await readCoverBytes(row.coverPath, { libraryRoot: env.MUSIC_LIBRARY_DIR });
 	}
 
+	// A row can be metadata-perfect and still sit in a folder an older naming
+	// scheme created — case fixes ("Prefer Not To Say"), stripped characters
+	// (`$-Crew` → `S-Crew`), a deluxe variant, a wrong track number. Relocation
+	// therefore must NOT live inside the "the patch changed something" gate:
+	// the file follows the metadata it already has, even when that metadata
+	// verified without edits. Misplacement alone opens the block; the inner
+	// move still refuses to overwrite an existing destination.
+	const expectedRel =
+		artist && album
+			? `${trackBaseRelativePath({
+					title: row.title,
+					artist,
+					album,
+					trackNumber,
+				})}.${row.filePath.split('.').pop()}`
+			: null;
+	const misplaced =
+		expectedRel !== null && join(env.MUSIC_LIBRARY_DIR, expectedRel) !== row.filePath;
+
 	// ── 3. Retag + relocate ─────────────────────────────────────────────────
 	let retagged = false;
 	let movedTo: string | null = null;
-	if (Object.keys(patch).length > 0 || embedBytes) {
+	if (Object.keys(patch).length > 0 || embedBytes || misplaced) {
 		await ctx.report(70, 'rewriting embedded tags');
 		const { ensureFileTags } = await import('$lib/server/library/tagging');
 		let filePath = row.filePath;

@@ -109,6 +109,29 @@ async function rawFetch(url: string, intervalMs: number): Promise<Response | nul
 }
 
 /**
+ * One pause-and-retry inside the SAME request, for burst-shaped failures only.
+ *
+ * MusicBrainz answers `503 busy` to bursts even at the documented polite rate,
+ * and during a full-library reindex a single-shot 503 silently dropped most of a
+ * job's chain while the job itself still "succeeded" (measured: a forced pass
+ * over 170 rows filled MusicBrainz ids for only 6). The delay is the same
+ * status-shaped cooldown the mirror parking uses (429 → 2s, 5xx → 5s); if the
+ * second attempt fails too, the caller sees the failure exactly as before.
+ */
+const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
+
+async function fetchWithBurstRetry(url: string, intervalMs: number): Promise<Response | null> {
+	let res = await rawFetch(url, intervalMs);
+	if (res === null || (res && !res.ok && RETRYABLE_STATUSES.has(res.status))) {
+		await new Promise((resolve) =>
+			setTimeout(resolve, res === null ? 2_000 : cooldownMsForStatus(res.status)),
+		);
+		res = await rawFetch(url, intervalMs);
+	}
+	return res;
+}
+
+/**
  * One `/ws/2` request, mirror first with a transparent fallback.
  *
  * `pathAndQuery` starts with `/` and is identical on both hosts. A 404 is a
@@ -117,7 +140,10 @@ async function rawFetch(url: string, intervalMs: number): Promise<Response | nul
  */
 async function mbFetch(pathAndQuery: string): Promise<Response | null> {
 	if (Date.now() >= mirrorBlockedUntil) {
-		const primary = await rawFetch(`${MB_PRIMARY}${pathAndQuery}`, INTERVAL_PRIMARY_MS);
+		const primary = await fetchWithBurstRetry(
+			`${MB_PRIMARY}${pathAndQuery}`,
+			INTERVAL_PRIMARY_MS,
+		);
 		if (primary?.ok) return primary;
 		if (primary && primary.status === 404) {
 			// A 404 from the mirror is the same 404 the official host would give.
@@ -146,7 +172,7 @@ async function mbFetch(pathAndQuery: string): Promise<Response | null> {
 		}
 	}
 	if (!MB_HAS_FALLBACK) return null;
-	return rawFetch(`${MB_OFFICIAL}${pathAndQuery}`, INTERVAL_OFFICIAL_MS);
+	return fetchWithBurstRetry(`${MB_OFFICIAL}${pathAndQuery}`, INTERVAL_OFFICIAL_MS);
 }
 
 /** Cover Art Archive fetch, on the official polite cadence. */
@@ -571,6 +597,31 @@ function choose(recs: MbRecording[], query: MetadataQuery): Chosen | null {
 	return null;
 }
 
+/**
+ * Candidate-widening tokens for a title the exact phrase could not find.
+ *
+ * Stored titles drift from MusicBrainz's copy ("Il ya un Ange" vs "Il y a
+ * un ange"), and a quoted Lucene phrase matches NEITHER the typo nor the
+ * correction — so a recording that exists came back as "no source". This
+ * returns only the longest words of the stored title, ANDed as field terms.
+ * `search` may now return a wider set, but `choose` still requires norm()-exact
+ * title equality plus artist/duration where it demands them: the candidate set
+ * widens, the acceptance bar does not.
+ */
+function fuzzyTitleQuery(title: string): string | null {
+	const tokens = [
+		...new Set(
+			String(title ?? '')
+				.split(/\s+/)
+				.map((w) => norm(w))
+				.filter((w) => w.length >= 3),
+		),
+	]
+		.sort((a, b) => b.length - a.length)
+		.slice(0, 3);
+	return tokens.length > 0 ? tokens.map((t) => `recording:${t}`).join(' AND ') : null;
+}
+
 async function search(query: string): Promise<MbRecording[]> {
 	const res = await mbFetch(
 		`/recording?query=${encodeURIComponent(query)}&fmt=json&limit=25&inc=releases+release-groups+artist-credits+isrcs`,
@@ -785,6 +836,13 @@ export const musicbrainzSource: MetadataSource = {
 			query,
 		);
 		if (!chosen) {
+			// Widened candidates for a mistyped title, artist still constraining:
+			// norm()-exact acceptance below keeps the extra hits harmless.
+			const fuzzy = fuzzyTitleQuery(query.title);
+			if (fuzzy)
+				chosen = choose(await search(`${fuzzy} AND artist:"${query.artist}"`), query);
+		}
+		if (!chosen) {
 			// Retry on title alone.
 			//
 			// A collaboration's artist field is the merged credit list — 'Ptite
@@ -805,6 +863,13 @@ export const musicbrainzSource: MetadataSource = {
 				await search(`recording:"${query.title}" AND release:"${query.album}"`),
 				query,
 			);
+		}
+		if (!chosen) {
+			// Last widened rung, no artist constraint — for rows whose artist string
+			// is ALSO wrong. Same guard class as the title-only rung above: one
+			// norm()-exact unambiguous title, or nothing.
+			const fuzzy = fuzzyTitleQuery(query.title);
+			if (fuzzy) chosen = choose(await search(fuzzy), query);
 		}
 		if (!chosen) {
 			log.debug('musicbrainz: no canonical release matched', {
