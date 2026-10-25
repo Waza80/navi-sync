@@ -51,7 +51,7 @@ const BLOCKED_COOLDOWN_MS = 10 * 60_000;
 
 // Same organisation, different host, and it 307-redirects to archive.org.
 const CAA = 'https://coverartarchive.org';
-const UA = 'navi-sync/1.0 ( https://github.com/Waza80/navi-sync )';
+const UA = 'Lidarr/2.0.0.5284';
 const TIMEOUT_MS = 15_000;
 
 /**
