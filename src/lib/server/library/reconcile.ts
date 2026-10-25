@@ -142,7 +142,7 @@ export interface DeleteDecision {
 	file: LibraryFile;
 	/** The file that takes its place in the library. */
 	survivor: LibraryFile;
-	reason: 'duplicate_of_sibling' | 'repoint_to_better';
+	reason: 'duplicate_of_sibling' | 'repoint_to_better' | 'duplicate_recording';
 	/** The row that pointed at the deleted file, if any. */
 	rowId: string | null;
 }
@@ -279,14 +279,82 @@ export function planLibraryReconcile(
 		const leftovers = members.filter((m) => !suffixed.includes(m) && !unsuffixed.includes(m));
 
 		if (suffixed.length === 0) {
-			// No duplicate marker among them: keep everything, flag for a human.
+			// No "(n)" marker, but the same recording can still be in the library
+			// twice: a re-download into a deluxe folder, a second track number of the
+			// same album, a better encode fetched later. Sub-group by the doc's rule —
+			// same artist + title + album is ONE recording — and resolve by quality.
+			// Files with no row carry no artist/album to compare, so each is its own
+			// bucket: an unindexed file is never guessed into a delete.
+			const buckets = new Map<string, Candidate[]>();
 			for (const m of members) {
-				keep.add(m.file.relPath);
-				if (m.suffixed) {
+				const row = rowByRel.get(m.file.relPath);
+				const key = row
+					? `${normalizeKey(row.artist)}|${normalizeKey(row.album)}|${normalizeKey(row.title)}`
+					: `unindexed:${m.file.relPath}`;
+				buckets.set(key, [...(buckets.get(key) ?? []), m]);
+			}
+			for (const bucket of buckets.values()) {
+				if (bucket.length === 1) {
+					const only = bucket[0];
+					keep.add(only.file.relPath);
+					if (only.suffixed) {
+						skipped.push({
+							file: only.file,
+							reason: 'suffixed but has no unsuffixed sibling in this folder — may be a real title',
+						});
+					}
+					continue;
+				}
+				const ranked = [...bucket].sort((a, b) => {
+					if (isStrictlyBetter(b.file, a.file)) return 1;
+					if (isStrictlyBetter(a.file, b.file)) return -1;
+					// Deterministic: lowest path wins an exact quality tie.
+					if (a.file.relPath < b.file.relPath) return -1;
+					if (a.file.relPath > b.file.relPath) return 1;
+					return 0;
+				});
+				const winner = ranked[0];
+				const survivorWillBeIndexed = winner.indexed || adopt.has(winner.file.relPath);
+				if (!survivorWillBeIndexed) {
+					for (const m of bucket) keep.add(m.file.relPath);
 					skipped.push({
-						file: m.file,
-						reason: 'suffixed but has no unsuffixed sibling in this folder — may be a real title',
+						file: winner.file,
+						reason: 'kept: same-recording dedupe needs an indexed survivor, and none of these files has a row yet',
 					});
+					continue;
+				}
+				for (const m of bucket) {
+					if (m.file.relPath === winner.file.relPath) {
+						keep.add(m.file.relPath);
+						continue;
+					}
+					toDelete.push({
+						file: m.file,
+						survivor: winner.file,
+						reason: 'duplicate_recording',
+						rowId: m.rowId,
+					});
+					if (m.rowId) {
+						repoint.push({
+							rowId: m.rowId,
+							fromRelPath: m.file.relPath,
+							toRelPath: winner.file.relPath,
+						});
+					}
+				}
+				// The winner is an orphan this run adopts: hand it the family's row
+				// rather than leaving a rowless file beside a row for the same song.
+				if (!winner.rowId && !winner.indexed) {
+					const rowHolder = bucket.find(
+						(m) => m.rowId !== null && m.file.relPath !== winner.file.relPath,
+					);
+					if (rowHolder?.rowId) {
+						repoint.push({
+							rowId: rowHolder.rowId,
+							fromRelPath: rowHolder.file.relPath,
+							toRelPath: winner.file.relPath,
+						});
+					}
 				}
 			}
 			continue;

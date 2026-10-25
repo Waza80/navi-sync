@@ -383,11 +383,11 @@
 			: (filteredJobs ?? [])
 					.map((j) => live.jobs.get(j.id) ?? j)
 					.filter((j) =>
-							queueFilter === 'active'
-								? j.status === 'queued' || j.status === 'running'
-								: queueFilter === 'done'
-									? j.status === 'succeeded' || j.status === 'cancelled'
-									: j.status === 'failed' || j.status === 'dead',
+						queueFilter === 'active'
+							? j.status === 'queued' || j.status === 'running'
+							: queueFilter === 'done'
+								? j.status === 'succeeded' || j.status === 'cancelled'
+								: j.status === 'failed' || j.status === 'dead',
 					),
 	);
 	/** Rank every status for display: finished, live work, backlog, failures. */
@@ -866,7 +866,10 @@
 			);
 			await invalidateAll();
 		} catch (err) {
-			toast('error', `Download failed: ${err instanceof Error ? err.message : 'network error'}`);
+			toast(
+				'error',
+				`Download failed: ${err instanceof Error ? err.message : 'network error'}`,
+			);
 		} finally {
 			artistBusy.delete(key);
 		}
@@ -890,7 +893,10 @@
 				toast('error', body.error?.message ?? `HTTP ${res.status}`);
 			}
 		} catch (err) {
-			toast('error', `Download failed: ${err instanceof Error ? err.message : 'network error'}`);
+			toast(
+				'error',
+				`Download failed: ${err instanceof Error ? err.message : 'network error'}`,
+			);
 		} finally {
 			albumBusy.delete(key);
 		}
@@ -975,7 +981,10 @@
 			if (!res.ok) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
 			return draftFrom(body);
 		} catch (err) {
-			uploadMsg = { tone: 'error', text: `Inspect failed: ${err instanceof Error ? err.message : 'network error'}` };
+			uploadMsg = {
+				tone: 'error',
+				text: `Inspect failed: ${err instanceof Error ? err.message : 'network error'}`,
+			};
 			return null;
 		}
 	}
@@ -1757,7 +1766,17 @@
 			data-testid="jobs-scroll"
 		>
 			{#each jobGroups as group (group.key)}
-				<details class="m3-card overflow-hidden p-0" open={isGroupOpen(group)} ontoggle={() => toggleGroup(group, !isGroupOpen(group))}>
+				<!--
+					flex-shrink on the default would COMPRESS each card to make the
+					fixed-height container fit: an expanded group squeezed its siblings
+					into slivers instead of the container scrolling. Cards keep their
+					natural height; the wrapper scrolls.
+				-->
+				<details
+					class="m3-card shrink-0 overflow-hidden p-0"
+					open={isGroupOpen(group)}
+					ontoggle={() => toggleGroup(group, !isGroupOpen(group))}
+				>
 					<summary
 						class="flex cursor-pointer list-none items-center gap-3 px-4 py-3 select-none [&::-webkit-details-marker]:hidden"
 					>
@@ -1782,13 +1801,43 @@
 								<path d="M9 5l7 7-7 7" />
 							</svg>
 						{/if}
-						<span class="m3-chip {jobStatusTone[group.status] ?? ''} w-fit shrink-0 uppercase"
-							>{group.status}</span
+						<span
+							class="m3-chip {jobStatusTone[group.status] ??
+								''} w-fit shrink-0 uppercase">{group.status}</span
 						>
 						<span class="min-w-0 flex-1 truncate text-sm font-medium"
 							>{jobTypeLabel[group.type] ?? group.type}</span
 						>
-						<span class="shrink-0 text-xs text-on-surface-variant">×{group.jobs.length}</span>
+						<span class="shrink-0 text-xs text-on-surface-variant"
+							>×{group.jobs.length}</span
+						>
+						{#if group.status === 'running'}
+							<!--
+								Multiple running jobs inside one collapsed group gave no
+								progress signal at all; the group header carries the average
+								of its running jobs so a busy queue reads at a glance.
+							-->
+							{@const runningJobs = group.jobs.filter((j) => j.status === 'running')}
+							{@const avg = runningJobs.length
+								? Math.round(
+										runningJobs.reduce((sum, j) => sum + (j.progress || 0), 0) /
+											runningJobs.length,
+									)
+								: 0}
+							<span
+								class="m3-progress w-28 shrink-0"
+								role="progressbar"
+								aria-valuemin="0"
+								aria-valuemax="100"
+								aria-valuenow={avg}
+								aria-label={`Group progress: ${avg} of 100`}
+							>
+								<div class="bar" style:width="{avg}%"></div>
+							</span>
+							<span class="shrink-0 text-xs text-on-surface-variant tabular-nums"
+								>{runningJobs.length} running · {avg}%</span
+							>
+						{/if}
 						{#if group.status === 'queued' || group.status === 'running'}
 							<!--
 								Every summary child is shrink-0 except the truncating label:
@@ -1806,7 +1855,9 @@
 									void cancelGroup(group);
 								}}
 							>
-								Cancel {group.jobs.length}{group.jobs.length === 1 ? ' job' : ' jobs'}
+								Cancel {group.jobs.length}{group.jobs.length === 1
+									? ' job'
+									: ' jobs'}
 							</button>
 						{/if}
 					</summary>

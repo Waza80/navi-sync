@@ -593,3 +593,96 @@ describe('planLibraryReconcile invariants', () => {
 		}
 	});
 });
+
+describe('same recording without a suffix marker (redl simulation-first)', () => {
+	// Re-downloads carry no "(2)": a deluxe folder, a second track number, a
+	// better encode fetched later. Same artist+title+album = ONE recording.
+	it('cross-folder: deletes the worse encode and repoints its row', () => {
+		const files = [
+			f('Lomepal/FLIP/06 - Yeux disent.flac', { sizeBytes: 28_366_648 }),
+			f('Lomepal/FLIP - Deluxe/06 - Yeux disent.flac', { sizeBytes: 34_361_553 }),
+		];
+		const rows = [
+			r('Lomepal/FLIP/06 - Yeux disent.flac', { artist: 'Lomepal', album: 'FLIP' }),
+			r('Lomepal/FLIP - Deluxe/06 - Yeux disent.flac', { artist: 'Lomepal', album: 'FLIP' }),
+		];
+		const plan = planLibraryReconcile(files, rows, { crossFolderMatching: true });
+		expect(plan.delete).toHaveLength(1);
+		expect(plan.delete[0].file.relPath).toBe('Lomepal/FLIP/06 - Yeux disent.flac');
+		expect(plan.delete[0].survivor.relPath).toBe('Lomepal/FLIP - Deluxe/06 - Yeux disent.flac');
+		expect(plan.delete[0].reason).toBe('duplicate_recording');
+		expect(plan.repoint).toContainEqual({
+			rowId: 'row-Lomepal/FLIP/06 - Yeux disent.flac',
+			fromRelPath: 'Lomepal/FLIP/06 - Yeux disent.flac',
+			toRelPath: 'Lomepal/FLIP - Deluxe/06 - Yeux disent.flac',
+		});
+	});
+
+	it('same folder, different track numbers, same album: keeps the bigger file', () => {
+		const files = [
+			f('Radiohead/Pablo Honey/02 - Creep.flac', { sizeBytes: 46_832_734 }),
+			f('Radiohead/Pablo Honey/06 - Creep.flac', { sizeBytes: 23_528_204 }),
+		];
+		const rows = [
+			r('Radiohead/Pablo Honey/02 - Creep.flac', {
+				artist: 'Radiohead',
+				album: 'Pablo Honey',
+			}),
+			r('Radiohead/Pablo Honey/06 - Creep.flac', {
+				artist: 'Radiohead',
+				album: 'Pablo Honey',
+			}),
+		];
+		const plan = planLibraryReconcile(files, rows, { crossFolderMatching: true });
+		expect(plan.delete.map((d) => d.file.relPath)).toEqual([
+			'Radiohead/Pablo Honey/06 - Creep.flac',
+		]);
+		expect(plan.keep.map((x) => x.relPath)).toContain('Radiohead/Pablo Honey/02 - Creep.flac');
+	});
+
+	it('different albums are two real recordings — kept, never deleted', () => {
+		const files = [
+			f('Lomepal/Amina/09 - Mômes.flac', { sizeBytes: 5_000_000 }),
+			f('Lomepal/Jeannine/02 - Mômes.flac', { sizeBytes: 4_000_000 }),
+			f('Lomepal/3 jours à Motorbass/09 - Mômes.flac', { sizeBytes: 6_000_000 }),
+		];
+		const rows = [
+			r('Lomepal/Amina/09 - Mômes.flac', { artist: 'Lomepal', album: 'Amina' }),
+			r('Lomepal/Jeannine/02 - Mômes.flac', { artist: 'Lomepal', album: 'Jeannine' }),
+			r('Lomepal/3 jours à Motorbass/09 - Mômes.flac', {
+				artist: 'Lomepal',
+				album: '3 jours à Motorbass',
+			}),
+		];
+		const plan = planLibraryReconcile(files, rows, { crossFolderMatching: true });
+		expect(plan.delete).toHaveLength(0);
+		expect(plan.keep).toHaveLength(3);
+	});
+
+	it('unindexed files are never guessed into a delete', () => {
+		const files = [
+			f('Someone/Album/01 - Ghost.flac', { sizeBytes: 9_000_000 }),
+			f('Someone/Album/11 - Ghost.flac', { sizeBytes: 2_000_000 }),
+		];
+		const plan = planLibraryReconcile(files, [], { crossFolderMatching: true });
+		expect(plan.delete).toHaveLength(0);
+		expect(plan.keep).toHaveLength(2);
+	});
+
+	it('equal quality resolves deterministically (lowest relPath wins)', () => {
+		const files = [
+			f('Zed/Album/05 - Twin.flac', { sizeBytes: 10_000_000 }),
+			f('Zed/Album/12 - Twin.flac', { sizeBytes: 10_000_000 }),
+		];
+		const rows = [
+			r('Zed/Album/05 - Twin.flac', { artist: 'Zed', album: 'Album' }),
+			r('Zed/Album/12 - Twin.flac', { artist: 'Zed', album: 'Album' }),
+		];
+		const a = planLibraryReconcile(files, rows, { crossFolderMatching: true });
+		expect(a.delete.map((d) => d.file.relPath)).toEqual(['Zed/Album/12 - Twin.flac']);
+		const b = planLibraryReconcile([...files].reverse(), [...rows].reverse(), {
+			crossFolderMatching: true,
+		});
+		expect(b.delete.map((d) => d.file.relPath)).toEqual(['Zed/Album/12 - Twin.flac']);
+	});
+});

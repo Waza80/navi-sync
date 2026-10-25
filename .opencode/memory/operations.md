@@ -97,6 +97,16 @@ host has `python3`, not `sqlite3` CLI). Verification invariant after any bulk
 operation: `select count(*), sum(missing) from media_file` must equal the
 production `tracks` filed count with `missing = 0`.
 
+## Working rules
+
+- **Commit and push are the same thing — one means both.** A commit that is
+  not pushed is not done; ship them together unless explicitly told to hold.
+- **Simulate before any real change.** Red fixture tests first, then the
+  implementation; for library operations the tool's own dry-run (e.g.
+  `scripts/reconcile-library.ts` without `--apply`, probe-only reindex calls)
+  must print the exact expected effect BEFORE the apply run. The first
+  execution of a destructive rule never touches the production library.
+
 ## Known unreconciled items
 
 - Duplicate library files from suffixed moves (`song (2).flac`, `(3).flac`) affected

@@ -1056,11 +1056,17 @@ export async function applyMetadataPatch(
 	},
 ): Promise<boolean> {
 	const set: Partial<typeof tracks.$inferInsert> = { updatedAt: new Date() };
-	if (patch.album != null && patch.album.trim() !== '') set.album = patch.album;
+	//
+	// NFC at the single write point: file tags hand back NFD (Vorbis/ID3 like
+	// decomposed accents), sources hand back whatever their JSON held, and two
+	// spellings of 'ÉbĒm' then split the same album in Navidrome. One form in
+	// the database means one form everywhere downstream.
+	const nfc = (v: string): string => v.normalize('NFC');
+	if (patch.album != null && patch.album.trim() !== '') set.album = nfc(patch.album.trim());
 	if (patch.albumArtist != null && patch.albumArtist.trim() !== '')
-		set.albumArtist = patch.albumArtist;
-	if (patch.artist != null && patch.artist.trim() !== '') set.artist = patch.artist;
-	if (patch.genre != null && patch.genre.trim() !== '') set.genre = patch.genre;
+		set.albumArtist = nfc(patch.albumArtist.trim());
+	if (patch.artist != null && patch.artist.trim() !== '') set.artist = nfc(patch.artist.trim());
+	if (patch.genre != null && patch.genre.trim() !== '') set.genre = nfc(patch.genre.trim());
 	if (patch.year != null && Number.isFinite(patch.year)) set.releaseYear = patch.year;
 	if (patch.trackNumber != null) set.trackNumber = patch.trackNumber;
 	if (patch.discNumber != null) set.discNumber = patch.discNumber;
