@@ -1751,7 +1751,7 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 	// track should be retried later when more data is available in MusicBrainz.
 	let filledKeys: string[] = [];
 	let corrected: string[] = [];
-	let status: 'corrected' | 'verified' | 'no-source' | null = null;
+	let status: 'corrected' | 'verified' | 'no-source' = 'no-source';
 	if (Object.keys(patch).length > 0) {
 		filledKeys = Object.keys(patch);
 		corrected = filledKeys.filter((k) => {
