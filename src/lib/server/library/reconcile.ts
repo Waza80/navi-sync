@@ -99,6 +99,22 @@ export function normalizeKey(value: string | null | undefined): string {
 		.trim();
 }
 
+/**
+ * Unicode-preserving identity key for same-recording buckets.
+ *
+ * normalizeKey drops everything outside [a-z0-9], which collapses distinct
+ * non-latin titles (Tanger's Thai/Cyrillic/Japanese tracks) into one empty key
+ * — the real-plan dry run caught five wrong deletes from exactly this. NFC,
+ * whitespace and case are normalized instead; every script stays itself.
+ */
+function identityKey(value: string | null | undefined): string {
+	return String(value ?? '')
+		.normalize('NFC')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.toLowerCase();
+}
+
 export interface Candidate {
 	file: LibraryFile;
 	/** Directory part of relPath, with trailing slash. */
@@ -161,6 +177,12 @@ export interface ReconcilePlan {
 	delete: DeleteDecision[];
 	/** Rows whose file_path must change to the surviving file. */
 	repoint: RepointDecision[];
+	/**
+	 * Redundant rows for files that lost the dedupe while the winner already
+	 * owns a row — tracks_file_path_uq forbids two rows on one path, so these
+	 * go with their file instead of following the winner.
+	 */
+	deleteRows: Array<{ rowId: string; fromRelPath: string }>;
 	/**
 	 * Files deliberately NOT acted on, with why. Surfaced in the report so a file is
 	 * never quietly ignored — a silent skip is indistinguishable from a bug.
@@ -262,6 +284,7 @@ export function planLibraryReconcile(
 	const keep = new Set<string>();
 	const toDelete: DeleteDecision[] = [];
 	const repoint: RepointDecision[] = [];
+	const deleteRows: Array<{ rowId: string; fromRelPath: string }> = [];
 	const skipped: Array<{ file: LibraryFile; reason: string }> = [];
 
 	for (const members of groups.values()) {
@@ -289,7 +312,7 @@ export function planLibraryReconcile(
 			for (const m of members) {
 				const row = rowByRel.get(m.file.relPath);
 				const key = row
-					? `${normalizeKey(row.artist)}|${normalizeKey(row.album)}|${normalizeKey(row.title)}`
+					? `${identityKey(row.artist)}|${identityKey(row.album)}|${identityKey(row.title)}`
 					: `unindexed:${m.file.relPath}`;
 				buckets.set(key, [...(buckets.get(key) ?? []), m]);
 			}
@@ -323,6 +346,9 @@ export function planLibraryReconcile(
 					});
 					continue;
 				}
+				// One file_path holds one row (tracks_file_path_uq): a loser's row may
+				// follow the winner only when the winner does not already own a row.
+				const loserRows: Array<{ rowId: string; fromRelPath: string }> = [];
 				for (const m of bucket) {
 					if (m.file.relPath === winner.file.relPath) {
 						keep.add(m.file.relPath);
@@ -334,27 +360,20 @@ export function planLibraryReconcile(
 						reason: 'duplicate_recording',
 						rowId: m.rowId,
 					});
-					if (m.rowId) {
-						repoint.push({
-							rowId: m.rowId,
-							fromRelPath: m.file.relPath,
-							toRelPath: winner.file.relPath,
-						});
-					}
+					if (m.rowId) loserRows.push({ rowId: m.rowId, fromRelPath: m.file.relPath });
 				}
-				// The winner is an orphan this run adopts: hand it the family's row
-				// rather than leaving a rowless file beside a row for the same song.
-				if (!winner.rowId && !winner.indexed) {
-					const rowHolder = bucket.find(
-						(m) => m.rowId !== null && m.file.relPath !== winner.file.relPath,
-					);
-					if (rowHolder?.rowId) {
-						repoint.push({
-							rowId: rowHolder.rowId,
-							fromRelPath: rowHolder.file.relPath,
-							toRelPath: winner.file.relPath,
-						});
-					}
+				if (winner.rowId) {
+					deleteRows.push(...loserRows);
+				} else if (loserRows.length > 0) {
+					// Rowless winner: exactly ONE row claims the path (a second update
+					// would violate the unique constraint); the rest are redundant.
+					const [claim, ...rest] = loserRows;
+					repoint.push({
+						rowId: claim.rowId,
+						fromRelPath: claim.fromRelPath,
+						toRelPath: winner.file.relPath,
+					});
+					deleteRows.push(...rest);
 				}
 			}
 			continue;
@@ -427,28 +446,24 @@ export function planLibraryReconcile(
 		}
 
 		// A row pointing at a loser follows the winner — which is how a BETTER copy
-		// that arrived second ends up being the one the library serves.
+		// that arrived second ends up being the one the library serves. Only if the
+		// winner does not already own a row (tracks_file_path_uq), and only one row
+		// may claim a rowless winner's path.
+		const loserRows: Array<{ rowId: string; fromRelPath: string }> = [];
 		for (const m of family) {
 			if (m.file.relPath === winner.file.relPath) continue;
-			if (m.rowId) {
-				repoint.push({
-					rowId: m.rowId,
-					fromRelPath: m.file.relPath,
-					toRelPath: winner.file.relPath,
-				});
-			}
+			if (m.rowId) loserRows.push({ rowId: m.rowId, fromRelPath: m.file.relPath });
 		}
-		// The winner was an orphan: it is adopted this run, so give it the family's
-		// row rather than leaving a rowless file and a separate row for the same song.
-		if (!winner.rowId && !winner.indexed) {
-			const rowHolder = family.find((m) => m.rowId !== null);
-			if (rowHolder?.rowId) {
-				repoint.push({
-					rowId: rowHolder.rowId,
-					fromRelPath: rowHolder.file.relPath,
-					toRelPath: winner.file.relPath,
-				});
-			}
+		if (winner.rowId) {
+			deleteRows.push(...loserRows);
+		} else if (loserRows.length > 0) {
+			const [claim, ...rest] = loserRows;
+			repoint.push({
+				rowId: claim.rowId,
+				fromRelPath: claim.fromRelPath,
+				toRelPath: winner.file.relPath,
+			});
+			deleteRows.push(...rest);
 		}
 	}
 
@@ -483,7 +498,16 @@ export function planLibraryReconcile(
 	// A file scheduled for deletion must never also be adopted, and must not be
 	// listed as kept. This previously ran unconditionally and re-added deleted files
 	// to both sets, so the plan said "delete this" and "keep this" at once.
-	const survivingAdopt = adoptList.filter((a) => !deleteSet.has(a.relPath));
+	// A repoint claims its target's path instead of an insert: adopting it too
+	// would make phase 1 insert a row at a path the repoint then writes to —
+	// two rows, one path, tracks_file_path_uq.
+	const repointTargets = new Set(uniqueRepoint.map((rp) => rp.toRelPath));
+	const survivingAdopt = adoptList.filter(
+		(a) => !deleteSet.has(a.relPath) && !repointTargets.has(a.relPath),
+	);
+	for (const a of adoptList) {
+		if (repointTargets.has(a.relPath)) keep.add(a.relPath);
+	}
 	for (const a of survivingAdopt) keep.add(a.relPath);
 
 	return {
@@ -491,6 +515,7 @@ export function planLibraryReconcile(
 		keep: [...keep].map((relPath) => files.find((f) => f.relPath === relPath)!),
 		delete: toDelete,
 		repoint: uniqueRepoint,
+		deleteRows,
 		skipped,
 	};
 }
@@ -501,6 +526,7 @@ export function describePlan(plan: ReconcilePlan): string {
 	lines.push(`  adopt   ${plan.adopt.length} file(s) with no index row`);
 	lines.push(`  delete  ${plan.delete.length} duplicate file(s)`);
 	lines.push(`  repoint ${plan.repoint.length} row(s) to a surviving file`);
+	lines.push(`  retire   ${plan.deleteRows.length} redundant row(s) (winner owns the path)`);
 	lines.push(`  keep    ${plan.keep.length} file(s)`);
 	lines.push(`  skipped ${plan.skipped.length} file(s), deliberately not acted on`);
 	for (const d of plan.delete) {

@@ -145,8 +145,10 @@ describe('planLibraryReconcile', () => {
 		const plan = planLibraryReconcile(files, [r('A/B/01 - Song.flac')]);
 		expect(plan.delete.map((d) => d.file.relPath)).toEqual(['A/B/01 - Song.flac']);
 		expect(plan.delete[0].survivor.relPath).toBe('A/B/01 - Song (2).flac');
-		// Two-phase: the winner is adopted before anything is deleted.
-		expect(plan.adopt.map((a) => a.relPath)).toEqual(['A/B/01 - Song (2).flac']);
+		// Two-phase: the winner's path is claimed by the repointed row before
+		// anything is deleted (adopting it as a separate insert would collide with
+		// that repoint on tracks_file_path_uq).
+		expect(plan.adopt.map((a) => a.relPath)).toEqual([]);
 		expect(plan.repoint.map((x) => x.toRelPath)).toEqual(['A/B/01 - Song (2).flac']);
 	});
 
@@ -163,8 +165,8 @@ describe('planLibraryReconcile', () => {
 		expect(plan.delete.map((d) => d.file.relPath)).toEqual(['A/B/01 - Song.flac']);
 		expect(plan.delete[0].survivor.relPath).toBe('A/B/01 - Song (2).flac');
 		expect(plan.delete[0].reason).toBe('repoint_to_better');
-		// Two-phase: the survivor is adopted before it is relied on.
-		expect(plan.adopt.map((a) => a.relPath)).toEqual(['A/B/01 - Song (2).flac']);
+		// Two-phase: the survivor's path is claimed before it is relied on.
+		expect(plan.adopt.map((a) => a.relPath)).toEqual([]);
 		expect(plan.repoint).toEqual([
 			{
 				rowId: 'row-A/B/01 - Song.flac',
@@ -258,12 +260,14 @@ describe('planLibraryReconcile', () => {
 		const plan = planLibraryReconcile(files, [
 			r('Black Balloons/dreamscape/02 - EARTHBOUND.flac'),
 		]);
-		// 1100 beats 1000 on size, so the orphan wins, is adopted, and the indexed
-		// original is the file that goes.
+		// 1100 beats 1000 on size, so the orphan wins; the indexed original's row
+		// claims the winner's path (tracks_file_path_uq: the repointed row IS the
+		// survivor's index — adopting it as a separate insert would collide).
 		expect(plan.delete.map((d) => d.file.relPath)).toEqual([
 			'Black Balloons/dreamscape/02 - EARTHBOUND.flac',
 		]);
-		expect(plan.adopt.map((a) => a.relPath)).toEqual([
+		expect(plan.adopt.map((a) => a.relPath)).toEqual([]);
+		expect(plan.repoint.map((x) => x.toRelPath)).toEqual([
 			'Black Balloons/dreamscape/02 - EARTHBOUND (2).flac',
 		]);
 	});
@@ -331,19 +335,27 @@ describe('planLibraryReconcile', () => {
 		}
 	});
 
-	it('deletes a loser when the survivor is unindexed but WILL be adopted', () => {
+	it('deletes a loser when the survivor is unindexed but its path is claimed', () => {
 		const files = [
 			f('A/B/06 - CHIMERA.flac'),
 			f('A/B/06 - CHIMERA (2).flac', { sizeBytes: 1100 }),
 		];
 		const plan = planLibraryReconcile(files, [r('A/B/06 - CHIMERA.flac')]);
 		expect(plan.delete.map((d) => d.file.relPath)).toEqual(['A/B/06 - CHIMERA.flac']);
-		expect(plan.adopt.map((a) => a.relPath)).toEqual(['A/B/06 - CHIMERA (2).flac']);
+		expect(plan.adopt.map((a) => a.relPath)).toEqual([]);
+		expect(plan.repoint.map((x) => x.toRelPath)).toEqual(['A/B/06 - CHIMERA (2).flac']);
 	});
 
 	it('handles an empty library', () => {
 		const plan = planLibraryReconcile([], []);
-		expect(plan).toEqual({ adopt: [], keep: [], delete: [], repoint: [], skipped: [] });
+		expect(plan).toEqual({
+			adopt: [],
+			keep: [],
+			delete: [],
+			repoint: [],
+			deleteRows: [],
+			skipped: [],
+		});
 	});
 
 	it('handles an empty index: keeps the best, adopts it, deletes the rest', () => {
@@ -528,8 +540,13 @@ describe('planLibraryReconcile invariants', () => {
 			for (const d of plan.delete) {
 				const survivorIsIndexed = indexed.has(d.survivor.relPath);
 				const survivorIsAdopted = plan.adopt.some((a) => a.relPath === d.survivor.relPath);
+				// A rowless survivor can also be made indexable by a repointed row
+				// claiming its path (the repoint replaces the adopt insert).
+				const survivorIsClaimed = plan.repoint.some(
+					(rp) => rp.toRelPath === d.survivor.relPath,
+				);
 				expect(
-					survivorIsIndexed || survivorIsAdopted,
+					survivorIsIndexed || survivorIsAdopted || survivorIsClaimed,
 					`seed ${seed}: deleting ${d.file.relPath} with no indexable survivor`,
 				).toBe(true);
 			}
@@ -549,10 +566,13 @@ describe('planLibraryReconcile invariants', () => {
 						stillIndexed.has(rel),
 						`seed ${seed}: row for ${rel} would be orphaned`,
 					).toBe(false);
-					// Its file is deleted, so a repoint to the survivor is required.
+					// Its file is deleted: the row must either follow the survivor or
+					// be removed with the file — never left pointing at nothing.
+					const moved = plan.repoint.some((rp) => rp.fromRelPath === rel);
+					const removed = plan.deleteRows.some((dr) => dr.fromRelPath === rel);
 					expect(
-						plan.repoint.some((rp) => rp.fromRelPath === rel),
-						`seed ${seed}: deleted ${rel} without repointing its row`,
+						moved || removed,
+						`seed ${seed}: deleted ${rel} without moving or removing its row`,
 					).toBe(true);
 				}
 			}
@@ -597,7 +617,7 @@ describe('planLibraryReconcile invariants', () => {
 describe('same recording without a suffix marker (redl simulation-first)', () => {
 	// Re-downloads carry no "(2)": a deluxe folder, a second track number, a
 	// better encode fetched later. Same artist+title+album = ONE recording.
-	it('cross-folder: deletes the worse encode and repoints its row', () => {
+	it('cross-folder: deletes the worse encode, its redundant row goes with it', () => {
 		const files = [
 			f('Lomepal/FLIP/06 - Yeux disent.flac', { sizeBytes: 28_366_648 }),
 			f('Lomepal/FLIP - Deluxe/06 - Yeux disent.flac', { sizeBytes: 34_361_553 }),
@@ -611,10 +631,10 @@ describe('same recording without a suffix marker (redl simulation-first)', () =>
 		expect(plan.delete[0].file.relPath).toBe('Lomepal/FLIP/06 - Yeux disent.flac');
 		expect(plan.delete[0].survivor.relPath).toBe('Lomepal/FLIP - Deluxe/06 - Yeux disent.flac');
 		expect(plan.delete[0].reason).toBe('duplicate_recording');
-		expect(plan.repoint).toContainEqual({
+		expect(plan.repoint).toEqual([]);
+		expect(plan.deleteRows).toContainEqual({
 			rowId: 'row-Lomepal/FLIP/06 - Yeux disent.flac',
 			fromRelPath: 'Lomepal/FLIP/06 - Yeux disent.flac',
-			toRelPath: 'Lomepal/FLIP - Deluxe/06 - Yeux disent.flac',
 		});
 	});
 
@@ -684,5 +704,93 @@ describe('same recording without a suffix marker (redl simulation-first)', () =>
 			crossFolderMatching: true,
 		});
 		expect(b.delete.map((d) => d.file.relPath)).toEqual(['Zed/Album/12 - Twin.flac']);
+	});
+
+	// The dry-run simulation caught this before --apply: normalizeKey strips
+	// everything outside [a-z0-9], so distinct unicode titles collapse to the
+	// same empty key and were about to be deleted as one recording (5 wrong
+	// Tanger files in the first real plan). Different titles = different songs,
+	// whatever their script.
+	it('an indexed winner makes redundant rows deletable, not repointed', () => {
+		// The real Nekfeu case: both files carry rows, and tracks_file_path_uq
+		// forbids two rows on one path — repointing the loser at the winner would
+		// crash apply. The redundant row goes with the file instead.
+		const files = [
+			f('Nekfeu/Black Album/10 - Joint de culotte.flac', { sizeBytes: 30_000_000 }),
+			f('Nekfeu/Y&W L’album/02 - Joint de culotte.flac', { sizeBytes: 20_000_000 }),
+		];
+		const rows = [
+			r('Nekfeu/Black Album/10 - Joint de culotte.flac', {
+				artist: 'Nekfeu',
+				album: 'Black Album',
+			}),
+			r('Nekfeu/Y&W L’album/02 - Joint de culotte.flac', {
+				artist: 'Nekfeu',
+				album: 'Black Album',
+			}),
+		];
+		const plan = planLibraryReconcile(files, rows, { crossFolderMatching: true });
+		expect(plan.delete.map((d) => d.file.relPath)).toEqual([
+			'Nekfeu/Y&W L’album/02 - Joint de culotte.flac',
+		]);
+		expect(plan.repoint).toEqual([]);
+		expect(plan.deleteRows).toEqual([
+			{
+				rowId: 'row-Nekfeu/Y&W L’album/02 - Joint de culotte.flac',
+				fromRelPath: 'Nekfeu/Y&W L’album/02 - Joint de culotte.flac',
+			},
+		]);
+	});
+
+	it('a rowless winner is claimed by exactly ONE repointed row', () => {
+		// Orphan winner + two indexed losers: only the first may claim the path,
+		// the second would violate the unique constraint.
+		const files = [
+			f('A/B/01 - S.flac', { sizeBytes: 1000 }),
+			f('A/B/05 - S.flac', { sizeBytes: 900 }),
+			f('C/D/01 - S.flac', { sizeBytes: 1200 }),
+		];
+		const rows = [
+			r('A/B/01 - S.flac', { artist: 'A', album: 'B' }),
+			r('A/B/05 - S.flac', { artist: 'A', album: 'B' }),
+			r('C/D/01 - S.flac', { artist: 'A', album: 'B' }),
+		];
+		const plan = planLibraryReconcile(files, rows, { crossFolderMatching: true });
+		expect(plan.delete).toHaveLength(2);
+		const targets = plan.repoint.map((r) => r.toRelPath);
+		expect(new Set(targets).size).toBe(plan.repoint.length);
+		// Losers whose row is neither repointed nor deleted would ghost.
+		for (const d of plan.delete) {
+			const m = plan.repoint.some((rp) => rp.fromRelPath === d.file.relPath);
+			const gone = plan.deleteRows.some((dr) => dr.fromRelPath === d.file.relPath);
+			expect(m || gone).toBe(true);
+		}
+	});
+
+	it('different non-ASCII titles in one album are two real recordings', () => {
+		const files = [
+			f('Tanger/Archive by Night/13 - 朝の自転車.flac', { sizeBytes: 5_000_000 }),
+			f('Tanger/Archive by Night/18 - холодный.flac', { sizeBytes: 4_000_000 }),
+			f('Tanger/BONUSx2/02 - एसिड गड़गड़ाहट.flac', { sizeBytes: 6_000_000 }),
+			f('Tanger/BONUSx2/05 - ◠.flac', { sizeBytes: 3_000_000 }),
+		];
+		const rows = [
+			r('Tanger/Archive by Night/13 - 朝の自転車.flac', {
+				artist: 'Tanger',
+				album: 'Archive by Night',
+			}),
+			r('Tanger/Archive by Night/18 - холодный.flac', {
+				artist: 'Tanger',
+				album: 'Archive by Night',
+			}),
+			r('Tanger/BONUSx2/02 - एसिड गड़गड़ाहट.flac', {
+				artist: 'Tanger',
+				album: 'BONUSx2',
+			}),
+			r('Tanger/BONUSx2/05 - ◠.flac', { artist: 'Tanger', album: 'BONUSx2' }),
+		];
+		const plan = planLibraryReconcile(files, rows, { crossFolderMatching: true });
+		expect(plan.delete).toHaveLength(0);
+		expect(plan.keep).toHaveLength(4);
 	});
 });

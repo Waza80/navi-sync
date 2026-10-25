@@ -230,91 +230,119 @@ async function main(): Promise<void> {
 	const client = new Client({ connectionString: DB_URL! });
 	await client.connect();
 
-	const adopted: LibraryFile[] = [];
-	for (const a of plan.adopt) {
-		const abs = join(ROOT, a.relPath);
-		const sp = a.relPath.split('/');
-		const ext = extname(a.relPath).toLowerCase().replace('.', '');
-		const artist = sp.length >= 3 ? sp[sp.length - 3] : 'Unknown Artist';
-		const album = sp.length >= 3 ? sp[sp.length - 2] : null;
-		const { trackNumber } = splitTrackFilename(sp[sp.length - 1]);
-		const probe =
-			ext === 'flac'
-				? await probeFlac(abs)
-				: { bitDepth: null, sampleRateHz: null, durationSec: null };
-		const dir = join(ROOT, ...sp.slice(0, -1));
-		let coverPath: string | null = null;
-		for (const c of ['cover.jpg', 'cover.png', 'folder.jpg', 'cover.jpeg']) {
-			const cp = join(dir, c);
-			if (
-				await stat(cp).then(
-					() => true,
-					() => false,
-				)
-			) {
-				coverPath = cp;
-				break;
+	// Phase 1 is all-or-nothing: adoption, repointing and row retirement either
+	// all land or none do, so a constraint violation can never leave the index
+	// half-moved. Files are only removed in phase 2, after the commit.
+	try {
+		const adopted: LibraryFile[] = [];
+		for (const a of plan.adopt) {
+			const abs = join(ROOT, a.relPath);
+			const sp = a.relPath.split('/');
+			const ext = extname(a.relPath).toLowerCase().replace('.', '');
+			const artist = sp.length >= 3 ? sp[sp.length - 3] : 'Unknown Artist';
+			const album = sp.length >= 3 ? sp[sp.length - 2] : null;
+			const { trackNumber } = splitTrackFilename(sp[sp.length - 1]);
+			const probe =
+				ext === 'flac'
+					? await probeFlac(abs)
+					: { bitDepth: null, sampleRateHz: null, durationSec: null };
+			const dir = join(ROOT, ...sp.slice(0, -1));
+			let coverPath: string | null = null;
+			for (const c of ['cover.jpg', 'cover.png', 'folder.jpg', 'cover.jpeg']) {
+				const cp = join(dir, c);
+				if (
+					await stat(cp).then(
+						() => true,
+						() => false,
+					)
+				) {
+					coverPath = cp;
+					break;
+				}
 			}
-		}
-		await client.query(
-			`insert into tracks (provider, provider_track_id, title, artist, album, album_artist,
+			await client.query(
+				`insert into tracks (provider, provider_track_id, title, artist, album, album_artist,
 			   track_number, duration_sec, format, bit_depth, sample_rate_hz, is_lossless,
 			   size_bytes, checksum_sha256, file_path, cover_path, lyrics_status, download_status)
 			 values ('local', $1, $2, $3, $4, $3, $5, $6, $7, $8, $9, true, $10, $11, $12, $13, 'none', 'completed')`,
-			[
-				`local:${a.sha256.slice(0, 32)}`,
-				splitTrackFilename(sp[sp.length - 1]).title,
-				artist,
-				album,
-				trackNumber,
-				probe.durationSec,
-				ext,
-				a.bitDepth,
-				a.sampleRateHz,
-				a.sizeBytes,
-				a.sha256,
-				`${APP_PREFIX}/${a.relPath}`,
-				coverPath
-					? `${APP_PREFIX}/${a.relPath.split('/').slice(0, -1).join('/')}/${coverPath.split('/').pop()}`
-					: null,
-			],
-		);
-		adopted.push(a);
-	}
-	console.log(`\nphase 1: adopted ${adopted.length} row(s)`);
-
-	for (const rp of plan.repoint) {
-		const to = join(ROOT, rp.toRelPath);
-		const stored = `${APP_PREFIX}/${rp.toRelPath}`;
-		if (
-			!(await stat(to).then(
-				() => true,
-				() => false,
-			))
-		) {
-			console.error(`  REFUSING: repoint target missing on disk: ${to}`);
-			await client.end();
-			process.exit(4);
-		}
-		await client.query('update tracks set file_path = $2 where id = $1', [rp.rowId, stored]);
-	}
-	console.log(`phase 1: repointed ${plan.repoint.length} row(s)`);
-
-	// Verify the survivors really are indexed now. If this fails, delete nothing.
-	for (const d of plan.delete) {
-		const { rows: checkRows } = await client.query(
-			'select count(*)::int as n from tracks where file_path = $1',
-			[`${APP_PREFIX}/${d.survivor.relPath}`],
-		);
-		if (Number(checkRows[0]?.n ?? 0) === 0) {
-			console.error(
-				`  ABORT: survivor ${d.survivor.relPath} is still not indexed; deleting nothing.`,
+				[
+					`local:${a.sha256.slice(0, 32)}`,
+					splitTrackFilename(sp[sp.length - 1]).title,
+					artist,
+					album,
+					trackNumber,
+					probe.durationSec,
+					ext,
+					a.bitDepth,
+					a.sampleRateHz,
+					a.sizeBytes,
+					a.sha256,
+					`${APP_PREFIX}/${a.relPath}`,
+					coverPath
+						? `${APP_PREFIX}/${a.relPath.split('/').slice(0, -1).join('/')}/${coverPath.split('/').pop()}`
+						: null,
+				],
 			);
-			await client.end();
-			process.exit(5);
+			adopted.push(a);
 		}
+		console.log(`\nphase 1: adopted ${adopted.length} row(s)`);
+
+		for (const rp of plan.repoint) {
+			const to = join(ROOT, rp.toRelPath);
+			const stored = `${APP_PREFIX}/${rp.toRelPath}`;
+			if (
+				!(await stat(to).then(
+					() => true,
+					() => false,
+				))
+			) {
+				console.error(`  REFUSING: repoint target missing on disk: ${to}`);
+				await client.end();
+				process.exit(4);
+			}
+			await client.query('update tracks set file_path = $2 where id = $1', [
+				rp.rowId,
+				stored,
+			]);
+		}
+		console.log(`phase 1: repointed ${plan.repoint.length} row(s)`);
+
+		// Redundant rows for losers whose winner already owns the path: two rows
+		// cannot share file_path (tracks_file_path_uq), so these go with their file.
+		// Guarded by an exact match — refusing to guess if the row moved.
+		for (const dr of plan.deleteRows) {
+			const res = await client.query('delete from tracks where id = $1 and file_path = $2', [
+				dr.rowId,
+				`${APP_PREFIX}/${dr.fromRelPath}`,
+			]);
+			if (res.rowCount !== 1) {
+				throw new Error(`row ${dr.rowId} is not at ${dr.fromRelPath} — refusing to guess`);
+			}
+		}
+		console.log(`phase 1: retired ${plan.deleteRows.length} redundant row(s)`);
+
+		// Verify the survivors really are indexed now. If this fails, delete nothing.
+		for (const d of plan.delete) {
+			const { rows: checkRows } = await client.query(
+				'select count(*)::int as n from tracks where file_path = $1',
+				[`${APP_PREFIX}/${d.survivor.relPath}`],
+			);
+			if (Number(checkRows[0]?.n ?? 0) === 0) {
+				console.error(
+					`  ABORT: survivor ${d.survivor.relPath} is still not indexed; deleting nothing.`,
+				);
+				await client.end();
+				process.exit(5);
+			}
+		}
+		await client.query('COMMIT');
+		console.log('phase 1: every survivor is indexed. committed.');
+	} catch (err) {
+		await client.query('ROLLBACK').catch(() => {});
+		console.error(`  ABORT: phase 1 rolled back, nothing changed: ${String(err)}`);
+		await client.end();
+		process.exit(6);
 	}
-	console.log('phase 1: every survivor is indexed.');
 
 	// ── phase 2: delete ───────────────────────────────────────────────────
 	let deleted = 0;
