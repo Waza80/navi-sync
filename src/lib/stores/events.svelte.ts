@@ -34,12 +34,28 @@ class LiveEventClient {
 	#everConnected = false;
 	#onTerminal: (() => void) | null = null;
 	#onResync: (() => void) | null = null;
+	#onActivity: ((evt: NaviEvent) => void) | null = null;
 
-	/** Idempotent. Call once from the dashboard page (browser only). */
-	start(onTerminal?: () => void, onResync?: () => void): void {
-		if (typeof window === 'undefined' || this.#source) return;
-		this.#onTerminal = onTerminal ?? null;
-		this.#onResync = onResync ?? null;
+	/**
+	 * Idempotent. Call once from the dashboard page (browser only).
+	 *
+	 * Callbacks REGISTER EVEN WHEN THE STREAM IS ALREADY OPEN. The layout opens
+	 * SSE app-wide, and start() used to early-return before storing its
+	 * callbacks — so when the layout won the mount race, the dashboard's
+	 * onTerminal/onResync were silently dropped and the page never refreshed on
+	 * a terminal event. `undefined` leaves a previous callback in place, so the
+	 * layout's no-argument start() cannot wipe the dashboard's either.
+	 */
+	start(
+		onTerminal?: () => void,
+		onResync?: () => void,
+		onActivity?: (evt: NaviEvent) => void,
+	): void {
+		if (typeof window === 'undefined') return;
+		if (onTerminal !== undefined) this.#onTerminal = onTerminal;
+		if (onResync !== undefined) this.#onResync = onResync;
+		if (onActivity !== undefined) this.#onActivity = onActivity;
+		if (this.#source) return;
 		const es = new EventSource('/api/events');
 		this.#source = es;
 		es.onopen = () => {
@@ -208,6 +224,10 @@ class LiveEventClient {
 				break;
 			}
 		}
+		// Every applied event — queued, progress, terminal — goes to the page so
+		// it can schedule its throttled snapshot reload and surface new failures
+		// as toasts, without this store needing to know about either.
+		this.#onActivity?.(evt);
 	}
 
 	/**

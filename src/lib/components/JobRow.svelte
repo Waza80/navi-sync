@@ -1,5 +1,7 @@
 <script lang="ts">
 	import type { JobDTO } from '$lib/shared/types';
+	import { formatRelativeTime } from '$lib/shared/format';
+	import { jobStatusTone, jobTypeLabel } from '$lib/shared/jobstyle';
 
 	let {
 		job,
@@ -11,21 +13,8 @@
 		onretry?: (id: string) => void;
 	} = $props();
 
-	const typeLabel: Record<string, string> = {
-		download: 'Download',
-		lyrics: 'Lyrics',
-		navidrome_scan: 'Navidrome scan',
-		export: 'Export',
-	};
-
-	const statusTone: Record<string, string> = {
-		queued: 'bg-secondary-container text-on-secondary-container',
-		running: 'bg-primary-container text-on-primary-container',
-		succeeded: 'bg-tertiary-container text-on-tertiary-container',
-		failed: 'bg-error-container text-on-error-container',
-		dead: 'bg-error-container text-on-error-container',
-		cancelled: 'bg-surface-highest text-on-surface-variant',
-	};
+	const typeLabel = jobTypeLabel;
+	const statusTone = jobStatusTone;
 
 	const cancellable = $derived(job.status === 'queued' || job.status === 'running');
 	const retryable = $derived(['failed', 'dead', 'cancelled'].includes(job.status));
@@ -45,6 +34,12 @@
 				{job.stage}
 			{:else}
 				attempt {job.attempts}/{job.maxAttempts}
+			{/if}
+			{#if job.finishedAt}
+				· finished {formatRelativeTime(job.finishedAt)}
+			{:else}
+				· {job.status === 'queued' ? 'queued' : 'started'}
+				{formatRelativeTime(job.createdAt)}
 			{/if}
 		</p>
 		{#if job.status === 'running' || (job.status === 'queued' && job.progress > 0)}

@@ -68,3 +68,37 @@ export function qualityLabel(
 	if (format === 'mp3') return `MP3 ${bitrateKbps ?? '?'}k`;
 	return format.toUpperCase();
 }
+
+/**
+ * Relative time for rows that stream in and out — jobs, activity stamps:
+ * `just now`, `3 min ago`, `5 h ago`, `2 d ago`.
+ *
+ * 45 s is the seam: below it a count of seconds reads as jitter (the row is
+ * effectively "now"), above it `1 min ago` is the honest unit. Hours switch to
+ * whole days at 24 because "31 h ago" is arithmetic the reader should not have
+ * to do.
+ *
+ * A future timestamp (clock skew between hosts) clamps to `just now` rather
+ * than printing a negative age; an unparseable one prints an em dash rather
+ * than "NaN d ago".
+ */
+export function formatRelativeTime(
+	timestamp: string | number | Date | null | undefined,
+	now: number = Date.now(),
+): string {
+	if (timestamp == null) return '—';
+	const ms =
+		timestamp instanceof Date
+			? timestamp.getTime()
+			: typeof timestamp === 'number'
+				? timestamp
+				: Date.parse(timestamp);
+	if (!Number.isFinite(ms)) return '—';
+	const seconds = Math.floor(Math.max(0, now - ms) / 1000);
+	if (seconds < 45) return 'just now';
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${Math.max(1, minutes)} min ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours} h ago`;
+	return `${Math.floor(hours / 24)} d ago`;
+}

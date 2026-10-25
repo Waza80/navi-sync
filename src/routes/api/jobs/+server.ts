@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { json, badRequest, unauthorizedResponse } from '$lib/server/api';
-import { enqueueJob, jobCounts, listJobs } from '$lib/server/queue/jobs';
+import { cancelJobsByIds, enqueueJob, jobCounts, listJobs } from '$lib/server/queue/jobs';
 import type { JobStatus } from '$lib/shared/types';
 import type { RequestHandler } from './$types';
 import { logger as log } from '$lib/server/logger';
@@ -79,6 +79,51 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 			finishedAt: j.finishedAt,
 		})),
 	});
+};
+
+/**
+ * DELETE /api/jobs?status=queued,running&type=download — cancel a whole group.
+ * DELETE /api/jobs?ids=id1,id2 — cancel specific jobs (`type` still filters).
+ *
+ * Group mode defaults to `status=queued,running`: the only states cancelJob can
+ * move, so an unparameterised call can never sweep finished history. Ids are
+ * resolved directly (not through the 500-row listing window) and everything is
+ * cancelled through cancelJob, so the per-job SSE events — and therefore the
+ * live panel — are identical to pressing each row's Cancel button.
+ */
+export const DELETE: RequestHandler = async ({ locals, url }) => {
+	if (!locals.user) return unauthorizedResponse();
+
+	const type = url.searchParams.get('type')?.trim() || undefined;
+	const ids = (url.searchParams.get('ids') ?? '')
+		.split(',')
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0);
+	const rawStatus = url.searchParams.get('status');
+	const requested = (rawStatus ?? 'queued,running')
+		.split(',')
+		.map((s) => s.trim())
+		.filter((s): s is JobStatus => (ALL_STATUSES as string[]).includes(s));
+	// A status list that matched nothing would otherwise silently mean
+	// "everything" — a bad request instead of an accidental mass cancel.
+	if (rawStatus !== null && requested.length === 0)
+		return badRequest('No valid status in `status`.', 'INVALID_STATUS');
+
+	try {
+		let targets = ids;
+		if (ids.length === 0) {
+			const rows = await listJobs(500, requested);
+			targets = rows.filter((j) => !type || j.type === type).map((j) => j.id);
+		}
+		const outcome = await cancelJobsByIds(targets, type);
+		return json({ ...outcome, type: type ?? null });
+	} catch (err) {
+		log.warn('batch cancel failed', { ids: ids.length, type, error: String(err) });
+		return json(
+			{ error: { code: 'CANCEL_FAILED', message: 'Could not cancel those jobs.' } },
+			{ status: 500 },
+		);
+	}
 };
 
 const metaSchema = z.object({

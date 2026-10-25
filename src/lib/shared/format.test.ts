@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatDuration, qualityLabel, sampleRateLabel } from './format';
+import {
+	formatBytes,
+	formatDuration,
+	formatRelativeTime,
+	qualityLabel,
+	sampleRateLabel,
+} from './format';
 
 describe('formatDuration', () => {
 	it('formats mm:ss under an hour', () => {
@@ -60,6 +66,35 @@ describe('qualityLabel with a sample rate', () => {
 
 	it('never adds a rate to a lossy label', () => {
 		expect(qualityLabel('mp3', 320, null, 44_100)).toBe('MP3 320k');
+	});
+});
+
+describe('formatRelativeTime', () => {
+	const now = Date.UTC(2026, 0, 2, 12, 0, 0);
+	it('says "just now" below 45 s, then whole minutes', () => {
+		expect(formatRelativeTime(now - 10_000, now)).toBe('just now');
+		expect(formatRelativeTime(now - 44_999, now)).toBe('just now');
+		expect(formatRelativeTime(now - 45_000, now)).toBe('1 min ago');
+		expect(formatRelativeTime(now - 3 * 60_000, now)).toBe('3 min ago');
+		expect(formatRelativeTime(now - 59 * 60_000, now)).toBe('59 min ago');
+	});
+	it('counts hours, then whole days', () => {
+		expect(formatRelativeTime(now - 60 * 60_000, now)).toBe('1 h ago');
+		expect(formatRelativeTime(now - 23 * 3_600_000, now)).toBe('23 h ago');
+		expect(formatRelativeTime(now - 24 * 3_600_000, now)).toBe('1 d ago');
+		expect(formatRelativeTime(now - 47 * 3_600_000, now)).toBe('1 d ago');
+		expect(formatRelativeTime(now - 48 * 3_600_000, now)).toBe('2 d ago');
+	});
+	it('parses ISO strings (what the API returns)', () => {
+		expect(formatRelativeTime(new Date(now - 5 * 60_000).toISOString(), now)).toBe('5 min ago');
+	});
+	it('clamps a future timestamp instead of printing a negative age', () => {
+		expect(formatRelativeTime(now + 90_000, now)).toBe('just now');
+	});
+	it('handles null/undefined/unparseable', () => {
+		expect(formatRelativeTime(null, now)).toBe('—');
+		expect(formatRelativeTime(undefined, now)).toBe('—');
+		expect(formatRelativeTime('not a date', now)).toBe('—');
 	});
 });
 

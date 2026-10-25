@@ -423,12 +423,15 @@ export async function cancelJob(jobId: string): Promise<JobStatus | 'cancelling'
 		.update(jobs)
 		.set({ status: 'cancelled', finishedAt: new Date(), updatedAt: new Date() })
 		.where(and(inArray(jobs.status, ['queued']), eq(jobs.id, jobId)))
-		.returning({ status: jobs.status });
+		.returning({ status: jobs.status, type: jobs.type });
 	if (rows.length > 0) {
+		// The event used to hard-code `jobType: 'download'`. The store builds
+		// entries FROM events (and the dashboard now groups by type), so
+		// cancelling a lyrics or scan job flipped its type in every live client.
 		await emitEvent({
 			type: 'job.cancelled',
 			jobId,
-			jobType: 'download',
+			jobType: rows[0].type as JobType,
 			ts: new Date().toISOString(),
 		});
 		return 'cancelled';
@@ -447,6 +450,41 @@ export async function cancelJob(jobId: string): Promise<JobStatus | 'cancelling'
 		return 'cancelling';
 	}
 	return null;
+}
+
+/**
+ * Cancel a batch — the group cancel behind `DELETE /api/jobs`.
+ *
+ * Queued rows flip immediately, running rows are marked for the worker's
+ * cancellation watcher (they report as `cancelling`, not yet cancelled).
+ * Unknown ids, ids outside an optional `type` filter and non-cancellable
+ * states count as `skipped` — never an error, so one bad row cannot fail
+ * the whole group.
+ */
+export async function cancelJobsByIds(
+	ids: string[],
+	type?: string,
+): Promise<{ cancelled: number; cancelling: number; skipped: number }> {
+	let cancelled = 0;
+	let cancelling = 0;
+	let skipped = 0;
+	if (ids.length === 0) return { cancelled, cancelling, skipped };
+	const rows = await db
+		.select({ id: jobs.id, type: jobs.type })
+		.from(jobs)
+		.where(inArray(jobs.id, ids));
+	skipped += ids.length - rows.length; // ids that do not exist
+	for (const row of rows) {
+		if (type && row.type !== type) {
+			skipped++;
+			continue;
+		}
+		const result = await cancelJob(row.id);
+		if (result === 'cancelled') cancelled++;
+		else if (result === 'cancelling') cancelling++;
+		else skipped++;
+	}
+	return { cancelled, cancelling, skipped };
 }
 
 /** Manual retry: reset a dead/failed job back into the queue. */

@@ -6,6 +6,7 @@
 	import { live, type JobCounts } from '$lib/stores/events.svelte';
 
 	import JobRow from '$lib/components/JobRow.svelte';
+	import { jobStatusTone, jobTypeLabel } from '$lib/shared/jobstyle';
 	import TrackCard from '$lib/components/TrackCard.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import { expandZip, isZip } from '$lib/upload/zip';
@@ -69,10 +70,42 @@
 	}
 
 	// ── Live queue (SSE) ────────────────────────────────────────────────────
+	/**
+	 * Auto-refresh driven by the stream, throttled to ~1/s. SSE already keeps
+	 * `live` current row-by-row; invalidateAll re-syncs the page's server
+	 * snapshot (counts, tracks, the 30-row window) without a reload storm when
+	 * a busy queue fires events every few milliseconds.
+	 */
+	let lastReloadAt = 0;
+	let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+	function scheduleReload(): void {
+		const wait = 1000 - (Date.now() - lastReloadAt);
+		if (wait <= 0) {
+			lastReloadAt = Date.now();
+			void invalidateAll();
+			return;
+		}
+		if (reloadTimer) return;
+		reloadTimer = setTimeout(() => {
+			reloadTimer = null;
+			lastReloadAt = Date.now();
+			void invalidateAll();
+		}, wait);
+	}
 	$effect(() => {
 		live.start(
-			() => void invalidateAll(),
+			() => scheduleReload(), // terminal event
 			() => void invalidateAll(), // resync after SSE reconnect (missed events)
+			(evt) => {
+				scheduleReload();
+				// Errors surface HERE the moment they happen — not only in the Failed
+				// tab. Retries stay quiet (they usually end in a success); the toast
+				// fires when the job actually dies.
+				if (evt.type === 'job.failed' && !evt.willRetry) {
+					const label = jobTypeLabel[evt.jobType] ?? evt.jobType;
+					toast('error', `${label} job failed: ${evt.error ?? 'unknown error'}`);
+				}
+			},
 		);
 	});
 	// Snapshot sync must NOT read live.jobs in the same tracked scope it
@@ -327,13 +360,77 @@
 							: j.status === 'failed' || j.status === 'dead',
 				),
 	);
+	/**
+	 * Unified view: rows bucket by `type × status`, so a 40-song download burst
+	 * renders as one expandable group instead of 40 near-identical rows (the
+	 * per-song spam). Order follows the underlying list — newest first.
+	 */
+	type JobGroup = { key: string; type: string; status: string; jobs: JobDTO[] };
+	const jobGroups = $derived.by(() => {
+		// A plain object, not a Map: svelte/prefer-svelte-reactivity — and a
+		// SvelteMap written inside the derivation would be a reactive mutation.
+		const groups: Record<string, JobGroup> = {};
+		for (const job of visibleJobs) {
+			const key = `${job.type}|${job.status}`;
+			const existing = groups[key];
+			if (existing) existing.jobs.push(job);
+			else groups[key] = { key, type: job.type, status: job.status, jobs: [job] };
+		}
+		return Object.values(groups);
+	});
+	// Explicit open/close choices, keyed by group.
+	let groupOpen = $state<Record<string, boolean>>({});
+	// Plain object (deliberately not $state and not SvelteMap): the default is
+	// decided ONCE per key, at first sighting — otherwise a group the user never
+	// touched would collapse under them the moment it grew from 3 rows to 4, and
+	// a reactive store written during render would be a mutation error anyway.
+	const groupDefaultOpen: Record<string, boolean> = {};
+	function isGroupOpen(group: JobGroup): boolean {
+		const user = groupOpen[group.key];
+		if (user !== undefined) return user;
+		let initial = groupDefaultOpen[group.key];
+		if (initial === undefined) {
+			initial = group.jobs.length < 4;
+			groupDefaultOpen[group.key] = initial;
+		}
+		return initial;
+	}
+	function toggleGroup(group: JobGroup, open: boolean): void {
+		groupOpen = { ...groupOpen, [group.key]: open };
+	}
+
 	let clearing = $state(false);
 	async function clearFinished() {
 		clearing = true;
 		try {
-			await fetch('/api/jobs/completed', { method: 'DELETE' });
-			toast('info', 'Finished jobs cleared.');
+			const res = await fetch('/api/jobs/completed', { method: 'DELETE' });
+			const body = (await res.json().catch(() => null)) as { cleared?: number } | null;
+			if (!res.ok || !body) {
+				toast('error', 'Clearing finished jobs failed.');
+				return;
+			}
+			toast(
+				'info',
+				body.cleared === 0
+					? 'No finished jobs to clear.'
+					: `Finished jobs cleared (${body.cleared}).`,
+			);
 			await invalidateAll(); // authoritative snapshot prunes the cleared rows
+			// The filtered tabs hold their OWN server-fetched copy — without this
+			// they kept showing rows that had just been deleted, which is what made
+			// "Clear finished" look like it had done nothing.
+			if (queueFilter !== 'all') await loadQueueFilter(queueFilter);
+			// Totals now, not whenever the next SSE event happens to land: stale
+			// badges right after the click read as "the button did nothing".
+			try {
+				const countsRes = await fetch('/api/jobs?limit=1');
+				const countsBody = (await countsRes.json().catch(() => null)) as {
+					counts?: JobCounts;
+				} | null;
+				if (countsBody?.counts) live.jobCounts = countsBody.counts;
+			} catch {
+				// Non-fatal: SSE deltas keep the badges moving regardless.
+			}
 		} finally {
 			clearing = false;
 		}
@@ -384,6 +481,45 @@
 
 	async function cancelJob(id: string) {
 		await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
+	}
+	/** Group cancel: every row in one `type × status` bucket through one request. */
+	async function cancelGroup(group: JobGroup): Promise<void> {
+		try {
+			const params = new URLSearchParams({ type: group.type, status: group.status });
+			const res = await fetch(`/api/jobs?${params.toString()}`, { method: 'DELETE' });
+			const body = (await res.json().catch(() => null)) as {
+				cancelled?: number;
+				cancelling?: number;
+				error?: { message?: string };
+			} | null;
+			if (!res.ok || !body) {
+				toast('error', body?.error?.message ?? 'Cancelling those jobs failed.');
+				return;
+			}
+			const n = (body.cancelled ?? 0) + (body.cancelling ?? 0);
+			if (n === 0) {
+				toast('info', 'Nothing in that group could be cancelled.');
+				return;
+			}
+			toast(
+				'info',
+				body.cancelling
+					? `${n} job${n === 1 ? '' : 's'} — stopping…`
+					: `${n} job${n === 1 ? '' : 's'} cancelled.`,
+			);
+			// Totals refresh immediately; the rows themselves move through SSE.
+			try {
+				const countsRes = await fetch('/api/jobs?limit=1');
+				const countsBody = (await countsRes.json().catch(() => null)) as {
+					counts?: JobCounts;
+				} | null;
+				if (countsBody?.counts) live.jobCounts = countsBody.counts;
+			} catch {
+				// Next event re-seeds them anyway.
+			}
+		} catch {
+			toast('error', 'Cancelling those jobs failed.');
+		}
 	}
 	async function retryJob(id: string) {
 		await fetch(`/api/jobs/${id}/retry`, { method: 'POST' });
@@ -1554,8 +1690,39 @@
 			class="jobs-scroll flex flex-col gap-3 overflow-y-auto overscroll-contain pr-1"
 			data-testid="jobs-scroll"
 		>
-			{#each visibleJobs as job (job.id)}
-				<JobRow {job} oncancel={cancelJob} onretry={retryJob} />
+			{#each jobGroups as group (group.key)}
+				<details class="m3-card overflow-hidden p-0" open={isGroupOpen(group)} ontoggle={() => toggleGroup(group, !isGroupOpen(group))}>
+					<summary
+						class="flex cursor-pointer list-none items-center gap-3 px-4 py-3 select-none [&::-webkit-details-marker]:hidden"
+					>
+						<span class="m3-chip {jobStatusTone[group.status] ?? ''} w-fit uppercase"
+							>{group.status}</span
+						>
+						<span class="text-sm font-medium"
+							>{jobTypeLabel[group.type] ?? group.type}</span
+						>
+						<span class="text-xs text-on-surface-variant">×{group.jobs.length}</span>
+						{#if group.status === 'queued' || group.status === 'running'}
+							<button
+								type="button"
+								class="m3-btn m3-btn-text ml-auto text-sm"
+								onclick={(e) => {
+									// Keep the click from also toggling the group closed.
+									e.preventDefault();
+									e.stopPropagation();
+									void cancelGroup(group);
+								}}
+							>
+								Cancel {group.jobs.length}{group.jobs.length === 1 ? ' job' : ' jobs'}
+							</button>
+						{/if}
+					</summary>
+					<div class="flex flex-col gap-3 border-t border-outline-variant/40 p-3">
+						{#each group.jobs as job (job.id)}
+							<JobRow {job} oncancel={cancelJob} onretry={retryJob} />
+						{/each}
+					</div>
+				</details>
 			{/each}
 		</div>
 	{/if}
