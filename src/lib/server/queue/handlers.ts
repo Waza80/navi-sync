@@ -5,7 +5,7 @@ import { logger } from '$lib/server/logger';
 import { getSettings } from '$lib/server/settings';
 import { db } from '$lib/server/db';
 import { tracks } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNotNull } from 'drizzle-orm';
 import {
 	adoptDownloadedFile,
 	deleteTrackRow,
@@ -1716,6 +1716,38 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 		expectedRel !== null && join(env.MUSIC_LIBRARY_DIR, expectedRel) !== row.filePath;
 
 	// ── 3. Retag + relocate ─────────────────────────────────────────────────
+	/**
+	 * One MusicBrainz release id per ALBUM, as Navidrome expects.
+	 *
+	 * The tracks of one album legitimately span several MB releases (deluxe,
+	 * single, repress — 52 library albums do). Rows keep their granular
+	 * per-track ids, but the FILE tag must be uniform: Navidrome keys album
+	 * rows on MUSICBRAINZ_ALBUMID, so mixed values inside one folder split the
+	 * album into duplicates. Ties resolve to the lowest id (deterministic).
+	 */
+	async function modalAlbumMbids(
+		artist: string | null,
+		album: string | null,
+	): Promise<{ releaseMbid: string | null; releaseGroupMbid: string | null }> {
+		if (!artist || !album) return { releaseMbid: null, releaseGroupMbid: null };
+		const modal = async (
+			column: typeof tracks.releaseMbid | typeof tracks.releaseGroupMbid,
+		): Promise<string | null> => {
+			const rows = await db
+				.select({ v: column, n: count() })
+				.from(tracks)
+				.where(and(eq(tracks.artist, artist), eq(tracks.album, album), isNotNull(column)))
+				.groupBy(column)
+				.orderBy(desc(count()), asc(column))
+				.limit(1);
+			return rows[0]?.v ?? null;
+		};
+		return {
+			releaseMbid: await modal(tracks.releaseMbid),
+			releaseGroupMbid: await modal(tracks.releaseGroupMbid),
+		};
+	}
+
 	let retagged = false;
 	let movedTo: string | null = null;
 	// A forced pass rewrites tags even when nothing in the row CHANGED: the
@@ -1780,6 +1812,7 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 			}
 		}
 
+		const albumIds = await modalAlbumMbids(artist, album);
 		const outcome = await ensureFileTags(
 			filePath,
 			{
@@ -1793,6 +1826,14 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 				genre,
 				cover: embedBytes,
 				lyricsPlain: null,
+				artistMbid: row.artistMbid ?? null,
+				albumArtistMbid: row.albumArtistMbid ?? null,
+				recordingMbid: row.recordingMbid ?? null,
+				releaseTrackMbid: row.releaseTrackMbid ?? null,
+				// Uniform per album — see modalAlbumMbids. Rows keep granular ids;
+				// the file gets the modal release so Navidrome cannot split the album.
+				releaseMbid: albumIds.releaseMbid,
+				releaseGroupMbid: albumIds.releaseGroupMbid,
 				lyricsSynced: null,
 			},
 			{ force: true },
