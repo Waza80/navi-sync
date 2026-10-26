@@ -5,7 +5,7 @@ import { logger } from '$lib/server/logger';
 import { getSettings } from '$lib/server/settings';
 import { db } from '$lib/server/db';
 import { tracks } from '$lib/server/db/schema';
-import { and, asc, count, desc, eq, isNotNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNotNull, sql } from 'drizzle-orm';
 import {
 	adoptDownloadedFile,
 	deleteTrackRow,
@@ -1728,23 +1728,44 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 	async function modalAlbumMbids(
 		artist: string | null,
 		album: string | null,
-	): Promise<{ releaseMbid: string | null; releaseGroupMbid: string | null }> {
-		if (!artist || !album) return { releaseMbid: null, releaseGroupMbid: null };
+	): Promise<{
+		releaseMbid: string | null;
+		releaseGroupMbid: string | null;
+		albumString: string | null;
+	}> {
+		if (!artist || !album)
+			return { releaseMbid: null, releaseGroupMbid: null, albumString: null };
+		// Case-only variants are ONE album: providers disagree on casing ('Prefer
+		// not to say' vs 'Prefer Not To Say'), and clustering on the exact string
+		// kept each variant's own modal id — permanently splitting the album in
+		// Navidrome. Rows stay granular; tags converge on the cluster's majority.
+		const cluster = and(
+			eq(tracks.artist, artist),
+			sql`lower(${tracks.album}) = ${album.toLowerCase()}`,
+		);
 		const modal = async (
 			column: typeof tracks.releaseMbid | typeof tracks.releaseGroupMbid,
 		): Promise<string | null> => {
 			const rows = await db
 				.select({ v: column, n: count() })
 				.from(tracks)
-				.where(and(eq(tracks.artist, artist), eq(tracks.album, album), isNotNull(column)))
+				.where(and(cluster, isNotNull(column)))
 				.groupBy(column)
 				.orderBy(desc(count()), asc(column))
 				.limit(1);
 			return rows[0]?.v ?? null;
 		};
+		const albumRows = await db
+			.select({ v: tracks.album, n: count() })
+			.from(tracks)
+			.where(and(cluster, isNotNull(tracks.filePath)))
+			.groupBy(tracks.album)
+			.orderBy(desc(count()), asc(tracks.album))
+			.limit(1);
 		return {
 			releaseMbid: await modal(tracks.releaseMbid),
 			releaseGroupMbid: await modal(tracks.releaseGroupMbid),
+			albumString: albumRows[0]?.v ?? null,
 		};
 	}
 
@@ -1818,7 +1839,7 @@ async function runMetadataRepair(job: JobRow, ctx: JobContext): Promise<Record<s
 			{
 				title: row.title,
 				artist,
-				album,
+				album: albumIds.albumString ?? album,
 				albumArtist,
 				trackNumber,
 				discNumber,
