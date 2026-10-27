@@ -137,11 +137,35 @@ function padTrackNumber(n: number | null | undefined): string {
 	return String(Math.round(n)).padStart(2, '0');
 }
 
+/**
+ * The title segment of a track path.
+ *
+ * Dot-only titles are real: MusicBrainz tracklists for Wallace Cleaver's
+ * *merci* and *MARCEL* open with a track literally titled `...`. Trimming
+ * dots (done so no path component can be `.`/`..`) used to collapse those to
+ * the `Unknown Title` fallback, so the file was named `01 - Unknown Title.flac`
+ * while every tag said `...` — and any later pass kept "fixing" the path back
+ * to that name. When sanitisation empties a non-empty title we keep the raw
+ * text (with path separators neutralised, never empty) so file, tag and
+ * MusicBrainz agree. `01 - ....flac` parses back to `...` on a round-trip.
+ */
+function titleComponent(raw: string | null | undefined): string {
+	const t = (raw ?? '').trim();
+	if (t.length === 0) return 'Unknown Title';
+	const s = sanitizeComponent(t, '');
+	if (s.length > 0) return s;
+	// Only a pure dot-only title of three or more dots may bypass sanitising
+	// (`...` is MusicBrainz truth); anything else that sanitised to empty
+	// ('../...') is hostile input and keeps the safe fallback.
+	if (t.length >= 3 && /^[. ]+$/.test(t)) return t;
+	return 'Unknown Title';
+}
+
 /** "Artist/Album/NN - Title" (no extension). */
 export function trackBaseRelativePath(meta: PathMeta): string {
 	const artist = sanitizeComponent(meta.artist, 'Unknown Artist');
 	const album = sanitizeComponent(meta.album ?? 'Unknown Album', 'Unknown Album');
-	const title = sanitizeComponent(meta.title, 'Unknown Title');
+	const title = titleComponent(meta.title);
 	const n = padTrackNumber(meta.trackNumber);
 	// Without the `NN - ` prefix the title stands alone, so a title that itself
 	// starts with digits ('100 000 LUMEN') is no longer mistaken for a number.

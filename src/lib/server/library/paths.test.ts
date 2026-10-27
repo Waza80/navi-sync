@@ -142,3 +142,33 @@ describe('trackBaseRelativePath track-number prefix', () => {
 		});
 	});
 });
+
+describe('dot-only titles (real MusicBrainz tracklists use "...")', () => {
+	it('keeps the exact dot title instead of the Unknown Title fallback', () => {
+		expect(
+			trackBaseRelativePath({ artist: 'Wallace Cleaver', album: 'merci', title: '...', trackNumber: 1 })
+		).toBe('Wallace Cleaver/merci/01 - ...');
+	});
+	it('round-trips through splitTrackFilename', () => {
+		const base = trackBaseRelativePath({
+			artist: 'Wallace Cleaver',
+			album: 'MARCEL',
+			title: '...',
+			trackNumber: 1,
+		});
+		expect(splitTrackFilename(`${base.split('/').pop()}.flac`)).toMatchObject({
+			trackNumber: 1,
+			title: '...',
+		});
+	});
+	it('rejects a hostile dot-path like ../... back to the safe fallback', () => {
+		expect(trackBaseRelativePath({ artist: 'A', album: 'B', title: '../...', trackNumber: 3 })).toBe(
+			'A/B/03 - Unknown Title'
+		);
+	});
+	it('still falls back for a truly empty title', () => {
+		expect(trackBaseRelativePath({ artist: 'A', album: 'B', title: '   ', trackNumber: 2 })).toBe(
+			'A/B/02 - Unknown Title'
+		);
+	});
+});
